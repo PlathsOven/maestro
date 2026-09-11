@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"thread-codex-9"}
+{"type":"item.started","item":{"id":"c1","item_type":"command_execution","command":"grep -r foo ."}}
+{"type":"item.completed","item":{"id":"c1","item_type":"command_execution","exit_code":0,"aggregated_output":"src/a.ts:1: foo"}}
+{"type":"item.completed","item":{"id":"r1","item_type":"reasoning","text":"The match is in a.ts."}}
+{"type":"item.started","item":{"id":"p1","item_type":"file_change","changes":{"src/a.ts":"modified"}}}
+{"type":"item.completed","item":{"id":"p1","item_type":"file_change","status":"completed"}}
+{"type":"item.completed","item":{"id":"m1","item_type":"agent_message","text":"Fixed the reference in a.ts."}}
+{"type":"turn.completed"}

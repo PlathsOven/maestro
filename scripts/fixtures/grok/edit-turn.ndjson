@@ -1,0 +1,7 @@
+{"type":"session","session_id":"test-2280"}
+{"type":"tool_call","id":"call_e1","name":"edit_file","input":{"file_path":"src/index.ts","old_string":"const x = 1;","new_string":"const x = 2;"}}
+{"type":"tool_result","tool_call_id":"call_e1","status":"ok","output":"Applied 1 edit to src/index.ts"}
+{"type":"tool_call","id":"call_e2","name":"write_file","input":{"file_path":"NOTES.md","content":"# Notes\nDone.\n"}}
+{"type":"tool_result","tool_call_id":"call_e2","status":"ok","output":"Wrote NOTES.md"}
+{"type":"assistant","delta":"Bumped `x` to 2 and added NOTES.md."}
+{"type":"result","status":"success"}

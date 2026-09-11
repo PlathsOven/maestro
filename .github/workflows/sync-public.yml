@@ -1,0 +1,63 @@
+name: sync-public
+
+# Publishes a sanitized, history-free snapshot of this repo to the public
+# open-source mirror (PlathsOven/maestro). All the work runs HERE, on the public
+# repo, so it bills against the public repo's free unlimited Actions minutes.
+#
+# This file is mirrored into BOTH repos (it lives in the tree). The job guard
+# below makes it a no-op anywhere except the public mirror, so it never runs on
+# the private upstream.
+#
+# Triggers:
+#   • repository_dispatch (type: sync) — fired by the private repo's release.yml
+#     after each release, so the mirror tracks releases automatically.
+#   • workflow_dispatch — the "Run workflow" button, to sync on demand.
+#
+# Secret required (on the PUBLIC repo): PRIVATE_SRC_TOKEN
+#   A fine-grained PAT scoped to PlathsOven/visual-conductor with
+#   Contents: Read-only. Used only to clone the private source. The push back to
+#   this repo uses the built-in GITHUB_TOKEN (which also can't trigger further
+#   workflow runs, so there's no sync loop).
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [sync]
+
+concurrency:
+  group: sync-public
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Only ever run on the public mirror; inert on the private upstream.
+    if: github.repository == 'PlathsOven/maestro'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the public mirror
+        uses: actions/checkout@v4
+        with:
+          path: public
+          fetch-depth: 0
+
+      - name: Clone the private source (shallow — no history travels)
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${PRIVATE_SRC_TOKEN}@github.com/PlathsOven/visual-conductor.git" \
+            private
+        env:
+          PRIVATE_SRC_TOKEN: ${{ secrets.PRIVATE_SRC_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sync + sanitize + commit + push
+        env:
+          SYNC_SRC: private
+          SYNC_DEST: public
+          SYNC_BRANCH: main
+          SYNC_PUSH: '1'
+        run: node private/scripts/sync-public.mjs

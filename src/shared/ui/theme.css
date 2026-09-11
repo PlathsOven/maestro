@@ -1,0 +1,617 @@
+/*
+ * Shared theme — tokens, base rules and component classes used by BOTH the
+ * Electron renderer (src/renderer/styles.css @imports this) and Maestro Web
+ * (web/app/globals.css @imports this). Moved here verbatim from the renderer's
+ * styles.css (web-desktop-parity spec §3.1). Electron-only rules (.drag-region,
+ * .no-drag, .wco-safe, the #root/overflow lock and .xterm*) stay in
+ * src/renderer/styles.css; everything else lives here so the two apps share one
+ * theme, literally (G2).
+ *
+ * Do NOT put `@tailwind` directives here — each app owns those in its own entry
+ * CSS. This file carries only tokens + `@apply`-based component classes, which
+ * Tailwind resolves against whichever app's config (both extend the shared
+ * preset src/shared/ui/tailwind.preset.cjs).
+ */
+
+:root {
+  /* Light theme is white-forward. Only the navigation chrome (the far-left
+     sidebar and the session rail) carries a tint — `--bg`, a near-white grey a
+     few points off white, so it reads as "nav" without ever looking dark. All
+     content surfaces — chat, diff, the right panel, the terminal — ride on
+     `--canvas` (pure white). `--surface` is a subtle recessed fill for wells on
+     that white (file lists, code blocks, the composer). User messages get their
+     own faint Maestro-purple wash via `--user-msg`. */
+  --bg: #fafaf9;
+  --surface: #f8f7f5;
+  --raised: #ffffff;
+  --canvas: #ffffff;
+  --user-msg: #eeedf8;
+  --border: #ddd9d3;
+  --text: #1a1918;
+  --muted: #6b6864;
+  --faint: #a8a49e;
+  --accent: #5344b0;
+  --accent-soft: rgba(83, 68, 176, 0.12);
+  --st-idle: #a8a49e;
+  --st-running: #4a7dbd;
+  --st-attention: #d99114;
+  --st-review: #4a9d6e;
+  --st-unread: #3d8b5f;
+  --st-merged: #8a63c9;
+  --st-merged-soft: rgba(138, 99, 201, 0.15);
+  --ok: #3d8b5f;
+  --err: #c0453a;
+  --warn: #d99114;
+  --diff-add: rgba(74, 157, 110, 0.13);
+  --diff-del: rgba(192, 69, 58, 0.12);
+  --diff-add-strong: rgba(74, 157, 110, 0.32);
+  --diff-del-strong: rgba(192, 69, 58, 0.30);
+  --term-bg: #ffffff;
+  --shadow: 0 1px 3px rgba(26, 25, 24, 0.07), 0 4px 16px rgba(26, 25, 24, 0.05);
+
+  /* Liquid glass — floating surfaces (menus, popovers, hover cards, modals).
+     Translucent so the blurred app content refracts through; a bright top edge
+     and layered shadow lift it off the page. Tuned separately from `.card`,
+     which stays opaque for in-flow content panels. */
+  --glass-bg: transparent;
+  /* Thicker frosted fill for large, text-dense surfaces (modals, command
+     palette) — kept legible while still glass. Small popups use `--glass-bg`. */
+  --glass-panel-bg: rgba(248, 247, 245, 0.86);
+  --glass-blur: 15px;
+  --glass-shadow: 0 2px 6px rgba(26, 25, 24, 0.08), 0 14px 34px rgba(26, 25, 24, 0.16),
+    0 28px 64px rgba(26, 25, 24, 0.1);
+}
+
+.dark {
+  --bg: #1a1918;
+  --surface: #242322;
+  --raised: #2c2b29;
+  /* Dark keeps the chat canvas on the chrome tone — the salient-surface split is
+     a light-theme treatment; dark stays uniform. */
+  --canvas: var(--bg);
+  --user-msg: #2f2c3c;
+  --border: #34322f;
+  --text: #eae8e6;
+  --muted: #9a968f;
+  --faint: #6b6864;
+  --accent: #8271e8;
+  --accent-soft: rgba(130, 113, 232, 0.16);
+  --st-idle: #6b6864;
+  --st-running: #6ba1e0;
+  --st-attention: #e0a33a;
+  --st-review: #5fb885;
+  --st-unread: #5fb885;
+  --st-merged: #a687dd;
+  --st-merged-soft: rgba(166, 135, 221, 0.18);
+  --ok: #5fb885;
+  --err: #e06a5e;
+  --warn: #e0a33a;
+  --diff-add: rgba(95, 184, 133, 0.10);
+  --diff-del: rgba(224, 106, 94, 0.10);
+  --diff-add-strong: rgba(95, 184, 133, 0.28);
+  --diff-del-strong: rgba(224, 106, 94, 0.28);
+  --term-bg: #201f1e;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.2);
+
+  --glass-bg: transparent;
+  --glass-panel-bg: rgba(40, 39, 37, 0.82);
+  --glass-blur: 17px;
+  --glass-shadow: 0 2px 6px rgba(0, 0, 0, 0.36), 0 14px 34px rgba(0, 0, 0, 0.5), 0 28px 64px rgba(0, 0, 0, 0.4);
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased text-body;
+}
+
+* {
+  border-color: var(--border);
+}
+
+/* Controls never join a text selection. Dragging across a chat response used to
+   sweep up every control label in its path — "4 tool calls, 2 messages", the
+   tool rows' name + argument summaries, "Thinking" — so a snippet pasted out of
+   a response came interleaved with chrome that was never part of the prose.
+   Native apps don't let you select a button's label either; the content stays
+   selectable, the affordances around it don't. A button that *wraps* copyable
+   content opts back in with Tailwind's `select-text`. */
+button,
+[role='button'],
+summary {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* PR-state wash for the workspace header: a subtle fill plus a defined colored
+   bottom edge so the action bar's state (ready · merged · closed · conflicts) is
+   unmissable. color-mix keeps a single definition adaptive across light/dark, and
+   these must be real declarations — Tailwind can't emit `/opacity` on var() colors. */
+.pr-tone-ready {
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.pr-tone-conflict {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+.pr-tone-merged {
+  background: color-mix(in srgb, var(--st-merged) 13%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--st-merged) 50%, transparent);
+}
+.pr-tone-closed {
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--err) 40%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.card {
+  @apply bg-surface border rounded-card;
+  box-shadow: var(--shadow);
+}
+
+/* Liquid-glass floating surface. Apply in place of `.card` on menus, popovers,
+   hover cards, tooltips, toasts and modal shells. Apple-style: NO fill tint at
+   all (`--glass-bg: transparent`) — the backdrop blur + saturate is the entire
+   surface, so content and borders behind stay fully visible through it. NO rim
+   either (no border, no inset highlight — a bright edge just reads as a white
+   outline, not glass); only a soft drop shadow separates it from the content
+   below. Falls back to opaque where backdrop-filter is out.
+   This is a VISUAL SKIN ONLY — it must not set `position`, or it would override
+   the `absolute`/`fixed` positioning utilities on popups (equal specificity, and
+   `.glass` cascades after Tailwind's utilities), dropping them into normal flow
+   and shoving their siblings around. Each popup owns its own positioning. */
+.glass {
+  background-color: var(--glass-bg);
+  border-radius: 12px;
+  box-shadow: var(--glass-shadow);
+}
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass {
+    background-color: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  }
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  /* No backdrop blur → lean on the opaque surface token so text stays legible. */
+  .glass {
+    background-color: var(--surface);
+  }
+}
+/* Thick-material variant for large, text-dense surfaces (modals, command
+   palette). Same glass edge + blur, but an opaque-enough fill so labels and body
+   copy stay legible over the busy backdrop — a fully transparent fill only works
+   for small popups. Apply BOTH classes: `glass glass-panel`. The doubled selector
+   outranks the `@supports .glass` background rule regardless of source order. */
+.glass.glass-panel {
+  background-color: var(--glass-panel-bg);
+}
+
+/* A dimmed, frosted scrim behind centered modals so the whole app recedes. */
+.glass-scrim {
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+/* Every interactive control shows a pointer (buttons, links, summary, roles,
+   and .tap list rows/chips — some of which are plain onClick divs). */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+select:not(:disabled),
+summary,
+a[href],
+.tap {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-ctl border bg-raised px-2.5 h-7 text-xs font-medium text-fg select-none whitespace-nowrap;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--faint);
+}
+.btn:disabled {
+  opacity: 0.45;
+}
+.btn-accent {
+  @apply bg-accent text-white border-transparent;
+}
+.btn-accent:hover:not(:disabled) {
+  filter: brightness(1.07);
+  border-color: transparent;
+}
+/* State-colored solid buttons: green to merge, purple once merged — so the
+   header's primary action matches the PR-state wash behind it. */
+.btn-ok {
+  @apply bg-ok text-white border-transparent;
+}
+.btn-merged {
+  @apply bg-st-merged text-white border-transparent;
+}
+.btn-ok:hover:not(:disabled),
+.btn-merged:hover:not(:disabled) {
+  filter: brightness(1.07);
+  border-color: transparent;
+}
+.btn-ghost {
+  @apply border-transparent bg-transparent;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+.btn-danger {
+  color: var(--err);
+}
+
+.input {
+  @apply w-full rounded-ctl border bg-raised px-2.5 py-1.5 text-body text-fg outline-none;
+  transition: border-color 120ms ease;
+}
+.input:focus {
+  border-color: var(--accent);
+}
+.input::placeholder {
+  color: var(--faint);
+}
+
+textarea.input {
+  @apply resize-none leading-relaxed;
+}
+
+select.input {
+  @apply appearance-none pr-7 bg-no-repeat;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239a968f' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-position: right 10px center;
+}
+
+.label {
+  @apply block text-2xs font-semibold uppercase tracking-wide text-muted mb-1.5;
+}
+
+/* status dots */
+.dot {
+  @apply inline-block w-2 h-2 rounded-full shrink-0;
+}
+.dot-setting-up,
+.dot-running {
+  background: var(--st-running);
+}
+.dot-running.pulse,
+.dot-setting-up.pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.dot-idle {
+  background: var(--st-idle);
+}
+.dot-needs-attention {
+  background: var(--st-attention);
+}
+.dot-reviewing {
+  background: var(--st-review);
+}
+.dot-archived {
+  background: transparent;
+  border: 1.5px solid var(--faint);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* reusable pulse for non-dot glyphs (e.g. the sidebar branch-status icon) */
+.pulse-soft {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* status-ping halo: an expanding, fading echo behind a running status dot */
+.status-ping {
+  animation: status-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes status-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* Indeterminate progress bar: a short accent segment sweeping a soft track, for
+   work whose duration we can't measure (e.g. cloud worktree setup, where the box
+   setup script dominates and reports nothing). The track is the element; the
+   moving segment is its ::after. */
+.progress-indeterminate {
+  position: relative;
+  overflow: hidden;
+  background: var(--accent-soft);
+}
+.progress-indeterminate::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: progress-sweep 1.25s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+/* chat markdown */
+.md {
+  @apply text-body leading-relaxed;
+  word-wrap: break-word;
+}
+.md p {
+  margin: 0.4em 0;
+}
+.md p:first-child {
+  margin-top: 0;
+}
+.md p:last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 600;
+  margin: 0.8em 0 0.3em;
+}
+.md h1 {
+  font-size: 1.25em;
+}
+.md h2 {
+  font-size: 1.1em;
+}
+.md h3 {
+  font-size: 1em;
+}
+.md ul,
+.md ol {
+  padding-left: 1.4em;
+  margin: 0.4em 0;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.15em 0;
+}
+.md code {
+  @apply font-mono text-[11.5px] rounded px-1 py-px;
+  background: var(--accent-soft);
+}
+.md pre {
+  @apply font-mono text-xs rounded-ctl border p-2.5 my-2 overflow-x-auto;
+  background: var(--surface);
+}
+.md pre code {
+  background: transparent;
+  padding: 0;
+}
+/* one-click copy on fenced code blocks */
+.md .code-block {
+  position: relative;
+  margin: 0.5rem 0;
+}
+.md .code-block > pre {
+  margin: 0;
+}
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--raised);
+  color: var(--muted);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.md .code-block:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+.code-copy:hover {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.code-copy .ico-copy,
+.code-copy .ico-check {
+  display: inline-flex;
+  align-items: center;
+}
+.code-copy .ico-check {
+  display: none;
+}
+.code-copy.copied {
+  opacity: 1;
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.code-copy.copied .ico-copy {
+  display: none;
+}
+.code-copy.copied .ico-check {
+  display: inline-flex;
+}
+/* worktree images: emitted inert by format.ts, filled in by useWorktreeImages.
+   Capped in height so a full-page screenshot doesn't swallow the chat — a click
+   opens it in the zoomable lightbox (spotlight). */
+.md img[data-ws-src] {
+  @apply block rounded-ctl border my-2 max-w-full;
+  max-height: 340px;
+  width: auto;
+  height: auto;
+  background: var(--surface);
+  cursor: zoom-in;
+}
+.md img[data-ws-state='loading'] {
+  display: none;
+}
+/* Nothing readable at that path — the hook swaps the image for this chip, named
+   after the alt text or the path itself. */
+.md .md-img-missing {
+  @apply inline-block font-mono text-[11.5px] rounded border px-1.5 py-px;
+  border-style: dashed;
+  color: var(--muted);
+}
+.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+  color: var(--muted);
+  margin: 0.4em 0;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+
+/* diff */
+.diff-table {
+  @apply w-full font-mono text-xs;
+  border-collapse: collapse;
+  tab-size: 4;
+}
+.diff-gutter {
+  @apply text-right pr-2 pl-3 select-none align-top whitespace-nowrap;
+  color: var(--faint);
+  width: 1%;
+  min-width: 42px;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.diff-gutter:hover {
+  color: var(--accent);
+}
+.diff-code {
+  @apply pl-2 pr-4 align-top;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.diff-add-row {
+  background: var(--diff-add);
+}
+.diff-del-row {
+  background: var(--diff-del);
+}
+.diff-hunk-header {
+  @apply font-mono text-2xs;
+  color: var(--muted);
+  background: var(--bg);
+}
+
+/* hljs minimal theme mapped to palette */
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: var(--accent); }
+.hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet, .hljs-addition { color: var(--ok); }
+.hljs-title, .hljs-name, .hljs-type, .hljs-number { color: var(--st-running); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--faint); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+.fade-in {
+  animation: fadeIn 140ms ease;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Mobile additions (web-desktop-parity §3.4). No effect on the desktop,
+   which never reports a coarse pointer. --------------------------------------- */
+@media (pointer: coarse) {
+  .btn { min-height: 36px; padding-left: .75rem; padding-right: .75rem; }
+  .input { padding-top: .625rem; padding-bottom: .625rem; }
+  .code-copy { width: 32px; height: 32px; }
+  .tap { min-height: 44px; }           /* apply to list rows / chips that are primary targets */
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .status-ping, .spin, .fade-in, .pulse-soft { animation: none !important; }
+}
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+.safe-t { padding-top: env(safe-area-inset-top); }
+.safe-b { padding-bottom: env(safe-area-inset-bottom); }

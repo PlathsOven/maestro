@@ -1,0 +1,6 @@
+{"type":"system","session_id":"grok-sess-2"}
+{"type":"reasoning","delta":"Considering the request."}
+{"type":"assistant","content":"Running a search.","tool_calls":[{"id":"g1","function":{"name":"bash","arguments":"{\"command\":\"rg TODO\"}"}}]}
+{"type":"tool_result","tool_call_id":"g1","exit_code":0,"output":"src/x.ts:2: // TODO"}
+{"type":"assistant","content":"Found one TODO."}
+{"type":"result","is_error":false,"cost_usd":0.004,"duration_ms":640,"usage":{"input_tokens":200,"output_tokens":40}}

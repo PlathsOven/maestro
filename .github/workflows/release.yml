@@ -1,0 +1,94 @@
+name: release
+
+# Cut a release on demand: bump the patch version, commit it back to main, and
+# push a matching v* tag. The tag triggers build-desktop.yml, which builds the
+# signed installers and publishes the electron-updater feed so shipped apps
+# auto-update.
+#
+# Run it from the Actions tab (Run workflow) or `gh workflow run release.yml`.
+# One run ships every merge since the last release.
+#
+# It also fires automatically when a commit lands on main whose message
+# contains the marker "[release]" — squash-merge a PR with "[release]" in the
+# merge commit to cut a release as part of that merge. Ordinary merges (no
+# marker) do NOT release. The bot's own "chore: release v%s" bump commit lacks
+# the marker, so the auto-trigger never loops.
+#
+# This used to fire on EVERY push to main. Each release builds all three
+# platforms (~13 min each) and macOS runners bill at 10x, so a release costs
+# ~170 billable Actions minutes — releasing per-merge exhausted the account's
+# monthly allowance in about a day and silently stalled eight merges' worth of
+# releases. The opt-in "[release]" marker keeps releases deliberate while still
+# letting a single merge trigger one.
+#
+# The tag MUST be pushed with a token that can trigger other workflows. The
+# default GITHUB_TOKEN deliberately does NOT start workflow runs from its own
+# pushes (anti-recursion), so a tag pushed with it would never build. We use a
+# GitHub App installation token instead (see repo secrets RELEASE_APP_ID /
+# RELEASE_APP_PRIVATE_KEY). A fine-grained PAT with contents:write works too —
+# swap the create-github-app-token step for `token: ${{ secrets.RELEASE_PAT }}`
+# on the checkout.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# Serialize releases so two quick runs bump/tag one at a time instead of racing
+# on the version number.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Manual dispatch always releases; a push only releases when its head commit
+    # carries the "[release]" marker. This gates the push trigger so routine
+    # merges (and the bot's own "chore: release v%s" commit) don't cut releases.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[release]')
+    steps:
+      - name: Mint a GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bump version, commit, and tag
+        run: |
+          git config user.name  "maestro-release[bot]"
+          git config user.email "maestro-release[bot]@users.noreply.github.com"
+          # Bumps package.json + package-lock.json, commits, and creates an
+          # annotated v* tag in one step.
+          npm version patch -m "chore: release v%s"
+          # --follow-tags pushes the annotated tag alongside the bump commit.
+          git push --follow-tags origin HEAD:main
+
+      - name: Sync the public open-source mirror
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_SYNC_TOKEN }}
+        run: |
+          # Fire-and-forget: ask the public mirror (PlathsOven/maestro) to pull
+          # this release. The heavy lifting (clone, sanitize, commit, push) runs
+          # on the PUBLIC repo's free Actions minutes; this is just the trigger.
+          # Non-fatal: if the token is unset or the call fails, the release still
+          # succeeds and the mirror can be synced by hand (npm run sync:public or
+          # its "Run workflow" button). See docs/OPEN-SOURCE.md.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "PUBLIC_SYNC_TOKEN unset — skipping mirror sync"; exit 0
+          fi
+          gh api -X POST repos/PlathsOven/maestro/dispatches -f event_type=sync

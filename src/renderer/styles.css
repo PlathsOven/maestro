@@ -1,0 +1,45 @@
+@import '../shared/ui/theme.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Electron-only rules (web-desktop-parity spec §3.1). Everything else lives
+   in src/shared/ui/theme.css, shared with Maestro Web. ------------------------ */
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Windows/Linux paint the native minimize·maximize·close buttons *on top of* the
+   renderer's top-right corner (titleBarOverlay, src/main/index.ts). Chromium
+   publishes the usable title-bar strip through env(titlebar-area-*); whatever is
+   left over at the right is exactly what those buttons cover. Chrome that hugs
+   the window's right edge reserves it with .wco-safe so it stays clickable.
+   Set --wco-rail on an element that is *not* flush with the edge (e.g. the
+   workspace header, with the collapsed right rail beside it) — only the
+   shortfall is reserved. Resolves to 0 on macOS, where the env vars are
+   undefined and the traffic lights sit on the left instead. */
+:root {
+  --wco-width: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+}
+.wco-safe {
+  margin-right: max(0px, calc(var(--wco-width) - var(--wco-rail, 0px)));
+}
+
+.xterm {
+  padding: 10px 12px;
+  height: 100%;
+}
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}

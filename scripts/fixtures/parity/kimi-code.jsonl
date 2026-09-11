@@ -1,0 +1,4 @@
+{"role":"meta","session":{"resume_hint":"kimi-resume-7"}}
+{"role":"assistant","reasoning_content":"I should read the config.","content":"Reading the config now.","tool_calls":[{"id":"k1","function":{"name":"read_file","arguments":"{\"path\":\"config.json\"}"}}]}
+{"role":"tool","tool_call_id":"k1","is_error":false,"content":"{\"port\":3000}"}
+{"role":"assistant","content":"The port is 3000."}

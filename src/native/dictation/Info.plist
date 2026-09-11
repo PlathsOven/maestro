@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Embedded into the helper's __TEXT,__info_plist section at link time so TCC
+       has usage strings to show when this executable requests the mic / speech
+       recognition. The parent .app carries the same strings (electron-builder
+       mac.extendInfo) since it's the responsible process. -->
+  <key>CFBundleIdentifier</key>
+  <string>app.maestro.desktop.dictation</string>
+  <key>CFBundleName</key>
+  <string>Maestro Dictation</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Maestro uses the microphone to transcribe your speech into the prompt box.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Maestro uses on-device speech recognition to turn your dictation into text.</string>
+</dict>
+</plist>

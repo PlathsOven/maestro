@@ -1,0 +1,156 @@
+{
+  "name": "maestro",
+  "productName": "Maestro",
+  "version": "0.1.71",
+  "description": "Run multiple CLI coding agents in parallel, each in an isolated git-worktree workspace.",
+  "main": "dist/main/index.cjs",
+  "private": true,
+  "author": "Maestro",
+  "license": "BUSL-1.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check:seams": "node scripts/check-seams.mjs",
+    "e2e:parity": "esbuild scripts/parity-e2e.ts --bundle --platform=node --format=cjs --outfile=dist/parity-e2e.cjs && node dist/parity-e2e.cjs",
+    "e2e:cloud": "esbuild scripts/cloud-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/cloud-e2e.cjs && node dist/cloud-e2e.cjs",
+    "e2e:k8s": "esbuild scripts/k8s-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/k8s-e2e.cjs && node dist/k8s-e2e.cjs",
+    "e2e:k8s-live": "esbuild scripts/k8s-live-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/k8s-live-e2e.cjs && node dist/k8s-live-e2e.cjs",
+    "e2e:account": "esbuild scripts/account-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/account-e2e.cjs && node dist/account-e2e.cjs",
+    "e2e:harness-sync": "esbuild scripts/harness-sync-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/harness-sync-e2e.cjs && node dist/harness-sync-e2e.cjs",
+    "e2e:web": "node scripts/run-web-e2e.mjs",
+    "e2e:parity-web": "node scripts/run-parity-web-e2e.mjs",
+    "e2e:schedule": "esbuild scripts/schedule-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/schedule-e2e.cjs && node dist/schedule-e2e.cjs",
+    "e2e:drain": "esbuild scripts/drain-e2e.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/drain-e2e.cjs && node dist/drain-e2e.cjs",
+    "test:authfix": "esbuild scripts/authfix-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/authfix-test.cjs && node dist/authfix-test.cjs",
+    "test:logins": "esbuild scripts/logins-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/logins-test.cjs && node dist/logins-test.cjs",
+    "test:refine": "esbuild scripts/refine-test.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outfile=dist/refine-test.cjs && node dist/refine-test.cjs",
+    "test:shortcuts": "esbuild scripts/shortcuts-test.ts --bundle --platform=node --format=cjs --outfile=dist/shortcuts-test.cjs && node dist/shortcuts-test.cjs",
+    "build:renderer": "vite build",
+    "build:main": "esbuild src/main/index.ts src/main/preload.ts src/main/role-cli.ts src/main/ask-cli.ts src/main/preview-cli.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --external:cpu-features --outdir=dist/main --out-extension:.js=.cjs --sourcemap=inline",
+    "build:helper": "bash scripts/build-helper.sh",
+    "build": "npm run build:renderer && npm run build:main && npm run build:helper",
+    "start": "electron .",
+    "smoke": "electron . --smoke --screenshot=/tmp/maestro-smoke.png",
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "rebuild": "electron-rebuild -f",
+    "dist": "npm run build && electron-builder --dir",
+    "dist:dmg": "npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:linux": "npm run build && electron-builder --linux AppImage",
+    "sync:public": "node scripts/sync-public.mjs"
+  },
+  "build": {
+    "appId": "app.maestro.desktop",
+    "productName": "Maestro",
+    "directories": {
+      "output": "release"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://cokiigkxjrl2qttd.public.blob.vercel-storage.com"
+      }
+    ],
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "dist/native/maestro-dictation",
+        "to": "maestro-dictation"
+      }
+    ],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**",
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Maestro uses the microphone to transcribe your speech into the prompt box.",
+        "NSSpeechRecognitionUsageDescription": "Maestro uses on-device speech recognition to turn your dictation into text."
+      },
+      "notarize": true,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "target": [
+        "AppImage"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/ssh2": "^1.15.5",
+    "@vercel/blob": "^2.6.1",
+    "@vitejs/plugin-react": "^6.0.3",
+    "autoprefixer": "^10.5.4",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "postcss": "^8.5.19",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5",
+    "wait-on": "^9.0.10"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@iarna/toml": "^2.2.5",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "better-sqlite3": "^12.11.1",
+    "clsx": "^2.1.1",
+    "dompurify": "^3.4.12",
+    "electron-updater": "^6.8.9",
+    "execa": "^10.0.0",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.47",
+    "lucide-react": "^1.25.0",
+    "marked": "^18.0.6",
+    "marked-katex-extension": "^5.1.10",
+    "monaco-editor": "^0.56.0",
+    "node-pty": "^1.1.0",
+    "posthog-node": "^5.46.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "ssh-config": "^5.2.0",
+    "ssh2": "^1.17.0",
+    "zustand": "^5.0.14"
+  }
+}

@@ -1,0 +1,5 @@
+{"type":"session","session_id":"test-6633"}
+{"type":"assistant","reasoning":"I should list the files first.","content":[{"type":"text","text":"Let me look around."}],"tool_calls":[{"id":"tc_1","function":{"name":"bash","arguments":"{\"command\":\"ls -la\"}"}}]}
+{"type":"tool_result","tool_call_id":"tc_1","output":"total 8\ndrwxr-xr-x  package.json"}
+{"type":"assistant","content":"There's a single package.json here."}
+{"type":"result","status":"success","usage":{"input_tokens":1400,"output_tokens":40}}

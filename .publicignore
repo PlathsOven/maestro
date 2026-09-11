@@ -1,0 +1,32 @@
+# What to withhold from the PUBLIC open-source mirror (PlathsOven/maestro).
+#
+# These are rsync --exclude-from patterns, evaluated by scripts/sync-public.mjs
+# relative to the repo root. A leading "/" anchors a pattern to the root.
+#
+# Publishing is one-way — you can always publish MORE on the next sync, but you
+# can never un-publish. So this defaults to the NARROWEST sensible scope: the
+# desktop app only. Delete a line below to start including that surface.
+
+# --- never publish (build output, local scratch, VCS/OS cruft) ---
+/.git/
+/.context/
+/node_modules/
+/dist/
+/release/
+*.log
+.DS_Store
+
+# --- internal planning / roadmap docs (unreleased feature specs) ---
+/docs/specs/
+
+# --- internal dev tooling (Claude Code skills, not part of the app) ---
+/.agents/
+/.hallmark/
+/skills-lock.json
+
+# --- hosted-service surfaces: your infrastructure, not "the app" ---
+# The desktop app is AGPL and public; the servers that back the paid/hosted
+# service are kept private by default. Delete a line to publish that surface.
+/server/
+/web/
+/landing/

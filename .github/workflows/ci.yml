@@ -1,0 +1,74 @@
+name: ci
+
+# Fast checks on every push / PR: desktop typecheck + seams + the plain-node e2e
+# suites (they run under node with native modules built by `npm ci`), and a
+# separate `web` job for the relay (mobile-web-app spec §7 + §10). No installers
+# here — build-desktop.yml handles packaging on tags.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: desktop checks + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck + seam check
+        run: npm run typecheck && npm run check:seams
+      # Credential-fault detection: the shapes that must (and must not) offer the
+      # one-click sign-in repair.
+      - name: Expired-credential detection
+        run: npm run test:authfix
+      # Parity is the G7 guard: desktop pipeline == relay pipeline, byte-identical.
+      - name: Parity (shared harness)
+        run: npm run e2e:parity
+      # Full cloud-continuation path (fake box host, no SSH server).
+      - name: Cloud continuation e2e
+        run: npm run e2e:cloud
+      # Account service against a mock relay (link, publish/backfill, sync, box link).
+      - name: Account service e2e
+        run: npm run e2e:account
+      # Kubernetes workspaces against a fake kubectl (provisioning, host-key pin,
+      # supervised port-forward, delegation, selection chain). No cluster needed.
+      - name: Kubernetes workspaces e2e
+        run: npm run e2e:k8s
+
+  web:
+    name: relay (web) typecheck + build + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # esbuild for the e2e bundler lives in the root dev deps; the web app has
+      # its own package (the Electron root package is not touched, spec §7).
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install web dependencies
+        run: npm --prefix web ci
+      - name: Web typecheck
+        run: npm --prefix web run typecheck
+      - name: Web build
+        run: npm --prefix web run build
+        env:
+          MAESTRO_WEB_PGLITE: '1'
+          AUTH_SECRET: ci-build-secret
+          AUTH_GITHUB_ID: ci
+          AUTH_GITHUB_SECRET: ci
+      # Relay protocol e2e: real maestro-sync + maestro-drain against in-process
+      # PGlite (no Postgres service needed — the house pattern). A postgres
+      # service container can be added later via WEB_E2E_DATABASE_URL.
+      - name: Relay e2e (sync + ingest + jobs)
+        run: npm run e2e:web

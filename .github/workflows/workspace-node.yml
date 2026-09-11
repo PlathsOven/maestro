@@ -1,0 +1,52 @@
+name: workspace-node image
+
+# Publishes the Kubernetes workspace-node image (docs/specs/kubernetes-workspaces.md
+# §3.3). It is the SAME image the Railway box runs — server/maestro-cloud/Dockerfile
+# with MAESTRO_NODE_MODE=k8s — so one Dockerfile serves both consumers.
+#
+# The app's default image is ghcr.io/plathsoven/maestro-workspace-node:latest; a
+# host row's `k8sJson.image` overrides it for teams who bake their own toolchain.
+# Run this manually (or push a workspace-node-v* tag) to publish.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['workspace-node-v*']
+    paths:
+      - 'server/maestro-cloud/**'
+      - '.github/workflows/workspace-node.yml'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/maestro-workspace-node
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+      # arm64 too: plenty of clusters (Graviton, Ampere, local kind on Apple
+      # silicon) would otherwise ImagePullBackOff on a node the doctor can't explain.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: server/maestro-cloud
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

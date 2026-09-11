@@ -1,0 +1,6 @@
+{
+  "name": "@maestro/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared harness pipeline + presentational UI used by both the desktop renderer (vite, relative imports) and the web relay (Next, via the @maestro/shared node_modules package so Next applies its 'use client' transform). Intentionally no \"main\"/\"exports\"/\"type\" so relative and subpath file imports resolve directly and the desktop build is unaffected."
+}

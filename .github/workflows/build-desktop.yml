@@ -1,0 +1,190 @@
+name: build-desktop
+
+# Builds the Maestro desktop installers on native runners. Native modules
+# (better-sqlite3, node-pty) must be compiled on the target OS — they can't be
+# cross-compiled from macOS — so Windows is built on windows-latest.
+#
+# Trigger manually (Actions tab → Run workflow) or by pushing a v* tag. Tags are
+# created by release.yml, which is run on demand — so in normal operation a
+# release lands here via its tag, carrying every merge since the last one. The
+# installers are uploaded as build artifacts you can download from the run.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: build-${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: windows-installer
+            glob: release/*setup*.exe
+          - os: macos-latest
+            platform: mac
+            artifact: macos-dmg
+            glob: release/*.dmg
+          # AppImage builds on Linux (native modules can't be cross-compiled) and
+          # is the format electron-updater knows how to auto-update. Runs from the
+          # AppImage on the user's machine; updates come from latest-linux.yml.
+          - os: ubuntu-latest
+            platform: linux
+            artifact: linux-appimage
+            glob: release/*.AppImage
+    steps:
+      # Full history + tags: the mac job derives changelog.json (the landing
+      # page's "Recent releases" feed) from the last few release tags.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Installs deps and (via electron-builder later) rebuilds better-sqlite3 +
+      # node-pty against Electron's ABI for this OS.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck + seam check
+        run: npm run typecheck && npm run check:seams
+
+      - name: Build renderer + main
+        run: npm run build
+
+      # macOS signing keychain — provisioned by us, not electron-builder.
+      #
+      # electron-builder's built-in signing creates a throwaway keychain per run
+      # and unlocks it with `security set-key-partition-list`. That step races,
+      # and after GitHub rolled the macos-latest image (Jul→Aug 2026) it began
+      # failing deterministically with `SecKeychainUnlock: … passphrase … not
+      # correct`, blocking every mac release (v0.1.66). The cert/secrets were
+      # never wrong — the runner image changed under electron-builder's feet.
+      #
+      # Creating and unlocking the keychain ourselves, then handing it over via
+      # CSC_KEYCHAIN (with CSC_LINK left unset so electron-builder reuses it
+      # instead of building its own), takes the fragile path out of the loop, so
+      # future image rolls can't break signing. No-op when CSC_LINK is unset —
+      # electron-builder then builds unsigned, exactly as before.
+      - name: Set up signing keychain (mac)
+        if: matrix.platform == 'mac'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "::warning::CSC_LINK unset — building macOS unsigned."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/maestro-signing.keychain-db"
+          CERT_P12="$RUNNER_TEMP/signing-cert.p12"
+          # Ephemeral password: unlocks only THIS keychain for THIS job. It is
+          # not the certificate password.
+          KEYCHAIN_PW="$(openssl rand -base64 24)"
+
+          # Decode the base64 Developer ID .p12 carried in CSC_LINK.
+          printf '%s' "$CSC_LINK" | base64 --decode > "$CERT_P12"
+
+          # Fresh keychain: unlocked, no auto-lock mid-build, and placed ahead of
+          # the login keychain in the search list so codesign finds the identity.
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | sed 's/"//g')
+
+          # Import cert + key, pre-authorising the signing tools, then grant the
+          # partition list once — the exact step electron-builder flaked on, but
+          # here against a keychain whose password we know.
+          security import "$CERT_P12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          rm -f "$CERT_P12"
+
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Package installer (${{ matrix.platform }})
+        run: npx --no-install electron-builder --${{ matrix.platform }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signs from the keychain the step above provisioned (exported as
+          # CSC_KEYCHAIN) and notarizes with the Apple creds below. CSC_KEYCHAIN
+          # is empty on win/linux, so those stay unsigned (Windows Authenticode
+          # isn't this Developer ID cert). If the signing secrets are unset the
+          # setup step exports nothing and electron-builder skips signing with a
+          # warning rather than failing.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # The artifact is a convenience copy for downloading from the run page —
+      # the release users receive ships via the Blob publish below. Never let
+      # this step block distribution: quota exhaustion here once held back a
+      # release (v0.1.29) while three green builds sat unpublished. Short
+      # retention keeps ~440MB/release of installers from accumulating into the
+      # account-wide artifact-storage quota (usage recalculates every 6-12h).
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: maestro-${{ matrix.artifact }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+          retention-days: 3
+
+      # On a v* tag, publish the update feed (the latest*.yml metadata + the
+      # installer electron-updater downloads) to the Vercel Blob store so shipped
+      # apps auto-update. Windows updates from the .exe; macOS updates from the
+      # .zip (a signed+notarized build is required for macOS to accept it).
+      - name: Publish update feed to Vercel Blob
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          # Retain only the version being published. With three platforms
+          # (~540MB of installers per release) keeping two versions would exceed
+          # the Vercel Blob Hobby 1GB cap and freeze the feed. Differential
+          # auto-update needs only the newest artifact on the server (the client
+          # deltas against its own local copy), so one is enough. Raise this once
+          # the Blob store is off the Hobby plan to keep older versions around.
+          BLOB_KEEP_RELEASES: '1'
+        run: |
+          if [ -z "$BLOB_READ_WRITE_TOKEN" ]; then
+            echo "::error::Secret BLOB_READ_WRITE_TOKEN is not set — cannot publish the update feed."
+            exit 1
+          fi
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            manifest=release/latest.yml
+            patterns="release/latest.yml release/*setup*.exe release/*setup*.exe.blockmap"
+          elif [ "${{ matrix.platform }}" = "linux" ]; then
+            manifest=release/latest-linux.yml
+            patterns="release/latest-linux.yml release/*.AppImage release/*.AppImage.blockmap"
+          else
+            manifest=release/latest-mac.yml
+            # The mac job also publishes changelog.json — the landing page's
+            # "Recent releases" section (version, date, PR title per release).
+            # Best-effort: a failure warns and the page simply hides the section.
+            node scripts/make-changelog.mjs || echo "::warning::changelog generation failed"
+            patterns="release/latest-mac.yml release/*.zip release/*.zip.blockmap release/*.dmg release/changelog.json"
+          fi
+          if [ ! -e "$manifest" ]; then
+            echo "::error::$manifest was not generated — check electron-builder 'publish' config."
+            exit 1
+          fi
+          shopt -s nullglob
+          files=""
+          for f in $patterns; do [ -e "$f" ] && files="$files $f"; done
+          echo "Publishing:$files"
+          # Upload via the @vercel/blob SDK — the CLI now needs an account login.
+          node scripts/publish-blob.mjs $files

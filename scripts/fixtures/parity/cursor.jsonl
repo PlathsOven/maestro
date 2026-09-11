@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"cursor-sess-3"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Opening "}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"the file."}]}}
+{"type":"tool_call","subtype":"started","call_id":"tc1","tool_call":{"read_file":{"args":{"path":"README.md"}}}}
+{"type":"tool_call","subtype":"completed","call_id":"tc1","tool_call":{"read_file":{}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":" All set."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":900}

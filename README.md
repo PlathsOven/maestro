@@ -1,128 +1,146 @@
 # Maestro
 
-A cross-platform (macOS · Windows · Linux) desktop app that runs multiple CLI coding agents (Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok Build) **in parallel**, each in an **isolated git-worktree-backed workspace** with its own branch, terminal, chat, and diff. A functional clone of [Conductor](https://conductor.build).
+**Run coding agents in parallel.** Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Grok Build,
+side by side — each in its own git worktree, on its own branch, with its own chat, terminal, and diff.
+A desktop app for macOS, Windows, and Linux, and an open clone of [Conductor](https://conductor.build).
 
-![stack](https://img.shields.io/badge/Electron-React%2019-blue) ![stack](https://img.shields.io/badge/git%20worktrees-node--pty-green) ![platforms](https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-lightgrey)
+![Maestro](docs/images/hero-light.png#gh-light-mode-only)
+![Maestro](docs/images/hero-dark.png#gh-dark-mode-only)
 
-## What it does
+![platforms](https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-lightgrey)
+![built with](https://img.shields.io/badge/Electron-React%2019-blue)
+![license](https://img.shields.io/badge/license-BSL%201.1-green)
 
-- **Projects** wrap a git repository (open local folder, clone from GitHub via `gh`, or "Quick start" a fresh repo), or a **plain folder** worked in directly (a single in-place workspace, no branches — shadow-git checkpoints still power a diff-since view). Projects can also live on a **remote machine over SSH** (see below).
-- **Workspaces** are isolated copies of the repo created with `git worktree add -b <branch> <base>` after a `git fetch`, so every agent starts from the latest remote state. One branch per worktree, enforced by git — conflicts offer a `-2` suffixed branch.
-- **Agents** run per-workspace through a pluggable harness layer. Claude Code is fully wired (`claude -p --output-format stream-json`, session resume, token-by-token streaming, tool-call chips, cost/duration). Codex, Cursor, OpenCode, Kimi Code, and Grok Build have adapters; a Shell fallback works with no agent CLI at all. Model and reasoning-effort are pickable per chat. Auth is passed through to whatever login each CLI already has — Maestro never stores model API keys.
-- **Multiple agents can share one workspace** (e.g. one implements while another reviews) — pick "Agent 2 / New agent" in the composer, or hit **Review** to spawn a reviewer.
-- **Roles / specialist sub-agents**: an orchestrator turn can delegate scoped tasks to sub-agents (via the bundled `maestro-role` helper), whose runs and cost fold back into the parent turn.
-- **Terminal** tab is a real login shell (node-pty + xterm) cwd'd to the worktree, with copy/paste (Ctrl/⌘+C/V) and a right-click menu.
-- **Editor** tab (`⌘⇧E`): a Monaco-backed file editor for quick in-app edits (`⌘S` to save), including Jupyter notebooks.
-- **Preview** tab (`⌘⇧B`): an embedded browser pointed at the workspace's dev server that both you and the agent can drive — the agent navigates, screenshots, reads the console, and clicks/types via the `maestro-preview` helper, and you can annotate the page and send it back.
-- **Scripts**: a repo-level *setup script* runs on workspace creation (restore `.env`, deps, DBs — worktrees only carry git-tracked files) and a *run script* launches the app with a unique `WORKSPACE_PORT` per workspace so parallel dev servers don't collide. *Spotlight run* is the fallback that runs from the main repo checkout when a worktree can't run cleanly.
-- **Diff viewer** (`⌘⇧D`) diffs the worktree against the merge-base with the base branch (including untracked files), with a file tree, unified/split toggle, syntax highlighting, and **inline comment threads** that persist, resolve, and can be sent to the agent as a composer attachment.
-- **Checks** tab (`⌘⇧K`): git ahead/behind + staged/unstaged/untracked, PR state with CI checks via `gh pr checks` data, PR comments, deployments, and a todo list. **Merge is gated** on approval + green checks + resolved comments + completed todos (with an explicit override).
-- **PR flow** (`⌘⇧P`): pushes the branch, lets Claude draft the title/body from the actual diff, `gh pr create`, polls checks, `gh pr merge`, then prompts to archive.
-- **Archive / History**: archived workspaces keep their worktree and chat; restore brings everything back. Hard delete runs `git worktree remove`.
-- **`.context/`** in every worktree (git-ignored via `.git/info/exclude`) for notes, attachments, and agent-to-agent handoffs — pasted images/large text and dropped files are saved there and referenced in prompts.
-- **`maestro-ask`**: an agent can pause and ask you a structured multiple-choice question, answered inline in the chat.
-- **Command palette** (`⌘K`), workspace switching (`⌘1..9`), live status dots (idle / running / needs-attention / reviewing), needs-attention banner, desktop notifications when an agent finishes in the background, and light / dark / **system** themes. Shortcuts use ⌘ on macOS and Ctrl on Windows/Linux.
-- **Dictation** (macOS only): an on-device speech-to-text button in the composer, backed by a bundled Swift helper (SFSpeechRecognizer). Hidden on other platforms.
-- **Auto-update**: packaged builds check for and download new releases in the background (electron-updater), with a progress toast.
-- **Conductor import**: migrate existing [Conductor](https://conductor.build) workspaces into Maestro.
-- **In-app "Sign in with GitHub"** (sidebar badge, onboarding banner, or Settings → Integrations): an OAuth device flow — enter a one-time code on github.com/login/device and Maestro finishes the rest. The token is handed to `gh auth login --with-token` (stored in gh's keyring, never by Maestro) and git's credential helper for github.com is pointed at gh, so `git push` and the whole PR pipeline work with one click. If the GitHub CLI isn't installed at all, Maestro downloads the official build to `~/maestro/tools/gh-cli` and uses that everywhere (it's also added to agent/script PATH).
-- **Remote SSH hosts**: open a folder on a remote machine (hosts are auto-detected from `~/.ssh/config` or added by hand) and every exec, spawn, pty, and filesystem operation for its workspaces runs on that server. Auth is SSH agent or an explicit key (passphrase prompted, never stored); host keys are TOFU-pinned on first connect, and `ProxyCommand`/`ProxyJump` are honored.
+## Why
+
+I kept running four agents in four terminal tabs and losing track of who was stuck, who was waiting on
+me, and which two were about to edit the same checkout. Maestro gives each one its own worktree so they
+never collide, and one window to hand out work and review what comes back.
+
+## How it works
+
+**1. Hand out tasks.** Describe a task and go. Each workspace is a fresh `git worktree` on its own
+branch, cut from the latest remote — so agents start clean and never step on each other.
+
+**2. Glance, don't babysit.** The rail shows who's working, who's waiting on you, and what's done, with
+a desktop notification when a background agent finishes. Run a second agent in the same workspace to
+review the first, or delegate scoped work to sub-agents.
+
+**3. Review and ship.** Read the diff, leave inline comments, ask for changes in the same chat, then
+push and open the PR without leaving the app.
+
+![The diff viewer with an inline comment thread](docs/images/diff.png)
+
+## Features
+
+**Workspaces**
+- Real `git worktree`s — one branch each, enforced by git; a name clash offers a `-2` suffix.
+- Also works on a plain folder (a single in-place workspace, no branches) or a repo on a **remote
+  machine over SSH** — every exec, pty, and file op then runs on that server.
+
+**Agents, your keys**
+- Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok Build, or a plain shell when you have no CLI.
+- Auth passes straight through to each CLI's own login; Maestro never stores model API keys.
+- Pick model and reasoning effort per chat. Claude Code is the most exercised harness.
+
+**One window to read, run, and review**
+- **Diff** (`⌘⇧D`) — worktree against the merge-base, file tree, split/unified, and comment threads
+  that persist and can be sent back to the agent.
+- **Terminal** — a real login shell (node-pty + xterm) in the worktree.
+- **Editor** (`⌘⇧E`) — Monaco with `⌘S` to save, notebooks included.
+- **Preview** (`⌘⇧B`) — an embedded browser on your dev server that both you and the agent can drive:
+  it navigates, screenshots, and reads the console; you annotate and send the page back.
+- **Checks** (`⌘⇧K`) — git ahead/behind, PR state and CI from `gh`, comments, deployments, and todos.
+  Merge is gated on approval + green checks + resolved comments + done todos, with an override.
+- **PR flow** (`⌘⇧P`) — push, draft the title and body from the real diff, `gh pr create`, poll checks,
+  merge, archive.
+
+**Around the app**
+- Command palette (`⌘K`), `⌘1`–`9` to switch workspaces, light / dark / system themes.
+- **Sign in with GitHub** in-app — a device flow that hands the token to `gh` (never stored by Maestro)
+  and installs the GitHub CLI for you if it's missing.
+- Dictation on macOS, one-click [Conductor](https://conductor.build) import, and background auto-update.
+- `maestro-ask` lets an agent pause and ask you a multiple-choice question, answered inline in the chat.
 
 ## Repo settings — `.maestro/settings.toml`
 
-Checked into the repo so the whole team shares them (Settings → Repository):
+Checked into the repo so the whole team shares them (or edit under Settings → Repository):
 
 ```toml
 [scripts]
-setup = "npm install && cp ~/secrets/.env .env"
-run = "npm run dev -- --port $WORKSPACE_PORT"
+setup = "npm install && cp ~/secrets/.env .env"   # runs on workspace creation
+run   = "npm run dev -- --port $WORKSPACE_PORT"    # each workspace gets its own port
 
 [project]
-instructions = """
-Durable guidance included in every agent session for this repo.
-"""
+instructions = "Durable guidance included in every agent session for this repo."
 ```
 
-Env injected into scripts, terminals and agents: `WORKSPACE_PORT`, `MAESTRO_WORKSPACE_NAME`, `MAESTRO_ROOT_PATH`, `MAESTRO_BRANCH`.
+Scripts, terminals, and agents get `WORKSPACE_PORT`, `MAESTRO_WORKSPACE_NAME`, `MAESTRO_ROOT_PATH`,
+and `MAESTRO_BRANCH` in their environment.
 
 ## Development
 
 ```bash
-npm install            # also rebuilds better-sqlite3 + node-pty for Electron
-npm run build          # renderer (vite) + main (esbuild) + native dictation helper (macOS)
-npm start              # launch the app
-npm run dev            # vite dev server + electron with HMR
-npm run dist           # unpacked app via electron-builder
-npm run dist:dmg       # macOS: .dmg
-npm run dist:win       # Windows: NSIS .exe installer (build on Windows)
-npm run dist:linux     # Linux: AppImage
+npm install       # also rebuilds better-sqlite3 + node-pty for Electron
+npm run dev       # vite dev server + electron with HMR
+npm start         # launch a production build
+npm run dist:dmg  # macOS .dmg   (dist:win / dist:linux for the others)
 ```
 
-Requirements: macOS, Windows 10/11, or Linux, and `git`. GitHub features need the GitHub CLI — either preinstalled or auto-downloaded by the in-app "Sign in with GitHub" flow. Each agent harness needs its own CLI installed (`claude`, `codex`, `cursor-agent`, `opencode`, `kimi`, or `grok`); the Shell fallback needs none.
+Needs `git`. GitHub features use the GitHub CLI (preinstalled or auto-downloaded by the sign-in flow),
+and each agent needs its own CLI (`claude`, `codex`, `cursor-agent`, `opencode`, `kimi`, or `grok`) —
+the shell fallback needs none.
 
-> **Building for Windows:** native modules (`better-sqlite3`, `node-pty`) can't be cross-compiled from macOS, so the Windows installer must be built on Windows. The `build-desktop` GitHub Actions workflow (`.github/workflows/build-desktop.yml`) does this on a `windows-latest` runner — trigger it from the Actions tab or by pushing a `v*` tag, then download the installer from the run's artifacts.
+> **Windows:** native modules can't be cross-compiled from macOS, so the installer is built on a
+> `windows-latest` runner by the `build-desktop` GitHub Actions workflow (trigger it, or push a `v*` tag).
 
 ### Tests
 
-Service-level end-to-end suite (real repos, worktrees, ptys, and optionally a live Claude call):
+An end-to-end suite drives real repos, worktrees, and ptys (add `--with-claude` for a live model call):
 
 ```bash
 npx esbuild scripts/e2e.ts --bundle --platform=node --format=cjs \
   --external:electron --external:better-sqlite3 --external:node-pty --outfile=dist/e2e.cjs
-ELECTRON_RUN_AS_NODE=1 npx electron dist/e2e.cjs [--with-claude]
+ELECTRON_RUN_AS_NODE=1 npx electron dist/e2e.cjs
 ```
 
-Process-launching invariants (`scripts/launch-probe.ts`, same build/run pattern): builds a fake npm-installed CLI in a
-temp dir — both `cmd-shim` shapes plus an unreadable batch file — and checks that argv survives byte-for-byte through
-`exec`, `spawnStream`, and a pty, that an `undefined` env value unsets a var, and that killing a child reaps its tree.
-Worth running on Windows after touching `src/main/launch.ts` or a host. `scripts/llm-probe.ts` makes one real (cheap)
-`generateText` call — the Status-tab digest path — against whichever agent CLI is installed.
-
-Live GitHub verification (`scripts/gh-e2e.ts`, same build/run pattern): starts a real device-flow session, exercises the
-post-approval path with the machine's existing gh token, then runs the whole PR pipeline against a throwaway private
-repo — create → clone → workspace → commit → push → PR → status → squash-merge — and cleans up.
-
-Headless UI smoke (launches the real app, captures a screenshot):
+Companion scripts under `scripts/` cover process launching (`launch-probe.ts` — worth running on
+Windows after touching `src/main/launch.ts`), the GitHub PR pipeline against a throwaway repo
+(`gh-e2e.ts`), and a headless UI smoke that screenshots the running app:
 
 ```bash
-npm run build && npx electron . --smoke --screenshot=/tmp/maestro.png [--smoke-actions=tab-diff]
+npm run build && npx electron . --smoke --screenshot=/tmp/maestro.png
 ```
 
 ## Architecture
 
 ```
-┌────────────────────────── Renderer (React 19 + Zustand) ─────────────────────────┐
-│ Sidebar · Chat/Composer · Terminal (xterm) · DiffViewer · Editor · Preview · Checks │
-└──────────────▲────────────────────────────────────────────────────────────────────┘
-               │ typed IPC (contextBridge → invoke/on, src/shared/types.ts)
-┌──────────────┴─────────────────── Main (Node) ───────────────────────────────┐
-│ git service (worktrees/diff/status)   pty service (node-pty pool + buffers)  │
-│ harness adapters (claude/codex/…)     github service (gh CLI)                │
-│ host layer (local · ssh2)             script runner (WORKSPACE_PORT)         │
-│ roles / preview / stt servers         better-sqlite3 (projects/ws/chats/…)   │
-│ fs watchers (dirty state, .context)   .maestro/settings.toml                 │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────── Renderer (React 19 + Zustand) ──────────────────────┐
+│ Sidebar · Chat · Terminal · Diff · Editor · Preview · Checks               │
+└───────────────▲───────────────────────────────────────────────────────────┘
+                │ typed IPC (contextBridge, src/shared/types.ts)
+┌───────────────┴──────────────────── Main (Node) ──────────────────────────┐
+│ git (worktrees/diff)   pty pool   harness adapters   github (gh CLI)       │
+│ host layer (local · ssh2)   script runner   better-sqlite3   fs watchers   │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Every exec/spawn/pty/fs primitive goes through a **host** — `LocalHost` (this machine) or an `SshHost` for remote projects — so the same services work locally or over SSH.
-- Workspaces live in `~/maestro/workspaces/<project>/<name>`; cloned repos in `~/maestro/repos`.
-- The DB is at `<userData>/maestro.db` — i.e. `~/Library/Application Support/Maestro/` (macOS), `%APPDATA%\Maestro\` (Windows), `~/.config/Maestro/` (Linux). Set `MAESTRO_DB_PATH` to override (used by tests).
-- Agent turns are persisted as structured blocks (text / thinking / tool + result), so history renders identically after restore.
+Every exec / spawn / pty / fs call goes through a **host** — `LocalHost` or an `SshHost` — so the same
+services run locally or over SSH. Workspaces live in `~/maestro/workspaces/<project>/<name>`; the DB is
+`maestro.db` under the platform's app-data dir (`MAESTRO_DB_PATH` overrides it). Agent turns are stored
+as structured blocks, so history renders identically after a restore.
 
-## Notes & limitations
+## Notes
 
-- Isolation is development-grade, not a security boundary — agents run with your local permissions (or, for remote projects, the SSH user's).
-- Claude Code is the most exercised harness. Codex, Cursor, OpenCode, Kimi Code, and Grok Build adapters are wired but lightly exercised; the Shell fallback guarantees a working loop without any agent CLI.
-- Dictation is macOS-only (on-device Swift helper); the mic button is hidden elsewhere.
-- Linear integration needs a personal API token (Settings → Integrations) and fetches issue title/description into the first prompt.
-- **Anonymous analytics**: packaged builds send anonymous usage events (a random per-install id — no account, prompts, repo names, or other PII) to PostHog to gauge how many people run Maestro. It is off in dev/unpackaged runs and off unless a real PostHog key is configured (`MAESTRO_POSTHOG_KEY` at build time); forks that set no key emit nothing.
+- Isolation is development-grade, not a security boundary — agents run with your local permissions
+  (or the SSH user's, for remote projects).
+- Dictation is macOS-only; the mic button is hidden elsewhere.
+- Packaged builds send two anonymous counts (an install id — no account, prompts, paths, or PII) to
+  gauge usage. It's off in dev and off unless a PostHog key is set at build time, so forks emit nothing.
 
 ## License
 
-Copyright (C) 2026 Maestro contributors.
-
-Licensed under the Business Source License 1.1 (BSL) — see [`LICENSE`](LICENSE).
-You may read, run, self-host, modify, and redistribute Maestro; you may not offer
-it to third parties on a hosted or embedded basis that competes with Maestro's
-products or services. Four years after a given version is released, that version
-converts to the Apache License 2.0.
+Copyright © 2026 Maestro contributors. Licensed under the
+[Business Source License 1.1](LICENSE): read, run, self-host, modify, and redistribute freely — you
+just can't offer Maestro to third parties as a competing hosted or embedded service. Four years after
+each version ships, it converts to Apache 2.0.

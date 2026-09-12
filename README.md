@@ -1,21 +1,30 @@
+<div align="center">
+
+<img src="docs/images/logo.png" width="92" alt="Maestro" />
+
 # Maestro
 
 **Run coding agents in parallel.** Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Grok Build,
-side by side — each in its own git worktree, on its own branch, with its own chat, terminal, and diff.
-A desktop app for macOS, Windows, and Linux, and an open clone of [Conductor](https://conductor.build).
+each in its own git worktree — on its own branch, with its own chat, terminal, and diff.
 
-![Maestro](docs/images/hero-light.png#gh-light-mode-only)
-![Maestro](docs/images/hero-dark.png#gh-dark-mode-only)
+[Download](https://maestro-build.com) · [Website](https://maestro-build.com) · [Why not Conductor?](https://maestro-build.com/maestro-vs-conductor)
 
 ![platforms](https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-lightgrey)
-![built with](https://img.shields.io/badge/Electron-React%2019-blue)
-![license](https://img.shields.io/badge/license-BSL%201.1-green)
+&nbsp;![built with](https://img.shields.io/badge/Electron-React%2019-blue)
+&nbsp;![license](https://img.shields.io/badge/license-BSL%201.1-green)
+
+<br />
+
+<img src="docs/images/demo.gif" width="880" alt="Typing a follow-up task, then switching to the diff to review the agent's changes" />
+
+</div>
 
 ## Why
 
 I kept running four agents in four terminal tabs and losing track of who was stuck, who was waiting on
 me, and which two were about to edit the same checkout. Maestro gives each one its own worktree so they
-never collide, and one window to hand out work and review what comes back.
+never collide, and one window to hand out work and review what comes back. It's an open clone of
+[Conductor](https://conductor.build) for macOS, Windows, and Linux.
 
 ## How it works
 
@@ -29,38 +38,53 @@ review the first, or delegate scoped work to sub-agents.
 **3. Review and ship.** Read the diff, leave inline comments, ask for changes in the same chat, then
 push and open the PR without leaving the app.
 
-![The diff viewer with an inline comment thread](docs/images/diff.png)
+## Read, run, and review in one window
 
-## Features
+Every workspace has a diff, a terminal, an editor, a preview, and a checklist behind the same tabs — so
+reviewing an agent never means alt-tabbing away to your own tools.
 
-**Workspaces**
-- Real `git worktree`s — one branch each, enforced by git; a name clash offers a `-2` suffix.
-- Also works on a plain folder (a single in-place workspace, no branches) or a repo on a **remote
-  machine over SSH** — every exec, pty, and file op then runs on that server.
+<div align="center">
+  <img src="docs/images/diff.png" width="820" alt="The diff viewer with a file tree, syntax-highlighted hunks, and an inline comment being sent back to the agent" />
+</div>
 
-**Agents, your keys**
-- Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok Build, or a plain shell when you have no CLI.
-- Auth passes straight through to each CLI's own login; Maestro never stores model API keys.
-- Pick model and reasoning effort per chat. Claude Code is the most exercised harness.
-
-**One window to read, run, and review**
-- **Diff** (`⌘⇧D`) — worktree against the merge-base, file tree, split/unified, and comment threads
-  that persist and can be sent back to the agent.
+- **Diff** (`⌘⇧D`) — worktree against the merge-base, file tree, split/unified, and comment threads that
+  persist and can be sent back to the agent.
 - **Terminal** — a real login shell (node-pty + xterm) in the worktree.
 - **Editor** (`⌘⇧E`) — Monaco with `⌘S` to save, notebooks included.
-- **Preview** (`⌘⇧B`) — an embedded browser on your dev server that both you and the agent can drive:
-  it navigates, screenshots, and reads the console; you annotate and send the page back.
+- **Preview** (`⌘⇧B`) — an embedded browser on your dev server that both you and the agent can drive: it
+  navigates, screenshots, and reads the console; you annotate the page and send it back.
 - **Checks** (`⌘⇧K`) — git ahead/behind, PR state and CI from `gh`, comments, deployments, and todos.
   Merge is gated on approval + green checks + resolved comments + done todos, with an override.
 - **PR flow** (`⌘⇧P`) — push, draft the title and body from the real diff, `gh pr create`, poll checks,
   merge, archive.
 
-**Around the app**
+## Agents, your keys
+
+- Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok Build, or a plain shell when you have no CLI.
+- Auth passes straight through to each CLI's own login; Maestro never stores model API keys.
+- Pick the model and reasoning effort per chat. Claude Code is the most exercised harness.
+- Coming from [Conductor](https://conductor.build)? One-click import brings your workspaces over.
+
+## Fits how you work
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/palette.png" alt="The command palette open with a search query" /></td>
+    <td width="50%"><img src="docs/images/hero-dark.png" alt="Maestro in dark theme" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Command palette — <code>⌘K</code> for anything</sub></td>
+    <td align="center"><sub>Light, dark, and system themes</sub></td>
+  </tr>
+</table>
+
 - Command palette (`⌘K`), `⌘1`–`9` to switch workspaces, light / dark / system themes.
 - **Sign in with GitHub** in-app — a device flow that hands the token to `gh` (never stored by Maestro)
   and installs the GitHub CLI for you if it's missing.
-- Dictation on macOS, one-click [Conductor](https://conductor.build) import, and background auto-update.
-- `maestro-ask` lets an agent pause and ask you a multiple-choice question, answered inline in the chat.
+- Work on a **remote machine over SSH** — open a folder on another host and every exec, pty, and file
+  op runs there. Or work on a plain folder with no branches at all.
+- Dictation on macOS, background auto-update, and `maestro-ask` — an agent can pause and ask you a
+  multiple-choice question, answered inline in the chat.
 
 ## Repo settings — `.maestro/settings.toml`
 

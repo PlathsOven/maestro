@@ -10,6 +10,7 @@ import SSHConfig from 'ssh-config';
 import { broadcast } from '../bus';
 import { Hosts } from '../db';
 import { stripNestedAgentVars } from '../env';
+import { backgroundFactor } from '../services/activity';
 import { dropRemoteBridge } from './bridge';
 import type {
   ExecHost,
@@ -937,9 +938,10 @@ export class SshHost implements ExecHost {
   };
 
   watch(root: string, onChange: () => void): () => void {
-    // Trigger-based poller (§6.8): every ~15s, ask whether any non-noisy file is
-    // newer than a sentinel; if so, fire and re-stamp. This backstops the
-    // turn-boundary ws:updated broadcasts the harness already emits.
+    // Trigger-based poller (§6.8): every ~15s (×4 while Maestro is in the
+    // background — perf-cpu-ram §4.6), ask whether any non-noisy file is newer
+    // than a sentinel; if so, fire and re-stamp. This backstops the turn-boundary
+    // ws:updated broadcasts the harness already emits.
     const sentinel = this.path.join(root, '.context', '.watch-sentinel');
     let stopped = false;
     void this.exec('sh', ['-lc', `mkdir -p ${shq(this.path.dirname(sentinel))}; : > ${shq(sentinel)}`]);
@@ -954,10 +956,24 @@ export class SshHost implements ExecHost {
         onChange();
       }
     };
-    const timer = setInterval(() => void tick(), WATCH_POLL_MS);
+    // Self-rearming (and never overlapping a slow `find`), so the delay picks up
+    // the current focus state on every tick.
+    let timer: NodeJS.Timeout | null = null;
+    const arm = () => {
+      timer = setTimeout(() => {
+        // A failed probe (channel dropped, host asleep) is just no news — the
+        // watch must keep running either way.
+        void tick()
+          .catch(() => {})
+          .finally(() => {
+            if (!stopped) arm();
+          });
+      }, WATCH_POLL_MS * backgroundFactor());
+    };
+    arm();
     return () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
   }
 

@@ -1,10 +1,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
-import { Asterisk, Bot, Check, ChevronDown, Cloud, ImageIcon, Laptop, Paperclip, X } from 'lucide-react';
+import { Check, ChevronDown, Cloud, ImageIcon, Laptop, Paperclip, X } from 'lucide-react';
+import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { tryInvoke } from '../lib/api';
 import { useApp, useActiveProject, useCaps, useShowPr } from '../store/app';
-import { EffortBars, EffortOptions, Kbd, Modal, PickerOption, Spinner, readFilesAsBase64, useFileDrop } from './common';
+import { EffortBars, EffortOptions, Modal, PickerOption, Spinner, readFilesAsBase64, useFileDrop } from './common';
 import { effortLevelsFor, useHarnessModels } from '../lib/harnessModels';
 import {
   effectiveCloudHostId,
@@ -187,20 +188,20 @@ export default function NewWorkspaceModal() {
     }
   };
 
-  const chip = 'btn btn-ghost h-6 gap-1 px-1.5 text-xs text-muted hover:text-fg';
+  const chip = 'btn btn-ghost h-8 gap-1.5 px-2.5 text-xs text-muted hover:text-fg';
 
   return (
     <Modal plain onClose={() => setModal(null)} width={680} onCmdEnter={() => void create()}>
       <div className="relative" {...dropProps}>
         {dragDepth > 0 && (
-          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-card border border-dashed border-accent bg-accent-soft/80 text-[13px] font-medium text-accent">
+          <div className="pointer-events-none absolute -inset-2 z-40 flex items-center justify-center rounded-[16px] border-2 border-dashed border-accent/50 bg-accent-tint text-[13px] font-medium text-accent backdrop-blur-sm">
             Drop images or files to attach
           </div>
         )}
       {/* header: project switcher · create-from */}
       <div className="-mt-1 flex items-center gap-2">
         <div className="relative">
-          <button className="flex items-center gap-2 rounded-ctl px-1.5 py-1 text-[15px] font-semibold hover:bg-accent-soft" onClick={() => setProjMenu((v) => !v)}>
+          <button className="-ml-2 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[17px] font-semibold tracking-tight hover:bg-accent-soft" onClick={() => setProjMenu((v) => !v)}>
             {project.name}
             <ChevronDown size={13} className="text-faint" />
           </button>
@@ -223,7 +224,7 @@ export default function NewWorkspaceModal() {
         </div>
         <div className="flex-1" />
         <div className="relative">
-          <button className="flex items-center gap-1.5 rounded-ctl px-2 py-1 text-[13px] text-muted hover:bg-accent-soft hover:text-fg" onClick={() => setFromMenu((v) => !v)}>
+          <button className="flex h-8 items-center gap-1.5 rounded-full bg-accent-soft px-3.5 text-xs font-medium text-muted hover:text-fg" onClick={() => setFromMenu((v) => !v)}>
             {fromMode === 'base' ? 'Create from…' : FROM_LABELS[fromMode]}
             <ChevronDown size={12} className="text-faint" />
           </button>
@@ -252,7 +253,7 @@ export default function NewWorkspaceModal() {
       {/* the task */}
       <textarea
         autoFocus
-        className="mt-3 w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-faint"
+        className="mt-4 w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-faint"
         rows={5}
         placeholder="What do you want to work on? (drag or paste to attach images)"
         value={prompt}
@@ -272,11 +273,11 @@ export default function NewWorkspaceModal() {
       {atts.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1.5">
           {atts.map((a, i) => (
-            <span key={i} className="flex items-center gap-1.5 rounded-ctl border bg-raised px-2 py-1 text-xs text-muted">
-              {a.kind === 'image' ? <ImageIcon size={12} className="text-accent" /> : <Paperclip size={12} />}
-              <span className="max-w-[160px] truncate">{a.name}</span>
+            <span key={i} className="flex h-7 items-center gap-1.5 rounded-full bg-accent-soft pl-2.5 pr-1 text-xs text-muted">
+              {a.kind === 'image' ? <ImageIcon size={12} /> : <Paperclip size={12} />}
+              <span className="max-w-[160px] truncate text-fg">{a.name}</span>
               <button
-                className="rounded p-0.5 text-faint hover:text-err"
+                className="flex h-5 w-5 items-center justify-center rounded-full text-faint hover:bg-accent-soft hover:text-err"
                 title="Remove attachment"
                 onClick={() => setAtts((cur) => cur.filter((_, j) => j !== i))}
               >
@@ -289,7 +290,7 @@ export default function NewWorkspaceModal() {
 
       {/* from picker when needed */}
       {fromMode !== 'base' && (
-        <div className="mb-1 mt-1">
+        <div className="mb-1 mt-2">
           {fromMode === 'branch' &&
             (branches === null ? (
               <Spinner />
@@ -336,10 +337,10 @@ export default function NewWorkspaceModal() {
       )}
 
       {/* bottom bar */}
-      <div className="mt-2 flex items-center gap-1.5">
+      <div className="mt-3 flex items-center gap-1">
         <div className="relative">
           <button className={chip} title="Model" onClick={() => setModelMenu((v) => !v)}>
-            <Asterisk size={13} className="text-accent" />
+            <HarnessLogo harness={harness} size={13} />
             {modelLabel}
           </button>
           {modelMenu && (
@@ -349,9 +350,9 @@ export default function NewWorkspaceModal() {
                 const hDefault = resolveDefaultModel(h.id, settings.defaultModels);
                 return (
                   <div key={h.id}>
-                    {gi > 0 && <div className="mx-2 my-1 border-t" />}
-                    <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-2xs font-semibold uppercase tracking-wide text-faint">
-                      <Bot size={11} className="shrink-0" />
+                    {gi > 0 && <div className="mx-2 my-1 border-t border-border/60" />}
+                    <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-xs font-medium text-faint">
+                      <HarnessLogo harness={h.id} size={12} />
                       <span className="truncate">{h.displayName}</span>
                       {!harnessReady(h) ? (
                         <span className="ml-auto font-normal normal-case">not installed</span>
@@ -414,7 +415,7 @@ export default function NewWorkspaceModal() {
 
         <div className="relative">
           <button className={chip} title="Agent harness" onClick={() => setHarnessMenu((v) => !v)}>
-            <Bot size={13} />
+            <HarnessLogo harness={harness} size={13} />
             {harnessLabel}
           </button>
           {harnessMenu && (
@@ -431,8 +432,11 @@ export default function NewWorkspaceModal() {
                     setHarnessMenu(false);
                   }}
                 >
-                  {h.displayName}
-                  {!h.installed && <span className="ml-auto text-2xs text-faint">not installed</span>}
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <HarnessLogo harness={h.id} size={13} />
+                    {h.displayName}
+                  </span>
+                  {!h.installed && <span className="ml-auto whitespace-nowrap text-2xs text-faint">not installed</span>}
                 </MenuRow>
               ))}
             </DownMenu>
@@ -444,7 +448,7 @@ export default function NewWorkspaceModal() {
         {cloudEligible && (
           <div className="relative">
             <button
-              className={clsx(chip, runHost && 'text-accent')}
+              className={clsx(chip, runHost && '!text-fg')}
               title={
                 runHost
                   ? `Runs on ${runHost.label} — keeps going when Maestro is closed`
@@ -496,7 +500,7 @@ export default function NewWorkspaceModal() {
         )}
 
         <button
-          className="flex items-center gap-2 rounded-ctl px-2 py-1 text-xs text-muted hover:text-fg"
+          className="flex h-8 items-center gap-2 rounded-full px-2.5 text-xs text-muted hover:bg-accent-soft hover:text-fg"
           title="Keep this dialog open to create several workspaces"
           onClick={() => setCreateMore((v) => !v)}
         >
@@ -511,13 +515,13 @@ export default function NewWorkspaceModal() {
           Create more
         </button>
 
-        <button className="btn btn-accent h-8 gap-2 px-3" disabled={busy} onClick={() => void create()}>
-          {busy ? <Spinner className="!text-white" /> : 'Create'}
-          <Kbd>⌘↵</Kbd>
+        <button className="btn btn-accent h-9 gap-2 pl-4 pr-3 text-[13px]" disabled={busy} onClick={() => void create()}>
+          {busy ? <Spinner className="!text-on-ink" /> : 'Create'}
+          <span className="rounded-md bg-on-ink/15 px-1.5 py-px text-2xs font-medium text-on-ink/80">⌘↵</span>
         </button>
       </div>
 
-      <p className="mt-2 text-2xs text-faint">
+      <p className="mt-3 text-2xs leading-relaxed text-faint">
         Creates an isolated worktree on a fresh branch from {fromMode === 'base' ? (project.baseBranch ?? 'main') : 'the selected source'} —
         the task is sent to {harnessLabel} once setup finishes.
       </p>
@@ -610,7 +614,7 @@ function DownMenu({
       <span ref={anchorRef} className="hidden" aria-hidden />
       {style &&
         createPortal(
-          <div ref={menuRef} className="glass fixed z-[60] overflow-y-auto py-1" style={style}>
+          <div ref={menuRef} data-motion="pop" className="glass fixed z-[60] overflow-y-auto p-1" style={style}>
             {children}
           </div>,
           document.body
@@ -633,12 +637,12 @@ function MenuRow({
   return (
     <button
       className={clsx(
-        'flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] hover:bg-accent-soft',
+        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] hover:bg-accent-soft',
         disabled && 'opacity-45'
       )}
       onClick={onClick}
     >
-      <span className="w-3.5 shrink-0">{checked && <Check size={12} className="text-accent" />}</span>
+      <span className="w-3.5 shrink-0">{checked && <Check size={12} className="text-fg" />}</span>
       {children}
     </button>
   );

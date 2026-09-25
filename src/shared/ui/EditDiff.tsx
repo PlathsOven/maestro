@@ -141,7 +141,7 @@ const MAX_ROWS = 400; // per hunk — keep a giant write from rendering thousand
 
 export function EditDiff({ diff }: { diff: BuiltDiff }) {
   return (
-    <div className="max-h-80 overflow-auto rounded-ctl border bg-bg">
+    <div className="max-h-80 overflow-auto rounded-lg border bg-canvas">
       {diff.sections.map((rows, si) => {
         const shown = rows.slice(0, MAX_ROWS);
         const hidden = rows.length - shown.length;

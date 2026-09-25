@@ -7,7 +7,7 @@ import { claudeDir } from '../harness/claude';
 import { codexDir } from '../harness/codex';
 import { findCodexRollout } from '../harnessFiles';
 import { summarizeBlocks } from '../../../shared/harness/blocks';
-import { foldClaudeLines, foldCodexLines, type ExternalTurn } from '../../../shared/harness/transcripts';
+import { foldClaudeLines, foldCodexLines, type ExternalTurn, type FoldCarry } from '../../../shared/harness/transcripts';
 import { liveElsewhere } from './live';
 import type { AgentBlock, ChatMessage, HarnessSyncApp, Workspace } from '../../../shared/types';
 
@@ -29,10 +29,26 @@ interface LiveState {
 const liveStates = new Map<string, LiveState>();
 const chatKey = (wsId: string, agentId: number) => `${wsId}:${agentId}`;
 
+/** Per-chat fold carry for the open turn (perf-cpu-ram §4.5.1): the fold state as
+ *  of byte `foldedTo`, so a live re-ingest reads and parses only what the harness
+ *  appended since instead of re-folding the turn from the cursor every ~400 ms.
+ *  Valid only for the `(file, cursor)` it was built from and while the file only
+ *  grows; the persisted cursor is untouched by it, so a restart still replays the
+ *  open turn from its first line (harness-chat-sync §6.3). */
+interface LiveFold {
+  file: string;
+  cursor: number;
+  foldedTo: number;
+  carry: FoldCarry;
+}
+const liveFolds = new Map<string, LiveFold>();
+
 /** Drop the in-memory streaming state for a chat (turn boundary / cursor
  *  fast-forward). */
 export function resetLiveState(wsId: string, agentId: number): void {
-  liveStates.delete(chatKey(wsId, agentId));
+  const key = chatKey(wsId, agentId);
+  liveStates.delete(key);
+  liveFolds.delete(key);
 }
 
 function idFor(app: HarnessSyncApp, turnId: string, side: 'u' | 'a'): string {
@@ -57,6 +73,14 @@ function resolveFile(app: HarnessSyncApp, sessionId: string): string | null {
   return null;
 }
 
+let bytesRead = 0;
+
+/** Test hook (perf-cpu-ram §6.4): total bytes `readWindow` has pulled off disk,
+ *  so the e2e can assert that re-ingesting a growing turn costs only its delta. */
+export function ingestBytesRead(): number {
+  return bytesRead;
+}
+
 function readWindow(file: string, from: number, to: number): string {
   const len = to - from;
   const buf = Buffer.alloc(len);
@@ -64,6 +88,7 @@ function readWindow(file: string, from: number, to: number): string {
   try {
     fd = fs.openSync(file, 'r');
     const n = fs.readSync(fd, buf, 0, len, from);
+    bytesRead += n;
     return buf.slice(0, n).toString('utf8');
   } finally {
     if (fd !== null) {
@@ -83,8 +108,8 @@ function splitLines(chunk: string): { lines: string[]; bytes: number[] } {
   return { lines: parts, bytes: parts.map((l) => Buffer.byteLength(l, 'utf8') + 1) };
 }
 
-function fold(app: HarnessSyncApp, lines: string[]) {
-  return app === 'codex' ? foldCodexLines(lines) : foldClaudeLines(lines);
+function fold(app: HarnessSyncApp, lines: string[], carry?: FoldCarry) {
+  return app === 'codex' ? foldCodexLines(lines, carry) : foldClaudeLines(lines, carry);
 }
 
 /** Insert (idempotently) the rows for a finished turn and update chat/workspace
@@ -204,16 +229,24 @@ export async function ingest(ws: Workspace, agentId: number, opts?: { live?: boo
     return;
   }
   const size = stat.size;
+  const key = chatKey(ws.id, agentId);
   let cursor = m.cursor;
   if (size < cursor) cursor = 0; // truncated / rewritten — replay (idempotent ids)
-  if (size <= cursor) return;
 
-  const chunk = readWindow(file, cursor, size);
+  // Resume the open turn from the carry when it still describes this transcript
+  // and cursor and the file only grew — then the window is just the new bytes.
+  // Taken out of the map up front: it is re-armed below only after a clean fold,
+  // so a throw mid-fold can never leave a half-applied accumulator behind.
+  const prior = liveFolds.get(key);
+  liveFolds.delete(key);
+  const resume = opts?.live && prior && prior.file === file && prior.cursor === cursor && size >= prior.foldedTo ? prior : null;
+  const from = resume ? resume.foldedTo : cursor;
+  if (size <= from) return;
+
+  const chunk = readWindow(file, from, size);
   const { lines, bytes } = splitLines(chunk);
   if (!lines.length) return;
-  const result = fold(app, lines);
-
-  const key = chatKey(ws.id, agentId);
+  const result = fold(app, lines, resume?.carry);
 
   // Closed turns are settled: persist the external ones (Maestro's own are
   // by:'maestro' and skipped), and reset streaming state since a new turn began.
@@ -231,10 +264,16 @@ export async function ingest(ws: Workspace, agentId: number, opts?: { live?: boo
   }
 
   // Advance the cursor past every settled (closed) line; the open turn stays so a
-  // restart replays it from its start.
+  // restart replays it from its start. A resumed fold whose carried turn is still
+  // open settled nothing, so the cursor doesn't move at all (its window began
+  // mid-turn, past the line the cursor points at).
   let advance = 0;
   for (let i = 0; i < result.consumed && i < bytes.length; i++) advance += bytes[i];
-  const newCursor = cursor + advance;
+  const carried = !!resume && result.open?.id === resume.carry.turn.id;
+  const newCursor = carried ? cursor : from + advance;
+  // End of the last COMPLETE line read: where a resumed read starts next time (a
+  // trailing partial line is deliberately re-read).
+  const foldedTo = from + bytes.reduce((n, b) => n + b, 0);
 
   if (result.open) {
     // Open-turn timeout: a process killed mid-turn leaves an unclosed tail. If the
@@ -253,6 +292,8 @@ export async function ingest(ws: Workspace, agentId: number, opts?: { live?: boo
       liveStates.set(key, st);
     }
     streamOpen(ws, agentId, app, result.open, st);
+    // Re-arm the carry so the next tick folds only what lands after this window.
+    if (result.carry) liveFolds.set(key, { file, cursor: newCursor, foldedTo, carry: result.carry });
   }
 
   // Codex has no live registry: an open turn on a rollout touched in the last 5
@@ -265,5 +306,9 @@ export async function ingest(ws: Workspace, agentId: number, opts?: { live?: boo
     if (!!nextEl !== !!curEl) Workspaces.patchChat(ws.id, agentId, { externalLive: nextEl });
   }
 
-  Workspaces.patchChat(ws.id, agentId, { mirror: { ...m, file, cursor: newCursor } });
+  // Only write when the mirror actually moved: an open turn parks the cursor for
+  // its whole life, and patchChat is a DB write plus a broadcast every tick.
+  if (newCursor !== m.cursor || file !== m.file) {
+    Workspaces.patchChat(ws.id, agentId, { mirror: { ...m, file, cursor: newCursor } });
+  }
 }

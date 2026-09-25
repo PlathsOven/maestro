@@ -162,13 +162,13 @@ function Overlay({ a }: { a: AnnotateState }) {
       </div>
 
       {/* floating tool + action bar */}
-      <div className="glass fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 p-1">
+      <div className="glass fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 !rounded-full p-1.5">
         {TOOLS.map((t) => (
           <button
             key={t.id}
             className={clsx(
-              'flex items-center gap-1 rounded-ctl px-2 py-1 text-xs font-medium transition-colors',
-              tool === t.id ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg'
+              'flex h-7 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors',
+              tool === t.id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft/60 hover:text-fg'
             )}
             title={t.label}
             onClick={() => setTool(t.id)}
@@ -179,10 +179,10 @@ function Overlay({ a }: { a: AnnotateState }) {
         ))}
         <div className="mx-1 h-5 w-px bg-border" />
         <span className="px-1 text-2xs text-faint">{items.length} mark{items.length === 1 ? '' : 's'}</span>
-        <button className="btn btn-ghost h-7 px-2 text-xs" onClick={() => useApp.getState().cancelAnnotate()}>
+        <button className="btn btn-ghost h-7 px-3 text-xs" onClick={() => useApp.getState().cancelAnnotate()}>
           Cancel
         </button>
-        <button className="btn btn-accent h-7 gap-1.5 px-2.5 text-xs disabled:opacity-40" disabled={!items.length} onClick={() => void send()}>
+        <button className="btn btn-accent h-7 gap-1.5 px-3 text-xs disabled:opacity-40" disabled={!items.length} onClick={() => void send()}>
           <Send size={12} /> Send to agent
         </button>
       </div>
@@ -206,10 +206,10 @@ function NotePopover({
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
   return (
-    <div className="glass absolute left-3 top-3 z-50 w-64 p-2.5" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="glass absolute left-3 top-3 z-50 w-64 p-3" onPointerDown={(e) => e.stopPropagation()}>
       {item.selector ? (
         <button
-          className="mb-2 flex max-w-full items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs text-accent"
+          className="mb-2 flex max-w-full items-center gap-1 rounded-full bg-accent-tint px-2 py-0.5 text-2xs text-accent"
           title={`Matched ${item.selector} — click to clear a wrong match`}
           onClick={onClearMatch}
         >
@@ -232,11 +232,11 @@ function NotePopover({
           }
         }}
       />
-      <div className="mt-1.5 flex items-center justify-between">
+      <div className="mt-2 flex items-center justify-between">
         <button className="flex items-center gap-1 text-2xs text-faint hover:text-err" onClick={onDelete}>
           <Trash2 size={11} /> Delete
         </button>
-        <button className="btn btn-ghost h-5 px-1.5 text-2xs" onClick={onClose}>
+        <button className="btn btn-ghost h-6 px-2.5 text-2xs" onClick={onClose}>
           Done
         </button>
       </div>

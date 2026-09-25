@@ -281,5 +281,10 @@ async function main() {
 
 main().catch((e) => {
   console.error('CLOUD_E2E_FAIL', e);
+  // A failed run must not leave box loops behind holding a deleted temp home
+  // (perf-cpu-ram §4.8) — the success path does the same below.
+  try {
+    execSync(`pkill -f maestro-drain 2>/dev/null; pkill -f maestro-sync 2>/dev/null; true`);
+  } catch {}
   process.exit(1);
 });

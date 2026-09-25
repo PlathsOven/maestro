@@ -36,6 +36,10 @@ export interface SpawnOpts {
  * local pipe or an SSH channel.
  */
 export interface HostChild {
+  /** OS process id when the child is a process on THIS machine (LocalHost);
+   *  undefined for an SSH channel, a k8s exec or a journal replay. The memory
+   *  guard uses it to find the turn's process tree (services/memguard). */
+  readonly pid?: number;
   /** readline over stdout — the JSON-adapter path */
   onStdoutLine(cb: (line: string) => void): void;
   /** raw stdout chunks — the non-JSON adapter path */

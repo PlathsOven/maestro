@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { Asterisk, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, Waypoints } from 'lucide-react';
+import { Pencil, Plus, RotateCcw, Trash2, Waypoints } from 'lucide-react';
 import { useApp } from '../store/app';
+import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { EffortBars, PickerOption, RenameInput, useDismissFromParent } from './common';
 import { effortLevelsFor, useHarnessModels, type EffectiveModels } from '../lib/harnessModels';
+import { Chevron } from '../../shared/ui/primitives';
 import {
   BUILTIN_SPECIALIST_ROLES,
   HARNESS_DISPLAY,
@@ -44,7 +46,7 @@ function Switch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
       className={clsx('relative h-4 w-7 shrink-0 rounded-full transition-colors', on ? 'bg-accent' : 'bg-border')}
     >
       <span
-        className={clsx('absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all', on ? 'left-[14px]' : 'left-0.5')}
+        className={clsx('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-all', on ? 'left-[14px]' : 'left-0.5')}
       />
     </button>
   );
@@ -66,8 +68,8 @@ function Chip({
     <button
       onClick={onClick}
       className={clsx(
-        'flex h-6 shrink-0 items-center gap-1 rounded-ctl border px-1.5 text-2xs transition-colors hover:border-accent/50',
-        active ? 'border-accent/60 text-fg' : 'bg-raised text-muted'
+        'flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-2xs transition-colors',
+        active ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
       )}
     >
       {icon}
@@ -82,7 +84,8 @@ function InstrArea({ value, onSave }: { value: string; onSave: (v: string) => vo
   useEffect(() => setDraft(value), [value]);
   return (
     <textarea
-      className="mt-1 ml-8 w-[calc(100%-2rem)] resize-y rounded-ctl border bg-raised px-2 py-1.5 text-2xs leading-relaxed outline-none focus:border-accent/60"
+      data-motion="collapse"
+      className="mt-1.5 ml-8 w-[calc(100%-2rem)] resize-y rounded-lg border bg-raised px-2.5 py-2 text-2xs leading-relaxed outline-none transition-colors focus:border-faint"
       rows={4}
       value={draft}
       spellCheck={false}
@@ -98,7 +101,7 @@ function InstrArea({ value, onSave }: { value: string; onSave: (v: string) => vo
  * same up-popover style as the model/effort menus. One row per agent: the
  * orchestrator (its model/effort mirror the chat's own composer chips) plus each
  * specialist, with an enable toggle, an inline-renamable label, model + effort
- * mini-pickers (the same Asterisk / EffortBars icons as the composer), a
+ * mini-pickers (the same harness-logo / EffortBars icons as the composer), a
  * collapsible instruction editor, and add/delete for a modular, user-editable
  * stack. Replaces the old full-screen roles modal.
  */
@@ -237,7 +240,7 @@ export default function RolesMenu({
     return (
       <div className="flex shrink-0 items-center gap-1">
         <Chip
-          icon={<Asterisk size={11} className="text-accent" />}
+          icon={<HarnessLogo harness={curModel(id).harness} size={11} />}
           label={modelChipLabel(id)}
           active={picker?.role === id && picker.kind === 'model'}
           onClick={() => setPicker((p) => (p?.role === id && p.kind === 'model' ? null : { role: id, kind: 'model' }))}
@@ -258,14 +261,14 @@ export default function RolesMenu({
   const pickers = (id: string) => (
     <>
       {picker?.role === id && picker.kind === 'model' && (
-        <div className="mt-1 ml-8 max-h-52 overflow-y-auto rounded-ctl border bg-raised py-1">
+        <div className="mt-1.5 ml-8 max-h-52 overflow-y-auto rounded-card bg-raised py-1 shadow-sm ring-1 ring-inset ring-border">
           {modelOptions(id).map((m) => {
             const gone = installed.find((i) => i.id === m.harness)?.installed === false;
             return (
               <PickerOption
                 key={m.harness + ':' + m.model}
                 label={m.label + (gone ? ' (not installed)' : '')}
-                icon={<Asterisk size={12} className="text-accent" />}
+                icon={<HarnessLogo harness={m.harness} size={12} />}
                 selected={curModel(id).harness === m.harness && curModel(id).model === m.model}
                 isDefault={false}
                 showStar={false}
@@ -278,7 +281,7 @@ export default function RolesMenu({
         </div>
       )}
       {picker?.role === id && picker.kind === 'effort' && (
-        <div className="mt-1 ml-8 rounded-ctl border bg-raised py-1">
+        <div className="mt-1.5 ml-8 rounded-card bg-raised py-1 shadow-sm ring-1 ring-inset ring-border">
           {roleEffortLevels(id).map((e) => (
             <PickerOption
               key={e.id}
@@ -300,10 +303,10 @@ export default function RolesMenu({
   const instructions = (id: string) => (
     <>
       <button
-        className="mt-1 ml-8 flex items-center gap-1 text-2xs text-faint transition-colors hover:text-muted"
+        className="ml-[26px] mt-1 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-2xs text-faint transition-colors hover:bg-accent-soft hover:text-muted"
         onClick={() => setInstr((v) => (v === id ? null : id))}
       >
-        {instr === id ? <ChevronDown size={11} /> : <ChevronRight size={11} />} Instructions
+        <Chevron open={instr === id} size={11} /> Instructions
       </button>
       {instr === id && <InstrArea value={roles[id].md} onSave={(md) => patchRole(id, { md })} />}
     </>
@@ -334,22 +337,23 @@ export default function RolesMenu({
   return (
     <div
       ref={ref}
-      className="glass absolute bottom-full left-0 z-40 mb-1.5 max-h-[72vh] w-[360px] overflow-y-auto p-1.5"
+      data-motion="pop-up"
+      className="glass absolute bottom-full left-0 z-40 mb-2 max-h-[72vh] w-[360px] overflow-y-auto p-1.5"
     >
-      <div className="px-1.5 pb-1 pt-0.5 text-2xs text-faint">
+      <div className="px-2 pb-1.5 pt-1 text-2xs leading-relaxed text-faint">
         Toggle a specialist on to orchestrate this chat — the orchestrator delegates to it. Models &amp; names are saved
         globally; toggles are per-chat.
       </div>
 
       {/* Orchestrator — the chat itself; model/effort are the composer's own. */}
-      <div className="rounded-ctl px-1.5 py-1.5">
+      <div className="rounded-lg px-2 py-1.5">
         <div className="flex items-center gap-2">
-          <Waypoints size={15} className="shrink-0 text-accent" />
+          <Waypoints size={15} className="shrink-0 text-muted" />
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             {nameCell(ORCHESTRATOR)}
             {noneOn && (
               <span
-                className="shrink-0 rounded-full border border-warn px-1 text-[9px] leading-4 text-warn"
+                className="shrink-0 rounded-full bg-warn/10 px-1.5 text-[10px] leading-4 text-warn"
                 title="Enable a specialist to activate the orchestrator"
               >
                 Inactive
@@ -362,20 +366,20 @@ export default function RolesMenu({
         {instructions(ORCHESTRATOR)}
       </div>
 
-      <div className="my-1 border-t" />
+      <div className="mx-2 my-1 border-t" />
 
       {/* Specialists — built-ins and user-added are identical: all renamable,
           editable, and deletable ("Reset to defaults" restores the built-ins). */}
       {specialists.map((id) => {
         const on = enabled.includes(id);
         return (
-          <div key={id} className={clsx('rounded-ctl px-1.5 py-1.5 transition-colors', on && 'bg-accent-soft/25')}>
+          <div key={id} className={clsx('rounded-lg px-2 py-1.5 transition-colors', on && 'bg-accent-soft/50')}>
             <div className="flex items-center gap-2">
               <Switch on={on} onChange={(v) => toggle(id, v)} />
               <div className="min-w-0 flex-1">{nameCell(id)}</div>
               {chips(id)}
               <button
-                className="shrink-0 rounded p-1 text-faint transition-colors hover:text-err"
+                className="shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-err"
                 title="Delete role"
                 onClick={() => deleteRole(id)}
               >
@@ -390,13 +394,16 @@ export default function RolesMenu({
 
       <button
         onClick={addRole}
-        className="mt-0.5 flex w-full items-center gap-1.5 rounded-ctl px-2 py-1.5 text-xs text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+        className="mt-0.5 flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:bg-accent-soft hover:text-fg"
       >
         <Plus size={13} /> Add role
       </button>
 
-      <div className="mt-1 flex items-center border-t px-1.5 pt-1.5">
-        <button className="flex items-center gap-1 text-2xs text-faint transition-colors hover:text-muted" onClick={reset}>
+      <div className="mx-0.5 mt-1 flex items-center border-t pt-1">
+        <button
+          className="flex items-center gap-1 rounded-full px-1.5 py-1 text-2xs text-faint transition-colors hover:bg-accent-soft hover:text-muted"
+          onClick={reset}
+        >
           <RotateCcw size={11} /> Reset to defaults
         </button>
       </div>

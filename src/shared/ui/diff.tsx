@@ -1,9 +1,9 @@
 'use client';
 import React, { useState } from 'react';
 import clsx from 'clsx';
-import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { DiffFile, DiffLine } from '../types';
 import { highlightLine, langForPath, fmtStat } from './format';
+import { Chevron } from './primitives';
 
 /**
  * Diff renderer (web-desktop-parity spec §10.4), shared so the web's Diff view
@@ -111,10 +111,10 @@ function FileDiffCard({
   const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/') + 1) : '';
   const base = file.path.slice(file.path.lastIndexOf('/') + 1);
   return (
-    <div className="rounded-card border" data-diff-file={file.path}>
-      <button className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={12} className="shrink-0 text-faint" /> : <ChevronRight size={12} className="shrink-0 text-faint" />}
-        <span className={clsx('shrink-0 font-mono text-2xs font-semibold', glyph.cls)}>{glyph.ch}</span>
+    <div className="overflow-hidden rounded-card border bg-raised" data-diff-file={file.path}>
+      <button className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent-soft" onClick={() => setOpen(!open)}>
+        <Chevron open={open} size={12} className="text-faint" />
+        <span className={clsx('shrink-0 font-mono text-2xs font-medium', glyph.cls)}>{glyph.ch}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-2xs">
           {dir && <span className="text-faint">{dir}</span>}
           <span>{base}</span>
@@ -122,7 +122,7 @@ function FileDiffCard({
         <StatBadge add={file.additions} del={file.deletions} />
       </button>
       {open && (
-        <div className="overflow-x-auto border-t">
+        <div data-motion="collapse" className="overflow-x-auto border-t">
           {file.status === 'binary' ? (
             <div className="px-3 py-2 text-2xs text-muted">Binary file</div>
           ) : large && !expandLarge ? (
@@ -147,8 +147,8 @@ function FileDiffCard({
             </table>
           )}
           {commenting && onAddComment && (
-            <div className="border-t p-2">
-              <div className="mb-1 text-2xs text-faint">Comment on line {commenting.line}</div>
+            <div className="border-t p-3">
+              <div className="mb-1.5 text-2xs text-faint">Comment on line {commenting.line}</div>
               <textarea
                 className="input text-xs"
                 rows={2}
@@ -157,12 +157,12 @@ function FileDiffCard({
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
               />
-              <div className="mt-1 flex justify-end gap-2">
-                <button className="btn h-6 px-2 text-2xs" onClick={() => setCommenting(null)}>
+              <div className="mt-2 flex justify-end gap-2">
+                <button className="btn btn-ghost h-6 px-2.5 text-2xs" onClick={() => setCommenting(null)}>
                   Cancel
                 </button>
                 <button
-                  className="btn btn-accent h-6 px-2 text-2xs"
+                  className="btn btn-accent h-6 px-2.5 text-2xs"
                   disabled={!commentText.trim()}
                   onClick={() => {
                     onAddComment(file.path, commenting.line, commenting.side, commentText.trim());
@@ -234,8 +234,8 @@ export function DiffView({
 }) {
   if (files.length === 0) {
     return (
-      <div className="p-6 text-center">
-        <div className="text-sm font-medium">Working tree matches the base branch</div>
+      <div className="px-6 py-10 text-center">
+        <div className="text-sm font-semibold tracking-tight">Working tree matches the base branch</div>
         <div className="mt-1 text-xs text-muted">No differences between this workspace and {emptyBase || base || 'base'}.</div>
       </div>
     );
@@ -243,8 +243,8 @@ export function DiffView({
   const add = files.reduce((n, f) => n + f.additions, 0);
   const del = files.reduce((n, f) => n + f.deletions, 0);
   return (
-    <div className="space-y-2 p-3">
-      <div className="flex items-center gap-2 px-1 font-mono text-2xs text-muted">
+    <div className="space-y-2.5 p-3">
+      <div className="flex items-center gap-2.5 px-1.5 font-mono text-2xs text-muted">
         <span>
           {files.length} file{files.length === 1 ? '' : 's'}
         </span>

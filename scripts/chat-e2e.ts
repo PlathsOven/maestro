@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { resolveShellEnv } from '../src/main/env';
-import { initDb, Messages, Workspaces } from '../src/main/db';
+import { initDb, Messages, Workspaces, now, uid } from '../src/main/db';
 import { setWindow } from '../src/main/bus';
 import { addProject, createWorkspace } from '../src/main/services/workspaces';
 import { sendChat } from '../src/main/services/chat';
@@ -185,6 +185,30 @@ async function main() {
     'queue drained broadcast',
     events.some((e) => e.channel === 'chat:queue' && (e.payload as any).items.length === 0)
   );
+
+  // --- 2c. a web-queued message keeps its id when it drains (no ghost/dup) ---
+  // Mirrors the web path: applyWebUserMessage inserts a queued placeholder keyed by
+  // the relay's messageId, then the bridge calls sendChat with that same id. While a
+  // turn runs the send is queued (preserving the id); when it drains the final user
+  // row reuses the id — replacing the placeholder instead of duplicating it (§7.4).
+  events.length = 0;
+  const ws2c = await provisionedWorkspace(project.id, 'shell');
+  const webId = uid();
+  const webTurn = uid();
+  await sendChat({ workspaceId: ws2c.id, agentId: 1, text: 'echo LEAD && sleep 2', attachments: [] });
+  // The placeholder the relay's message-queued event would have inserted.
+  Messages.insert({ id: webId, workspaceId: ws2c.id, agentId: 1, role: 'user', content: 'echo WEBQ', attachments: [], ts: now(), meta: { queued: true, origin: 'web' } });
+  const sWeb = await sendChat({ workspaceId: ws2c.id, agentId: 1, text: 'echo WEBQ', id: webId, turnId: webTurn, origin: 'web' });
+  check('web-origin send queued behind the running turn', sWeb.ok === true && sWeb.queued === true, JSON.stringify(sWeb));
+  await waitFor(
+    () => runningAgents(ws2c.id).length === 0 && Messages.list(ws2c.id).filter((m) => m.role === 'agent').length >= 2,
+    30_000,
+    'web-queued turn to run'
+  );
+  const webUserRows = Messages.list(ws2c.id).filter((m) => m.role === 'user' && m.id === webId);
+  check('web-queued user row keeps its id (no duplicate)', webUserRows.length === 1, `${webUserRows.length} rows with id`);
+  check('drained web-queued row is no longer marked queued', webUserRows[0] && !webUserRows[0].meta?.queued, JSON.stringify(webUserRows[0]?.meta));
+  check('web-queued row keeps origin web', webUserRows[0]?.meta?.origin === 'web', JSON.stringify(webUserRows[0]?.meta));
 
   // --- 3. empty base branch → explanatory system message ---
   makeRepo(path.join(ROOT, 'empty-repo'), { empty: true });

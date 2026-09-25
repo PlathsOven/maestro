@@ -148,6 +148,16 @@ function main() {
     check(`${harness}: produced blocks`, a.blocks.length > 0, `${a.blocks.length}`);
   }
 
+  // A sub-agent's lines (`parent_tool_use_id`) never enter the parent's turn —
+  // the fixture above carries a sub-agent text, tool call and result, and none
+  // of them may surface as a block, context or usage (fan-out-turn-oom.md §3).
+  {
+    const claude = desktopPath('claude-code', fs.readFileSync(path.join(FIX, 'claude-code.jsonl'), 'utf8').split('\n'), 0);
+    const leaked = claude.blocks.filter((b) => (b.type === 'tool' && b.id.startsWith('sub-')) || (b.type === 'text' && /sub-agent/.test(b.text)));
+    check('claude-code: sub-agent lines stay out of the parent turn', leaked.length === 0 && claude.blocks.length === 4, `${claude.blocks.length} blocks, ${leaked.length} leaked`);
+    check('claude-code: sub-agent usage does not count as the parent context', claude.contextTokens === 172, `${claude.contextTokens}`);
+  }
+
   // Interrupted-turn meta: a non-zero exit with no parsed done → error + attention.
   const interrupted = finalizeMeta(newTurnState(), 137);
   check(

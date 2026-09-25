@@ -8,6 +8,7 @@ import { harnessKeyEnv } from './harness/auth';
 import { harnessLoginEnv } from './harness/logins';
 import { applyBlockEvent, finalizeBlocks, newBlockStream, snapshotBlocks } from './harness/stream';
 import { wireAdapterStream } from './harness/adapter';
+import { trackTurnProcess } from './memguard';
 import {
   HARNESS_PLAN_MODE,
   ORCHESTRATOR,
@@ -21,6 +22,9 @@ import {
 /** Live specialist runs, keyed by run id, so a stopped/quit orchestrator can
  *  kill the sub-agents it was waiting on. */
 const subRuns = new Map<string, { workspaceId: string; parentAgentId: number; stop: () => void }>();
+
+/** Slowest a live specialist run re-broadcasts its (whole) trace. */
+const UPDATE_MS = 150;
 
 /** Kill matching specialist runs. workspaceId null = all (app quit); agentId
  *  null = every agent in the workspace. */
@@ -126,17 +130,32 @@ export function runRole(req: {
     let stopped = false;
     let stderrTail = '';
     let lastBroadcast = 0;
+    let queued: NodeJS.Timeout | null = null;
 
-    const pushUpdate = (force: boolean) => {
-      const t = Date.now();
-      if (!force && t - lastBroadcast < 150) return;
-      lastBroadcast = t;
+    // Every update carries the specialist's whole trace, so a tool-heavy run used
+    // to structured-clone the transcript to the renderer per tool call. Trailing
+    // edge throttle for ALL event kinds (perf-cpu-ram §4.7): at most one
+    // broadcast per UPDATE_MS, and the last state is never dropped — a pending one
+    // fires on the trailing edge, and `finish` supersedes it with the final run.
+    const flush = () => {
+      queued = null;
+      if (done) return; // the terminal broadcast already carries these blocks
+      lastBroadcast = Date.now();
       broadcast('subagent:updated', { ...record, status: 'running', blocks: snapshotBlocks(stream) });
+    };
+
+    const pushUpdate = () => {
+      if (queued) return;
+      const wait = UPDATE_MS - (Date.now() - lastBroadcast);
+      if (wait <= 0) flush();
+      else queued = setTimeout(flush, wait);
     };
 
     const finish = (status: 'done' | 'error', d: { error?: string; costUsd?: number; durationMs?: number }) => {
       if (done) return;
       done = true;
+      if (queued) clearTimeout(queued);
+      queued = null;
       subRuns.delete(runId);
       const blocks = finalizeBlocks(stream);
       const final: SubagentRun = {
@@ -169,14 +188,16 @@ export function runRole(req: {
       // die with its own process, and it has no later turn to report them to. A
       // `limit` is bookkeeping too — specialists don't rotate, so it's ignored.
       if (ev.kind === 'session' || ev.kind === 'context' || ev.kind === 'task' || ev.kind === 'limit') return;
-      // Broadcast on block-completing events immediately; coalesce text deltas.
-      if (applyBlockEvent(stream, ev)) pushUpdate(ev.kind !== 'seg-delta');
+      if (applyBlockEvent(stream, ev)) pushUpdate();
     };
 
     // Specialists run on the workspace's host — same machine as the orchestrator
     // that delegated to them, so cwd and code stay together (§6.7).
     const host = hostForWorkspace(ws);
     const child: HostChild = host.spawnStream(cmd.cmd, cmd.args, { cwd: ws.worktreePath, env: spawnEnv });
+    // A specialist's process tree is guarded like its orchestrator's, and a kill
+    // is reported in the orchestrator's chat (services/memguard).
+    const untrack = trackTurnProcess(child.pid, { workspaceId: ws.id, agentId: parentAgentId });
 
     subRuns.set(runId, {
       workspaceId: ws.id,
@@ -197,6 +218,7 @@ export function runRole(req: {
     });
 
     child.onClose((code) => {
+      untrack();
       // Raw adapters never emit 'done' — synthesize it from the exit code.
       if (done) return;
       onEvent({

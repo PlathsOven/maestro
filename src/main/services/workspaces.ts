@@ -12,11 +12,14 @@ import { catchUpWorkspace } from './cloud';
 import { readRepoSettings } from './settingsToml';
 import { runSetupAndWait } from './scripts';
 import { stopWorkspaceAgents, runningAgents } from './harness';
+import { forgetWorkspaceTasks } from './harness/tasks';
 import { killWorkspacePtys } from './pty';
 import { destroyPreview } from './preview';
 import { unwatchPort } from './portwatch';
 import { watchWorkspace, unwatchWorkspace } from './watcher';
 import { ensureShadow, removeShadow } from './shadow';
+import * as offload from './offload';
+import { reuseDependencies } from './depreuse';
 import type { Attachment, CreateWorkspaceOpts, HarnessId, Project, ProjectKind, Workspace } from '../../shared/types';
 import { provisionalTitle } from '../../shared/chatTitle';
 
@@ -159,12 +162,11 @@ export async function removeProject(projectId: string, deleteWorkspaces: boolean
   for (const ws of workspaces) {
     stopWorkspaceAgents(ws.id);
     killWorkspacePtys(ws.id);
+    forgetWorkspaceTasks(ws.id);
     unwatchWorkspace(ws.id);
     destroyPreview(ws.id);
     // Never touch an in-place folder on disk (G4) — drop bookkeeping only.
-    if (deleteWorkspaces && project && ws.wsKind !== 'in-place') {
-      await git.worktreeRemove(project.repoPath, ws.worktreePath);
-    }
+    if (deleteWorkspaces && project && ws.wsKind !== 'in-place') await destroyWorktree(project, ws);
     removeShadow(ws); // the shadow git-dir lives under ~/maestro, not the folder
     Workspaces.remove(ws.id);
     broadcast('ws:removed', { workspaceId: ws.id });
@@ -426,16 +428,9 @@ async function provisionWorkspace(project: Project, ws: Workspace, opts: CreateW
     broadcast('chat:message', msg);
   }
 
-  // Ignored files (.env, deps, local DBs) don't travel with the worktree; the
-  // setup script restores them. For a cloud workspace the move runs setup on the
-  // box, so skip the redundant local run here.
-  const repoSettings = readRepoSettings(project.repoPath);
-  if (repoSettings.setupScript.trim() && !opts.hostId) {
-    const code = await runSetupAndWait(ws, repoSettings.setupScript);
-    if (code !== 0) {
-      ws.setupError = `Setup script exited with code ${code}`;
-    }
-  }
+  // For a cloud workspace the move runs setup on the box, so skip the redundant
+  // local run here.
+  if (!opts.hostId) ws.setupError = await prepareWorktree(project, ws);
 
   ws.status = ws.setupError ? 'needs-attention' : 'idle';
   Workspaces.update(ws);
@@ -516,6 +511,9 @@ export function archiveWorkspace(workspaceId: string) {
   ws.status = 'archived';
   Workspaces.update(ws);
   broadcast('ws:updated', ws);
+  // Reclaim the disk once the stopped agents/ptys have let go. An immediate
+  // un-archive wins: freeArchivedFiles re-checks under the disk lock.
+  setTimeout(() => void freeArchivedFiles(ws.id).catch(() => {}), FREE_AFTER_ARCHIVE_MS);
 }
 
 export async function restoreWorkspace(workspaceId: string): Promise<{ workspace: Workspace; warning?: string }> {
@@ -529,21 +527,24 @@ export async function restoreWorkspace(workspaceId: string): Promise<{ workspace
   let warning: string | undefined;
 
   if (host.id === 'local') {
-    if (!fs.existsSync(ws.worktreePath)) {
+    if (ws.wsKind === 'in-place') {
       // An in-place folder that's gone was moved or deleted by the user — never
       // recreate it (there's no branch to rebuild it from). Surface the gap.
-      if (ws.wsKind === 'in-place') {
-        throw new Error('This folder is missing — it may have been moved or deleted.');
-      }
-      // Worktree was cleaned from disk; recreate it from the branch.
-      await git.worktreeRemove(project.repoPath, ws.worktreePath); // prune stale registration
+      if (!fs.existsSync(ws.worktreePath)) throw new Error('This folder is missing — it may have been moved or deleted.');
+    } else {
+      // Bringing back an offloaded worktree can take a moment (checkout, deps,
+      // setup) — show it as setting up meanwhile, and put it back if it fails.
+      ws.status = 'setting-up';
+      Workspaces.update(ws);
+      broadcast('ws:updated', ws);
       try {
-        await git.worktreeAddExistingBranch(project.repoPath, ws.worktreePath, ws.branch);
-      } catch (e: any) {
-        if (e?.branchInUse) throw new Error(`Branch ${ws.branch} is checked out in another workspace`);
+        warning = await withDiskLock(ws.id, () => rehydrate(project, ws));
+      } catch (e) {
+        ws.status = 'archived';
+        Workspaces.update(ws);
+        broadcast('ws:updated', ws);
         throw e;
       }
-      await git.ensureContextDir(ws.worktreePath);
     }
   } else {
     // Remote: nothing was removed on archive, so restore is bookkeeping. A missing
@@ -553,12 +554,131 @@ export async function restoreWorkspace(workspaceId: string): Promise<{ workspace
     if (exists === false) warning = 'The folder on the server is missing — it may have been moved or deleted.';
   }
   ws.archived = false;
-  ws.status = 'idle';
+  ws.status = ws.setupError ? 'needs-attention' : 'idle';
   Workspaces.update(ws);
   broadcast('ws:updated', ws);
   watchWorkspace(ws);
   if (isCloudWorkspace(ws)) void catchUpWorkspace(ws); // followers skipped it while archived (cloud.ts)
   return { workspace: ws, warning };
+}
+
+// ---------- disk reclaim (docs/specs/archive-disk-reclaim.md) ----------
+
+const FREE_AFTER_ARCHIVE_MS = 10_000;
+
+function offloadTarget(ws: Workspace, project: Project): offload.OffloadTarget {
+  return {
+    repoPath: project.repoPath,
+    wtPath: ws.worktreePath,
+    dir: path.join(maestroHome(), 'archive', ws.id),
+    ref: `refs/maestro/archive/${ws.id}`,
+  };
+}
+
+/** Only Maestro-owned local worktrees: never an in-place folder (G4) or a cloud one. */
+function offloadable(ws: Workspace, project: Project): boolean {
+  return project.kind === 'git' && !project.hostId && ws.wsKind === 'worktree' && !isCloudWorkspace(ws);
+}
+
+// Offload and rehydrate of one workspace never overlap: a restore issued while
+// the files are being freed waits, then brings them straight back.
+const diskLocks = new Map<string, Promise<unknown>>();
+function withDiskLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
+  const next = (diskLocks.get(workspaceId) ?? Promise.resolve()).catch(() => {}).then(fn);
+  diskLocks.set(workspaceId, next);
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (diskLocks.get(workspaceId) === next) diskLocks.delete(workspaceId);
+    });
+  return next;
+}
+
+function setFilesFreed(ws: Workspace, freed: boolean) {
+  if (!!ws.filesFreed === freed) return;
+  Workspaces.setFilesFreed(ws.id, freed);
+  ws.filesFreed = freed;
+  broadcast('ws:updated', Workspaces.get(ws.id) ?? ws);
+}
+
+/** Delete a worktree for good, whether it's on disk or offloaded. */
+function destroyWorktree(project: Project, ws: Workspace): Promise<void> {
+  return withDiskLock(ws.id, async () => {
+    await git.worktreeRemove(project.repoPath, ws.worktreePath);
+    await offload.discardOffload(offloadTarget(ws, project));
+  });
+}
+
+/** Offload an archived workspace's worktree (snapshot + keep local files + remove). */
+export function freeArchivedFiles(workspaceId: string): Promise<void> {
+  return withDiskLock(workspaceId, async () => {
+    // Re-checked under the lock: it may have been restored or deleted since.
+    const ws = Workspaces.get(workspaceId);
+    const project = ws && Projects.get(ws.projectId);
+    if (!ws?.archived || !project || !offloadable(ws, project)) return;
+    if (Settings.global().freeArchivedFiles === false || runningAgents(ws.id).length) return;
+    const target = offloadTarget(ws, project);
+    await offload.offloadWorktree(target);
+    setFilesFreed(ws, offload.isOffloaded(target));
+  });
+}
+
+/** Boot: free archives that pre-date this feature (or were archived while it was
+ *  off), one at a time so the disk churn stays in the background. */
+export async function sweepArchivedWorkspaces(): Promise<void> {
+  if (Settings.global().freeArchivedFiles === false) return;
+  for (const ws of Workspaces.list()) {
+    if (ws.archived && !ws.filesFreed) await freeArchivedFiles(ws.id).catch(() => {});
+  }
+}
+
+/** Put an archived worktree back on disk at its original path. Returns a warning
+ *  worth showing (e.g. uncommitted changes that conflicted with the branch). */
+async function rehydrate(project: Project, ws: Workspace): Promise<string | undefined> {
+  const res = await offload.rehydrateWorktree(offloadTarget(ws, project));
+  let recreated = !!res?.recreated;
+  if (!res && !fs.existsSync(ws.worktreePath)) {
+    // Removed from disk with no offload record (by hand, or a pre-offload build):
+    // recreate it from the branch.
+    await git.worktreeRemove(project.repoPath, ws.worktreePath); // prune stale registration
+    try {
+      await git.worktreeAddExistingBranch(project.repoPath, ws.worktreePath, ws.branch);
+    } catch (e: any) {
+      if (e?.branchInUse) throw new Error(`Branch ${ws.branch} is checked out in another workspace`);
+      throw e;
+    }
+    recreated = true;
+  }
+  setFilesFreed(ws, false);
+  if (recreated) {
+    await git.ensureContextDir(ws.worktreePath);
+    ws.branch = await git.currentBranch(ws.worktreePath);
+    ws.setupError = await prepareWorktree(project, ws);
+  }
+  return res?.warning;
+}
+
+/**
+ * What a freshly checked-out worktree lacks: its ignored files. Dependencies are
+ * cloned from a sibling with the identical lockfile (§2) — before the setup
+ * script, so its install is near-instant — then the repo's setup script restores
+ * the rest (.env, local DBs…). Returns the setup error, or null.
+ */
+async function prepareWorktree(project: Project, ws: Workspace): Promise<string | null> {
+  if (Settings.global().reuseDependencies !== false) {
+    // Live siblings first (most recently used), then archived-but-on-disk, then
+    // the main checkout. Missing paths are skipped inside.
+    const recency = (w: Workspace) => w.lastUserMessageAt ?? w.createdAt;
+    const donors = Workspaces.forProject(project.id)
+      .filter((w) => w.id !== ws.id && w.wsKind === 'worktree' && !w.filesFreed && !isCloudWorkspace(w))
+      .sort((a, b) => Number(a.archived) - Number(b.archived) || recency(b) - recency(a))
+      .map((w) => w.worktreePath);
+    await reuseDependencies(ws.worktreePath, [...donors, project.repoPath]);
+  }
+  const { setupScript } = readRepoSettings(project.repoPath);
+  if (!setupScript.trim()) return null;
+  const code = await runSetupAndWait(ws, setupScript);
+  return code === 0 ? null : `Setup script exited with code ${code}`;
 }
 
 /**
@@ -618,14 +738,13 @@ export async function deleteWorkspace(workspaceId: string) {
   const project = Projects.get(ws.projectId);
   stopWorkspaceAgents(ws.id);
   killWorkspacePtys(ws.id);
+  forgetWorkspaceTasks(ws.id);
   unwatchWorkspace(ws.id);
   destroyPreview(ws.id);
   unwatchPort(ws.id, 'selected');
   unwatchPort(ws.id, 'script');
   // In-place folders are the user's own directory — remove bookkeeping only (G4).
-  if (project && ws.wsKind !== 'in-place') {
-    await git.worktreeRemove(project.repoPath, ws.worktreePath);
-  }
+  if (project && ws.wsKind !== 'in-place') await destroyWorktree(project, ws);
   removeShadow(ws); // shadow git-dir under ~/maestro (never in the user's folder)
   Workspaces.remove(ws.id);
   broadcast('ws:removed', { workspaceId: ws.id });

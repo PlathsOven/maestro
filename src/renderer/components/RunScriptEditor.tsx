@@ -102,12 +102,12 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
   return (
     <div className="flex h-full flex-col">
       {/* header */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <button className="rounded-ctl p-1.5 text-muted hover:bg-accent-soft hover:text-fg" title="Close (saves changes)" onClick={() => void saveAndClose()}>
+      <div className="flex shrink-0 items-center gap-2 px-4 py-2.5">
+        <button className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg" title="Close (saves changes)" onClick={() => void saveAndClose()}>
           <X size={14} />
         </button>
         <input
-          className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none placeholder:text-faint"
+          className="min-w-0 flex-1 bg-transparent text-[13.5px] font-semibold tracking-tight outline-none placeholder:text-faint"
           value={name}
           placeholder="Script name"
           onChange={(e) => setName(e.target.value)}
@@ -129,12 +129,12 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
           onChange={setMode}
         />
         {dirty && (
-          <button className="btn h-7 px-2.5 text-xs" disabled={saving} onClick={() => void save()}>
+          <button className="btn h-7 px-3 text-xs" disabled={saving} onClick={() => void save()}>
             {saving ? <Spinner /> : 'Save'}
           </button>
         )}
         <button
-          className={clsx('btn h-7 gap-1.5 px-2.5 text-xs', !running && 'btn-accent')}
+          className={clsx('btn h-7 gap-1.5 px-3 text-xs', running ? 'text-err' : 'btn-accent')}
           title={
             running
               ? 'Stop this script'
@@ -151,10 +151,10 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
             }
           }}
         >
-          {running ? <Square size={11} fill="currentColor" /> : <Play size={11} />}
+          {running ? <Square size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}
           {running ? 'Stop' : 'Run'}
         </button>
-        <button className="rounded-ctl p-1.5 text-muted hover:bg-accent-soft hover:text-err" title="Delete script" onClick={remove}>
+        <button className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-err" title="Delete script" onClick={remove}>
           <Trash2 size={13} />
         </button>
       </div>
@@ -162,7 +162,7 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
       {/* body */}
       {mode === 'doc' ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl space-y-3 px-6 py-5">
+          <div className="mx-auto max-w-3xl space-y-4 px-6 pb-8 pt-4">
             <div className="flex items-center gap-2 text-2xs text-faint">
               {script.source === 'ai' && (
                 <span className="flex items-center gap-1">
@@ -182,7 +182,7 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
               )
             )}
             {parseRunDoc(doc).length === 0 && (
-              <div className="rounded-card border border-dashed px-4 py-6 text-center text-xs text-muted">
+              <div className="rounded-card bg-accent-soft px-4 py-8 text-center text-xs text-muted">
                 Empty script — switch to Edit and add commands.
               </div>
             )}
@@ -197,7 +197,7 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
             onChange={(e) => setDoc(e.target.value)}
             placeholder={'Explain the why in prose, put each command in a ```sh block…'}
           />
-          <div className="shrink-0 border-t px-6 py-2 text-2xs text-faint">
+          <div className="shrink-0 border-t px-6 py-2.5 text-2xs text-faint">
             Markdown. Each <span className="font-mono">```sh</span> code block runs in the workspace terminal, in
             order; a failing block stops the rest. Prose in between is documentation for you and your team.
           </div>
@@ -218,15 +218,15 @@ function CommandBlock({ code, executable }: { code: string; executable: boolean 
   };
   return (
     <div className="overflow-hidden rounded-card border" style={{ background: 'var(--term-bg)' }}>
-      <div className="flex items-center gap-1.5 border-b px-3 py-1">
+      <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2">
         <TerminalIcon size={11} className="text-faint" />
         <span className="text-2xs text-faint">{executable ? 'runs in terminal' : 'reference only (not executed)'}</span>
         <div className="flex-1" />
-        <button className="rounded p-0.5 text-faint hover:text-fg" title="Copy" onClick={copy}>
+        <button className="grid h-5 w-5 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-fg" title="Copy" onClick={copy}>
           {copied ? <Check size={11} className="text-ok" /> : <Copy size={11} />}
         </button>
       </div>
-      <pre className="overflow-x-auto px-3 py-2.5 font-mono text-xs leading-relaxed">
+      <pre className="overflow-x-auto px-3 pb-3 pt-1.5 font-mono text-xs leading-relaxed">
         {code.split('\n').map((line, i) => (
           <div key={i} className="flex">
             {executable && !line.trim().startsWith('#') && line.trim() ? (

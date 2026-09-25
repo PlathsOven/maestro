@@ -96,40 +96,32 @@ export default function WorkspacesView() {
   const total = groups.reduce((n, g) => n + g.items.length, 0);
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
-      {/* search + filters (also the window drag strip) */}
-      <header className="drag-region flex h-11 shrink-0 items-center gap-3 border-b px-4">
-        <div className="no-drag flex min-w-0 flex-1 items-center gap-2">
-          <Search size={15} className="shrink-0 text-faint" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            spellCheck={false}
-            placeholder="Search workspaces…"
-            className="w-full min-w-0 bg-transparent text-[13px] text-fg outline-none placeholder:text-faint"
-          />
-        </div>
-        <div className="no-drag wco-safe flex shrink-0 items-center gap-3">
-          <label className="flex items-center gap-1.5 text-xs text-muted">
-            Project
-            <select
-              value={projectFilter}
-              onChange={(e) => setProjectFilter(e.target.value)}
-              className="input h-7 w-auto max-w-[160px] !py-0 text-xs"
-            >
-              <option value="">All projects</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-muted">
+    <div data-motion="swap" className="flex h-full min-w-0 flex-col">
+      {/* title + filters (also the window drag strip) */}
+      <header className="drag-region flex h-14 shrink-0 items-center gap-3 px-6">
+        <h1 className="min-w-0 flex-1 truncate text-[17px] font-semibold tracking-tight">
+          Workspaces
+          <span className="ml-2 text-[13px] font-normal text-faint">{total}</span>
+        </h1>
+        <div className="no-drag wco-safe flex shrink-0 items-center gap-2">
+          <select
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            className="input h-8 w-auto max-w-[180px] !rounded-full !border-transparent !bg-accent-soft !py-0 !pl-3.5 text-xs"
+            aria-label="Project"
+          >
+            <option value="">All projects</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <label className="flex h-8 items-center gap-2 rounded-full bg-accent-soft pl-3.5 pr-2 text-xs text-muted">
             <span>Show archived</span>
             {archivedCount > 0 && (
               <span
-                className="min-w-[16px] rounded-full bg-raised px-1 text-center text-2xs text-faint"
+                className="min-w-[18px] rounded-full bg-raised px-1.5 text-center text-2xs text-muted"
                 title={`${archivedCount} archived workspace${archivedCount === 1 ? '' : 's'}`}
               >
                 {archivedCount}
@@ -140,8 +132,22 @@ export default function WorkspacesView() {
         </div>
       </header>
 
+      {/* search */}
+      <div className="shrink-0 px-6 pb-3">
+        <div className="flex h-10 items-center gap-2.5 rounded-full border border-border/70 bg-raised px-4 transition-shadow focus-within:border-faint focus-within:shadow-[0_0_0_3px_var(--focus-ring)]">
+          <Search size={15} className="shrink-0 text-faint" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+            placeholder="Search workspaces…"
+            className="w-full min-w-0 bg-transparent text-[13px] text-fg outline-none placeholder:text-faint"
+          />
+        </div>
+      </div>
+
       {/* grouped list */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-1">
         {total === 0 ? (
           <EmptyHint
             icon={<Boxes size={30} strokeWidth={1.5} />}
@@ -165,15 +171,15 @@ export default function WorkspacesView() {
           />
         ) : (
           groups.map((g) => (
-            <div key={g.label} className="mb-4">
-              <div className="flex items-center gap-2 px-3 pb-1 pt-1">
-                <span className="text-[13px] font-semibold text-muted">{g.label}</span>
+            <section key={g.label} className="mb-5">
+              <div className="flex items-center gap-2 px-3 pb-1.5 pt-1">
+                <span className="text-xs font-medium text-muted">{g.label}</span>
                 <span className="text-2xs text-faint">{g.items.length}</span>
               </div>
               {g.items.map((row) => (
                 <WorkspaceRow key={row.w.id} row={row} now={now} active={row.w.id === activeWorkspaceId} />
               ))}
-            </div>
+            </section>
           ))
         )}
       </div>
@@ -197,9 +203,10 @@ function WorkspaceRow({ row, now, active }: { row: WsRow; now: number; active: b
 
   return (
     <div
+      data-motion="row"
       className={clsx(
-        'group flex cursor-pointer items-center gap-2.5 rounded-ctl px-3 py-2',
-        active ? 'bg-accent-soft' : 'hover:bg-accent-soft/50',
+        'group flex cursor-pointer items-center gap-3 rounded-ctl px-3 py-2.5 transition-colors',
+        active ? 'bg-accent-soft' : 'hover:bg-accent-soft/60',
         w.archived && 'opacity-70'
       )}
       onClick={open}
@@ -207,9 +214,14 @@ function WorkspaceRow({ row, now, active }: { row: WsRow; now: number; active: b
     >
       {project && <RepoIcon project={project} active={false} />}
       <StatusGlyph ws={w} />
-      <span className="min-w-0 flex-1 truncate text-[13px]">{w.title ?? (w.wsKind === 'in-place' ? w.name : w.branch)}</span>
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="truncate text-[13px] font-medium">
+          {w.title ?? (w.wsKind === 'in-place' ? w.name : w.branch)}
+        </span>
+        {project && <span className="shrink-0 truncate text-2xs text-faint">{project.name}</span>}
+      </span>
       {w.archived && (
-        <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-2xs text-faint">Archived</span>
+        <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-2xs text-muted">Archived</span>
       )}
       <div className="flex shrink-0 items-center gap-1.5">
         <div className="hidden items-center gap-0.5 group-hover:flex">
@@ -266,7 +278,10 @@ function RowAction({
 }) {
   return (
     <button
-      className={clsx('rounded p-1 text-muted', danger ? 'hover:text-err' : 'hover:text-fg')}
+      className={clsx(
+        'flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-accent-soft',
+        danger ? 'hover:text-err' : 'hover:text-fg'
+      )}
       title={title}
       onClick={(e) => {
         e.stopPropagation();

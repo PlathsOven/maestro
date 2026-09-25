@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import clsx from 'clsx';
 import { Bot, Boxes, Check, ChevronLeft, Download, Folder, GitPullRequest, Play, RefreshCw } from 'lucide-react';
+import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { invoke, on, tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
 import { ApiKeyField, Kbd, Spinner } from './common';
 import PtyView from './TerminalPanel';
+import { LiquidGlass } from '../../shared/ui/LiquidGlass';
 import maestroLogo from '../assets/maestro-logo.png';
 import type { GlobalSettings, HarnessAuth, HarnessId, HarnessInfo } from '../../shared/types';
 
@@ -48,27 +50,27 @@ export default function SetupWizard() {
   const cta = step === 0 ? 'Get started' : step === 1 ? 'Continue' : 'Start using Maestro';
 
   return (
-    <div className="flex h-full flex-col bg-bg">
+    <div className="wash-hero flex h-full flex-col">
       <div className="drag-region flex h-11 shrink-0 items-center justify-end px-3">
         {step < 2 && (
-          <button className="btn btn-ghost no-drag wco-safe h-6 text-2xs text-muted" onClick={() => finish(true)}>
+          <button className="btn btn-ghost no-drag wco-safe text-muted hover:text-fg" onClick={() => finish(true)}>
             Skip setup
           </button>
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-y-auto px-8 py-6">
-        <div key={step} className="fade-in m-auto w-[560px] max-w-full">
+      <div className="flex min-h-0 flex-1 overflow-y-auto px-8 pb-12 pt-4">
+        <div key={step} data-motion="swap" className="m-auto w-[580px] max-w-full">
           {step === 0 && <WelcomeStep />}
           {step === 1 && (
             <AgentsStep authed={authed} setAuthed={(id, v) => setAuthed((m) => ({ ...m, [id]: v }))} />
           )}
           {step === 2 && <TourStep />}
 
-          <div className="mt-7 flex items-center">
+          <div className="mt-9 flex items-center">
             <div className="flex-1">
               {step > 0 && (
-                <button className="btn btn-ghost gap-1 text-xs text-muted" onClick={() => setStep((step - 1) as Step)}>
+                <button className="btn btn-ghost h-9 gap-1 px-3.5 text-[13px] text-muted hover:text-fg" onClick={() => setStep((step - 1) as Step)}>
                   <ChevronLeft size={13} /> Back
                 </button>
               )}
@@ -79,14 +81,14 @@ export default function SetupWizard() {
                   key={i}
                   className={clsx(
                     'h-1.5 rounded-full transition-all duration-200',
-                    i === step ? 'w-4 bg-accent' : 'w-1.5 bg-border'
+                    i === step ? 'w-5 bg-ink' : 'w-1.5 bg-faint/50'
                   )}
                 />
               ))}
             </div>
             <div className="flex flex-1 justify-end">
               <button
-                className="btn btn-accent h-8 px-4 text-[13px]"
+                className="btn btn-accent h-9 px-5 text-[13px]"
                 onClick={() => (step < 2 ? setStep((step + 1) as Step) : finish(false))}
               >
                 {cta}
@@ -102,11 +104,17 @@ export default function SetupWizard() {
 function WelcomeStep() {
   return (
     <div className="text-center">
-      <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border bg-raised">
-        <img src={maestroLogo} alt="" className="h-10 w-10" />
-      </div>
-      <h1 className="text-[26px] font-semibold tracking-tight">Welcome to Maestro</h1>
-      <p className="mx-auto mt-2 max-w-[400px] text-[13px] text-muted">
+      <LiquidGlass
+        radius={22}
+        bezel={14}
+        thickness={50}
+        tint="strong"
+        className="mx-auto mb-7 flex h-[72px] w-[72px] items-center justify-center"
+      >
+        <img src={maestroLogo} alt="" className="h-12 w-12" />
+      </LiquidGlass>
+      <h1 className="text-3xl font-semibold tracking-tight">Welcome to Maestro</h1>
+      <p className="mx-auto mt-3 max-w-[420px] text-[14px] leading-relaxed text-muted">
         Run a fleet of coding agents in parallel — each in an isolated git worktree with its own branch, terminal, and
         diff.
       </p>
@@ -144,22 +152,22 @@ function AgentsStep({
 
   return (
     <div>
-      <h1 className="text-center text-xl font-semibold tracking-tight">Connect your coding agents</h1>
-      <p className="mx-auto mt-1.5 max-w-[430px] text-center text-[13px] text-muted">
+      <h1 className="text-center text-2xl font-semibold tracking-tight">Connect your coding agents</h1>
+      <p className="mx-auto mt-2.5 max-w-[440px] text-center text-[13px] leading-relaxed text-muted">
         Maestro found these CLIs on your Mac automatically. Agents you're already signed in to just work — connect the
         rest here, or later in Settings.
       </p>
 
-      <div className="mb-1.5 mt-6 flex items-center justify-between">
-        <span className="text-2xs text-muted">
+      <div className="mb-2 mt-8 flex items-center justify-between px-1">
+        <span className="text-xs text-muted">
           {probing ? 'Looking for installed agents…' : `${connectedCount} of ${list.length} connected`}
         </span>
-        <button className="btn btn-ghost h-6 gap-1 text-2xs text-muted" disabled={refreshing} onClick={() => void refresh()}>
+        <button className="btn btn-ghost gap-1 text-muted hover:text-fg" disabled={refreshing} onClick={() => void refresh()}>
           <RefreshCw size={11} className={refreshing ? 'spin' : undefined} /> Refresh
         </button>
       </div>
 
-      <div className="card overflow-hidden">
+      <LiquidGlass radius={24} bezel={22} thickness={70} tint="strong" className="p-2">
         {probing ? (
           <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted">
             <Spinner /> Detecting installed agents…
@@ -178,16 +186,10 @@ function AgentsStep({
             />
           ))
         )}
-      </div>
+      </LiquidGlass>
 
       {noneInstalled && (
-        <div
-          className="mt-3 rounded-card border px-3 py-2.5 text-xs text-muted"
-          style={{
-            background: 'color-mix(in srgb, var(--warn) 8%, transparent)',
-            borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)',
-          }}
-        >
+        <div className="mt-3 rounded-card bg-warn/10 px-4 py-3 text-xs leading-relaxed text-muted">
           No agent CLIs found on this Mac. Install one — e.g.{' '}
           <code className="font-mono text-2xs">npm install -g @anthropic-ai/claude-code</code> — then hit Refresh.
         </div>
@@ -214,36 +216,32 @@ function AgentRow({
   onConnected: () => void;
 }) {
   return (
-    <div className={first ? undefined : 'border-t'}>
-      <div className="flex items-center gap-3.5 px-4 py-3">
+    <div className={clsx('rounded-[16px] transition-colors', !first && 'mt-0.5', open && 'bg-accent-soft')}>
+      <div className="flex items-center gap-3.5 px-3 py-3">
         <span
           className={clsx(
-            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-raised',
-            connected ? 'text-ok' : info.installed ? 'text-accent' : 'text-faint'
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+            connected ? 'bg-ok/10 text-ok' : info.installed ? 'bg-accent-soft text-fg' : 'bg-accent-soft text-faint'
           )}
-          style={connected ? { background: 'color-mix(in srgb, var(--ok) 10%, transparent)' } : undefined}
         >
-          {connected ? <Check size={17} /> : <Bot size={17} />}
+          {connected ? <Check size={17} /> : <HarnessLogo harness={info.id} size={19} />}
         </span>
         <span className={clsx('min-w-0 flex-1', !info.installed && 'opacity-60')}>
-          <span className="block text-[14px] font-medium">{info.displayName}</span>
+          <span className="block text-[14px] font-medium tracking-tight">{info.displayName}</span>
           <span className="block truncate font-mono text-2xs text-muted">
             {info.installed ? (info.version ?? 'Installed') : 'Not installed'}
           </span>
         </span>
         {connected ? (
-          <span
-            className="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium text-ok"
-            style={{ background: 'color-mix(in srgb, var(--ok) 12%, transparent)' }}
-          >
+          <span className="flex shrink-0 items-center gap-1 rounded-full bg-ok/10 px-2.5 py-1 text-2xs font-medium text-ok">
             <Check size={11} /> Connected
           </span>
         ) : info.installed ? (
-          <button className={clsx('btn shrink-0 text-xs', !open && 'btn-accent')} onClick={onToggle}>
+          <button className={clsx('btn h-8 shrink-0 px-3.5', open && 'btn-ghost text-muted')} onClick={onToggle}>
             {open ? 'Close' : 'Connect'}
           </button>
         ) : (
-          <button className="btn shrink-0 gap-1 text-xs" onClick={onToggle}>
+          <button className={clsx('btn h-8 shrink-0 gap-1 px-3.5', open && 'btn-ghost text-muted')} onClick={onToggle}>
             {open ? (
               'Close'
             ) : (
@@ -335,20 +333,20 @@ function ConnectPanel({
 
   if (!auth) {
     return (
-      <div className="flex justify-center border-t bg-bg py-6">
+      <div className="flex justify-center py-6">
         <Spinner />
       </div>
     );
   }
 
   return (
-    <div className="space-y-3 border-t bg-bg px-4 py-3.5">
+    <div className="space-y-3 px-3 pb-3 pt-2">
       {auth.loginLabel && (
         <div className="space-y-2">
           {!ptyId ? (
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-muted">Sign in with your existing account or subscription.</span>
-              <button className="btn btn-accent shrink-0 gap-1.5 text-xs" onClick={() => void startLogin()}>
+              <button className="btn btn-accent h-8 shrink-0 gap-1.5 px-3.5" onClick={() => void startLogin()}>
                 <Play size={12} /> Run {auth.loginLabel}
               </button>
             </div>
@@ -356,11 +354,11 @@ function ConnectPanel({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-2xs text-muted">Finish signing in below — a browser window may open.</span>
-                <button className="btn btn-ghost h-6 text-xs" onClick={() => void closeLogin()}>
+                <button className="btn" onClick={() => void closeLogin()}>
                   Done
                 </button>
               </div>
-              <div className="h-64 overflow-hidden rounded-card border">
+              <div className="h-64 overflow-hidden rounded-card border border-border/70">
                 <PtyView workspaceId="" ptyId={ptyId} ensure={false} interactive active />
               </div>
             </div>
@@ -438,7 +436,7 @@ function InstallPanel({
   }, [ptyId, harness, displayName, refreshHarnesses, toast]);
 
   return (
-    <div className="space-y-2 border-t bg-bg px-4 py-3.5">
+    <div className="space-y-2 px-3 pb-3 pt-2">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 flex-1 truncate text-2xs text-muted">
           {phase === 'failed' ? (
@@ -453,17 +451,17 @@ function InstallPanel({
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
           {phase === 'failed' && (
-            <button className="btn btn-accent h-6 text-xs" onClick={() => void start()}>
+            <button className="btn btn-accent" onClick={() => void start()}>
               Retry
             </button>
           )}
-          <button className="btn btn-ghost h-6 text-xs" onClick={onClose}>
+          <button className="btn btn-ghost" onClick={onClose}>
             {phase === 'failed' ? 'Close' : 'Cancel'}
           </button>
         </div>
       </div>
       {ptyId && (
-        <div className="h-64 overflow-hidden rounded-card border">
+        <div className="h-64 overflow-hidden rounded-card border border-border/70">
           <PtyView workspaceId="" ptyId={ptyId} ensure={false} interactive active />
         </div>
       )}
@@ -508,24 +506,24 @@ function TourStep() {
 
   return (
     <div>
-      <h1 className="text-center text-xl font-semibold tracking-tight">How Maestro works</h1>
-      <p className="mt-1.5 text-center text-[13px] text-muted">Four ideas and you know the whole app.</p>
+      <h1 className="text-center text-2xl font-semibold tracking-tight">How Maestro works</h1>
+      <p className="mt-2.5 text-center text-[13px] text-muted">Four ideas and you know the whole app.</p>
 
-      <div className="card mt-6 overflow-hidden">
-        {items.map((it, i) => (
-          <div key={it.title} className={clsx('flex items-start gap-3.5 px-4 py-3.5', i > 0 && 'border-t')}>
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-raised text-accent">
+      <LiquidGlass radius={24} bezel={22} thickness={70} tint="strong" className="mt-8 grid grid-cols-2 gap-1 p-2">
+        {items.map((it) => (
+          <div key={it.title} className="flex flex-col gap-3 rounded-[16px] px-4 py-4">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-fg">
               {it.icon}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[14px] font-medium">{it.title}</span>
-              <span className="block text-xs leading-relaxed text-muted">{it.blurb}</span>
+            <span className="min-w-0">
+              <span className="block text-[14px] font-medium tracking-tight">{it.title}</span>
+              <span className="mt-1 block text-xs leading-relaxed text-muted">{it.blurb}</span>
             </span>
           </div>
         ))}
-      </div>
+      </LiquidGlass>
 
-      <p className="mt-4 text-center text-2xs text-muted">
+      <p className="mt-5 text-center text-xs text-muted">
         <Kbd>⌘K</Kbd> opens the command palette — every action is in there.
       </p>
     </div>

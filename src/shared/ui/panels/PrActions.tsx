@@ -2,6 +2,7 @@
 import clsx from 'clsx';
 import { Archive, ExternalLink, FastForward, GitMerge } from 'lucide-react';
 import { fmtStat } from '../format';
+import { StainedGlass } from '../StainedGlass';
 import type { PanelWorkspace } from './types';
 
 /**
@@ -35,7 +36,7 @@ export function PrBadge({ ws }: { ws: PanelWorkspace }) {
     PR_STATE_LABEL[state]?.cls ??
     (ws.prDraft ? 'text-muted' : ws.prMergeable === 'conflict' ? 'text-warn' : 'text-ok');
   return (
-    <span className="inline-flex items-center gap-1 rounded-ctl border bg-surface px-2 py-1 text-xs">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-raised/70 px-2.5 py-1 text-xs font-medium shadow-[0_0_0_1px_var(--border)]">
       {ws.prNumber != null && <span className="font-mono">#{ws.prNumber}</span>}
       {ws.prUrl && (
         <a href={ws.prUrl} target="_blank" rel="noreferrer" className="text-faint hover:text-fg" onClick={(e) => e.stopPropagation()}>
@@ -77,7 +78,7 @@ export function PrActions({
   const noChanges = ws.diffAdd + ws.diffDel === 0;
   const state = ws.prState;
   return (
-    <div className={clsx('flex items-center gap-2 border-b px-3 py-2', toneClass(ws))}>
+    <div className={clsx('mx-2 mt-2 flex items-center gap-2 rounded-card px-2 py-1.5', toneClass(ws))}>
       {state == null && (
         <>
           <button className="btn btn-ghost h-7 w-7 !px-0" title="Archive workspace" onClick={onArchive}>
@@ -85,14 +86,17 @@ export function PrActions({
           </button>
           <DiffStatBadge add={ws.diffAdd} del={ws.diffDel} />
           <span className="flex-1" />
-          <button
-            className="btn btn-accent"
+          <StainedGlass
+            as="button"
+            tone="ink"
+            ripple={busy}
+            className="btn"
             disabled={busy || noChanges}
             title={noChanges ? 'No changes yet — nothing to open a pull request for' : 'Commit all changes & create pull request (⌘⇧P)'}
             onClick={onCreatePr}
           >
             {busy ? 'Creating…' : 'Create PR'}
-          </button>
+          </StainedGlass>
         </>
       )}
       {state === 'OPEN' && (
@@ -100,13 +104,13 @@ export function PrActions({
           <PrBadge ws={ws} />
           <span className="flex-1" />
           {ws.prMergeable === 'conflict' ? (
-            <button className="btn" style={{ color: 'var(--warn)' }} disabled={busy} onClick={onResolveConflicts}>
+            <StainedGlass as="button" tone="warn" ripple={busy} className="btn" disabled={busy} onClick={onResolveConflicts}>
               Resolve conflicts
-            </button>
+            </StainedGlass>
           ) : (
-            <button className="btn btn-ok" disabled={busy} title="Squash & merge this PR" onClick={onMerge}>
+            <StainedGlass as="button" tone="ok" ripple={busy} className="btn" disabled={busy} title="Squash & merge this PR" onClick={onMerge}>
               <GitMerge size={12} /> {busy ? 'Merging…' : 'Merge'}
-            </button>
+            </StainedGlass>
           )}
         </>
       )}
@@ -117,18 +121,18 @@ export function PrActions({
           <button className="btn" disabled={busy} onClick={onContinue}>
             <FastForward size={12} /> Continue
           </button>
-          <button className="btn btn-merged" disabled={busy} onClick={onArchive}>
+          <StainedGlass as="button" tone="merged" className="btn" disabled={busy} onClick={onArchive}>
             <Archive size={12} /> Archive
-          </button>
+          </StainedGlass>
         </>
       )}
       {state === 'CLOSED' && (
         <>
           <PrBadge ws={ws} />
           <span className="flex-1" />
-          <button className="btn btn-accent" disabled={busy} onClick={onArchive}>
+          <StainedGlass as="button" tone="ink" className="btn" disabled={busy} onClick={onArchive}>
             Archive
-          </button>
+          </StainedGlass>
         </>
       )}
       {ws.prUrl && state === 'OPEN' && (

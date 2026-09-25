@@ -52,9 +52,20 @@ interface PreviewSession {
   consoleN: number;
   cdpAttached: boolean;
   stateTimer: ReturnType<typeof setTimeout> | null;
+  /** the user gave this page the keyboard by clicking into it, and hasn't since
+   *  focused the app window — the only focus the preview is allowed to hold */
+  userFocused: boolean;
+  /** an agent command is injecting input via CDP, so its input-events aren't the user's */
+  synthesizing: boolean;
 }
 
 const sessions = new Map<string, PreviewSession>();
+/**
+ * URLs of views we released ourselves (LRU overflow or the idle TTL), so showing
+ * the surface again resumes the page the user left instead of the dev-server
+ * root. An explicit close forgets it — that's the user asking for a clean slate.
+ */
+const parkedUrls = new Map<string, string>();
 /** Partitions whose session handlers are already installed (idempotent guard). */
 const configuredPartitions = new Set<string>();
 const RING = 500;
@@ -62,6 +73,13 @@ const MAX_ENTRY = 2048; // 2 KB serialized per console entry (§11)
 const MAX_VIEWS = 4; // LRU cap on live Chromium renderers (§7, §13)
 const FULL_HEIGHT_CAP = 8000; // --full capture height cap (§12)
 const AGENT_ACTIVE_MS = 2000; // "Agent is testing" chip lingers this long after a command
+// Idle TTL (perf spec §4.9.6): a hidden WebContentsView is a whole Chromium
+// renderer — ~90 MB in the field — kept alive for a page nobody is looking at.
+// Release it after this long off screen; the URL is parked, so coming back is
+// the same code path as returning after an LRU eviction.
+const IDLE_TTL_MS = 15 * 60_000;
+const IDLE_SWEEP_MS = 60_000;
+let idleTimer: ReturnType<typeof setInterval> | null = null;
 
 // ---------- default URL (shared with workspace:openPreview) ----------
 
@@ -334,16 +352,66 @@ function createSession(ws: Workspace, byAgent: boolean): PreviewSession {
     consoleN: 0,
     cdpAttached: false,
     stateTimer: null,
+    userFocused: false,
+    synthesizing: false,
   };
   sessions.set(ws.id, s);
+  parkedUrls.delete(ws.id); // this session's own URL is the live one now
   attachCdp(s);
   wireNavEvents(s);
+  guardFocus(s);
   capture('preview_opened');
   evictLru(ws.id);
+  startIdleSweep();
   return s;
 }
 
-/** LRU cap: destroy the least-recently-used *other* view once we exceed MAX_VIEWS. */
+const USER_POINTER_DOWN = new Set(['mouseDown', 'touchStart', 'gestureTapDown']);
+
+/**
+ * Keep the preview from stealing the keyboard. Chromium focuses a WebContentsView
+ * whenever it navigates or reloads — hidden or not, including a dev server's hot
+ * reload — and on CDP-dispatched clicks. With agents in other sessions driving
+ * their previews (or editing files under a live dev server), that yanked focus out
+ * of whatever the user was typing in.
+ *
+ * So focus is ownership-based: the preview may hold focus only after the user
+ * clicks into its visible page, until they focus the app window again. Any other
+ * focus is handed straight back. A native click focuses the view *before* its
+ * mouseDown reaches the page, so that first focus is handed back too — the
+ * mouseDown then claims ownership and re-focuses the view deliberately.
+ */
+function guardFocus(s: PreviewSession) {
+  const wc = s.view.webContents;
+  wc.on('input-event', (_e, ev) => {
+    if (s.synthesizing || !s.visible || !USER_POINTER_DOWN.has(ev.type)) return;
+    s.userFocused = true;
+    if (!wc.isFocused()) wc.focus();
+  });
+  wc.on('focus', () => {
+    if (s.visible && s.userFocused) return;
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.focus();
+  });
+}
+
+/** The user focusing the app window (clicking or typing anywhere in it) takes
+ *  the keyboard back from every preview. Wired once, from the main window. */
+export function releasePreviewFocus(): void {
+  for (const s of sessions.values()) s.userFocused = false;
+}
+
+/** Run CDP pointer injection so its input-events aren't mistaken for a user click. */
+async function synthesize<T>(s: PreviewSession, fn: () => Promise<T>): Promise<T> {
+  s.synthesizing = true;
+  try {
+    return await fn();
+  } finally {
+    s.synthesizing = false;
+  }
+}
+
+/** LRU cap: release the least-recently-used *other* view once we exceed MAX_VIEWS. */
 function evictLru(keepId: string) {
   while (sessions.size > MAX_VIEWS) {
     let victim: PreviewSession | null = null;
@@ -352,8 +420,30 @@ function evictLru(keepId: string) {
       if (!victim || s.lastUsed < victim.lastUsed) victim = s;
     }
     if (!victim) break;
-    destroyPreview(victim.workspaceId);
+    parkView(victim);
   }
+}
+
+/** Release a view we still expect the user to come back to (LRU overflow, idle
+ *  TTL): the renderer goes, the page it was showing is remembered. */
+function parkView(s: PreviewSession) {
+  const { workspaceId, url } = s;
+  destroyPreview(workspaceId);
+  if (url) parkedUrls.set(workspaceId, url);
+}
+
+/** One timer for every session, running only while a view exists (§4.9.6). */
+function startIdleSweep() {
+  if (idleTimer || sessions.size === 0) return;
+  idleTimer = setInterval(() => {
+    const now = Date.now();
+    for (const s of [...sessions.values()]) {
+      // Visible, or an agent is driving it right now (`markAgentActive`, and
+      // every command stamps `lastUsed` before it runs) ⇒ in use by definition.
+      if (s.visible || s.agentActive) continue;
+      if (now - s.lastUsed >= IDLE_TTL_MS) parkView(s);
+    }
+  }, IDLE_SWEEP_MS);
 }
 
 function ensureSession(ws: Workspace, byAgent: boolean): PreviewSession {
@@ -363,6 +453,23 @@ function ensureSession(ws: Workspace, byAgent: boolean): PreviewSession {
     return existing;
   }
   return createSession(ws, byAgent);
+}
+
+/** Rebuild a view we released ourselves, at the URL it was showing. Undefined
+ *  when the workspace has no parked page — it never had a view, or it was closed
+ *  explicitly, and an empty surface is then what the user asked for. */
+function revive(workspaceId: string, byAgent: boolean): PreviewSession | undefined {
+  const url = parkedUrls.get(workspaceId);
+  const ws = url ? Workspaces.get(workspaceId) : null;
+  if (!ws || !url) return undefined;
+  const s = createSession(ws, byAgent);
+  // The restoring navigation joins the command queue, so an agent command that
+  // triggered the revive runs against the page instead of a blank tab.
+  s.queue = navigate(s, 'goto', url).then(
+    () => markState(s),
+    () => undefined
+  );
+  return s;
 }
 
 // ---------- navigation ----------
@@ -520,11 +627,22 @@ export function setPreviewBounds(workspaceId: string, bounds: Rect): void {
 }
 
 export function setPreviewVisible(workspaceId: string, visible: boolean): void {
-  const s = sessions.get(workspaceId);
+  // The view may have been released while the surface was away (idle TTL or LRU
+  // overflow); showing it again rebuilds it where the user left it.
+  const s = visible ? sessions.get(workspaceId) ?? revive(workspaceId, false) : sessions.get(workspaceId);
   if (!s || s.view.webContents.isDestroyed()) return;
   s.visible = visible;
   s.view.setVisible(visible);
+  if (!visible) {
+    // A hidden page can't be typed into — don't leave the keyboard parked there.
+    s.userFocused = false;
+    if (s.view.webContents.isFocused()) getWindow()?.webContents.focus();
+  }
   s.view.webContents.setBackgroundThrottling(!visible);
+  // Both edges stamp: `lastUsed` is what the LRU ranks by and what the idle TTL
+  // measures from, and a view that was on screen a moment ago is neither the
+  // best eviction candidate nor idle yet.
+  s.lastUsed = Date.now();
   if (visible) {
     if (s.bounds) setPreviewBounds(workspaceId, s.bounds);
     // The user is now looking — clear the "opened by agent" nudge.
@@ -532,7 +650,6 @@ export function setPreviewVisible(workspaceId: string, visible: boolean): void {
       s.openedByAgent = false;
       markState(s);
     }
-    s.lastUsed = Date.now();
   }
 }
 
@@ -544,12 +661,15 @@ export async function openPreview(workspaceId: string, url?: string): Promise<{ 
   const ws = Workspaces.get(workspaceId);
   if (!ws) return { url: '', error: 'Workspace not found' };
   const existed = sessions.has(workspaceId);
+  // Read before ensureSession: creating a session clears the parked URL.
+  const parked = parkedUrls.get(workspaceId);
   const s = ensureSession(ws, false);
   s.openedByAgent = false;
   let target = url;
   if (!target) {
-    // Reuse the last URL if the view already had one; else compute the default.
-    target = s.url || (await defaultPreviewUrl(ws).catch(() => `http://localhost:${ws.port}`));
+    // Reuse the last URL if the view already had one, then the page it was
+    // parked on (§4.9.6); else compute the default.
+    target = s.url || parked || (await defaultPreviewUrl(ws).catch(() => `http://localhost:${ws.port}`));
   }
   if (!existed || url || !s.url) {
     await navigate(s, 'goto', target);
@@ -563,11 +683,17 @@ export function closePreview(workspaceId: string): void {
 }
 
 /** Tear a view down: detach CDP, remove from the window, destroy the webContents,
- *  drop the ring buffer. Reopening recreates it at its last URL (held in the store). */
+ *  drop the ring buffer and any parked URL. Callers that expect the user back
+ *  (`parkView`) re-park the URL afterwards, so reopening resumes that page. */
 export function destroyPreview(workspaceId: string): void {
+  parkedUrls.delete(workspaceId);
   const s = sessions.get(workspaceId);
   if (!s) return;
   sessions.delete(workspaceId);
+  if (sessions.size === 0 && idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
   if (s.agentTimer) clearTimeout(s.agentTimer);
   if (s.stateTimer) clearTimeout(s.stateTimer);
   const wc = s.view.webContents;
@@ -686,7 +812,11 @@ export function runPreviewCommand(
 ): Promise<PreviewCliResult> {
   const ws = Workspaces.get(workspaceId);
   if (!ws) return Promise.resolve({ ok: false, text: 'preview: unknown workspace' });
-  const s = ensureSession(ws, true);
+  // A view released by the idle TTL comes back on the page it was parked on, so
+  // a command after a long pause doesn't silently act on a blank tab. (`revive`
+  // is a no-op while a session is live: parking is the only thing that sets a
+  // parked URL, and creating a session clears it.)
+  const s = revive(workspaceId, true) ?? ensureSession(ws, true);
   const run = s.queue.then(() => execCommand(s, ws, agentId, argv));
   // keep the chain alive even if one command throws
   s.queue = run.then(
@@ -902,9 +1032,11 @@ async function waitForSelector(s: PreviewSession, selector: string, timeoutMs: n
 async function dispatchClick(s: PreviewSession, x: number, y: number): Promise<void> {
   const dbg = s.view.webContents.debugger;
   const base = { x, y, button: 'left' as const };
-  await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base });
-  await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, clickCount: 1, buttons: 1 });
-  await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, clickCount: 1, buttons: 0 });
+  await synthesize(s, async () => {
+    await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base });
+    await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, clickCount: 1, buttons: 1 });
+    await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, clickCount: 1, buttons: 0 });
+  });
 }
 
 const KEYS: Record<string, { key: string; code: string; vk: number; text?: string }> = {

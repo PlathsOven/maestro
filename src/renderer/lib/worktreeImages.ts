@@ -18,8 +18,9 @@ import { useApp } from '../store/app';
  *  3. Routes a click on a worktree file *link* to the in-app editor rather than
  *     letting the anchor navigate the renderer to a `file://` page (blank app).
  *
- * Returns a cleanup that detaches the click listener. Runs after every render
- * (the shared Markdown calls it with no dep array), so streaming turns re-fill.
+ * Returns a cleanup that detaches the click listener. Re-runs whenever the
+ * markdown text changes (the shared Markdown keys its hydration on it), which is
+ * exactly when React rewrites the subtree — so streaming turns re-fill.
  */
 export function hydrateChatMarkdown(root: HTMLElement): () => void {
   hydrateImages(root);

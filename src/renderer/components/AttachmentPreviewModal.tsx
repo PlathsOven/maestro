@@ -62,7 +62,7 @@ export default function AttachmentPreviewModal({
       width={preview?.kind === 'image' ? 900 : 720}
       footer={
         openExternal && (
-          <button className="btn gap-1.5 text-xs" onClick={openExternal}>
+          <button className="btn h-8 gap-1.5 px-3.5" onClick={openExternal}>
             <ExternalLink size={12} /> Open in default app
           </button>
         )
@@ -74,10 +74,10 @@ export default function AttachmentPreviewModal({
         </div>
       ) : preview?.kind === 'image' ? (
         <div className="flex justify-center">
-          <img src={preview.dataUrl} alt={attachment.label} className="max-h-[64vh] max-w-full rounded-card" />
+          <img src={preview.dataUrl} alt={attachment.label} className="max-h-[64vh] max-w-full rounded-card shadow-sm" />
         </div>
       ) : preview?.kind === 'text' ? (
-        <pre className="max-h-[64vh] overflow-auto whitespace-pre-wrap break-words rounded-card border bg-surface p-3 font-mono text-xs leading-relaxed text-fg">
+        <pre className="max-h-[64vh] overflow-auto whitespace-pre-wrap break-words rounded-card bg-surface px-4 py-3.5 font-mono text-xs leading-relaxed text-fg">
           {preview.text}
         </pre>
       ) : (

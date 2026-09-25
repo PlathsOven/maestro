@@ -1,7 +1,7 @@
 /**
- * Shared plumbing for the three agent-facing CLIs (maestro-ask / maestro-role /
- * maestro-preview). Each is its own esbuild --bundle entry, so this module inlines
- * into all three — no separate artifact ships. Plain Node builtins only.
+ * Shared plumbing for the agent-facing CLIs (maestro-ask / maestro-role /
+ * maestro-preview / maestro-message). Each is its own esbuild --bundle entry, so
+ * this module inlines into each — no separate artifact ships. Plain Node builtins only.
  */
 import http from 'http';
 

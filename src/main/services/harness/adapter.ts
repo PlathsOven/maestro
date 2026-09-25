@@ -47,7 +47,9 @@ export interface HarnessAdapter {
   unattendedDrain?: { sessionRecipe: string };
   /** subscription rate-limit usage for one login's credentials (`loginDir`
    *  undefined = the CLI's default store). null when not signed in with a
-   *  subscription or the harness has no such notion. */
+   *  subscription or the harness has no such notion. Throws when usage exists
+   *  but can't be read right now (rate limit, expired token, network), so the
+   *  caller keeps showing the last reading. */
   fetchUsage?(loginDir?: string): Promise<SubUsage | null>;
   /** Per-login credential isolation. `env(dir)` makes the CLI read/write its
    *  credentials under `dir` instead of its default store, leaving sessions and

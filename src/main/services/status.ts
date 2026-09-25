@@ -86,7 +86,7 @@ async function gitContext(ws: Workspace, project: Project, fileLimit: number) {
 }
 
 async function sessionContext(ws: Workspace, agentId: number, project: Project): Promise<string> {
-  const msgs = Messages.list(ws.id).filter((m) => m.agentId === agentId);
+  const msgs = Messages.listForAgent(ws.id, agentId);
   const recent = msgs.slice(-24);
   const chatMeta = Workspaces.getChats(ws.id)[String(agentId)];
   // Folder projects have no git base — the digest is transcript-only.

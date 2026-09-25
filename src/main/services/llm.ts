@@ -98,8 +98,12 @@ export function generateText(opts: {
   /** Run on this host (remote workspaces). Omit/local = this Mac. */
   host?: ExecHost;
   timeoutMs?: number;
+  /** User-initiated and awaited (Create PR): skip the queue rather than wait
+   *  out background digests. One extra concurrent CLI is no worse than the
+   *  chat turns that already run alongside the queue. */
+  urgent?: boolean;
 }): Promise<LlmResult> {
-  return enqueue(() => generateTextNow(opts));
+  return opts.urgent ? generateTextNow(opts) : enqueue(() => generateTextNow(opts));
 }
 
 /**

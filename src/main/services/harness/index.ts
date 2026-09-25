@@ -7,11 +7,28 @@ import { appIconPath } from '../../icon';
 import { Messages, Projects, Settings, Subagents, Workspaces, now, uid } from '../../db';
 import { currentBranch } from '../git';
 import { scriptEnv } from '../scripts';
-import { HARNESS_PLAN_MODE, resolveDefaultEffort, resolveDefaultModel } from '../../../shared/types';
-import type { AgentBlock, AgentEvent, HarnessId, HarnessInfo, SubUsage, Workspace } from '../../../shared/types';
+import {
+  HARNESS_PLAN_MODE,
+  effortLevelsForModel,
+  resolveDefaultEffort,
+  resolveDefaultModel,
+  resolveEffortLevel,
+} from '../../../shared/types';
+import type {
+  AgentBlock,
+  AgentEvent,
+  ChatMessage,
+  HarnessId,
+  HarnessInfo,
+  LiveTurnSnapshot,
+  SubUsage,
+  Workspace,
+} from '../../../shared/types';
 import { wireAdapterStream, type BuildOpts, type HarnessAdapter } from './adapter';
-import { applyBlockEvent, finalizeBlocks, newBlockStream, snapshotBlocks, type BlockStream } from './stream';
+import { applyBlockEvent, finalizeBlocks, newBlockStream, type BlockStream } from './stream';
 import { applyTaskEvent, reapBackgroundTasks } from './tasks';
+import { setMemGuardReporter, trackTurnProcess } from '../memguard';
+import { describeProc, formatGb } from '../memguard/policy';
 import { claudeAdapter } from './claude';
 import { codexAdapter } from './codex';
 import { effectiveHarnessModels } from './codex-models';
@@ -57,20 +74,36 @@ export async function detectHarnesses(force = false): Promise<HarnessInfo[]> {
 // Subscription usage, cached briefly: renderers poll it freely (mount, turn
 // end, interval) and a fetch hits the network + possibly the macOS Keychain.
 // Keyed per login so each row in the usage popover caches independently.
-const usageCache = new Map<string, { at: number; value: SubUsage | null }>();
+// A failed read (fetchUsage threw) re-serves the last good reading, stamped
+// with `asOf`, and waits longer before retrying; concurrent callers share one
+// fetch, since every extra call to Claude's endpoint is a near-certain 429.
+const usageCache = new Map<string, { until: number; value: SubUsage | null }>();
+const usageLastGood = new Map<string, SubUsage>();
+const usageInflight = new Map<string, Promise<SubUsage | null>>();
 
-export async function getSubUsage(harness: HarnessId, loginId: string = DEFAULT_LOGIN_ID): Promise<SubUsage | null> {
+export function getSubUsage(harness: HarnessId, loginId: string = DEFAULT_LOGIN_ID): Promise<SubUsage | null> {
   const key = `${harness}:${loginId}`;
   const cached = usageCache.get(key);
-  if (cached && Date.now() - cached.at < 30_000) return cached.value;
-  let value: SubUsage | null = null;
-  try {
-    value = (await adapters[harness]?.fetchUsage?.(loginDir(harness, loginId))) ?? null;
-  } catch {
-    value = null;
-  }
-  usageCache.set(key, { at: Date.now(), value });
-  return value;
+  if (cached && Date.now() < cached.until) return Promise.resolve(cached.value);
+  const inflight = usageInflight.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    let value: SubUsage | null;
+    let ttl = 30_000;
+    try {
+      value = (await adapters[harness]?.fetchUsage?.(loginDir(harness, loginId))) ?? null;
+      if (value) usageLastGood.set(key, { ...value, asOf: Date.now() });
+      else usageLastGood.delete(key);
+    } catch {
+      value = usageLastGood.get(key) ?? null;
+      ttl = 2 * 60_000;
+    }
+    usageCache.set(key, { until: Date.now() + ttl, value });
+    usageInflight.delete(key);
+    return value;
+  })();
+  usageInflight.set(key, p);
+  return p;
 }
 
 interface RunHandle {
@@ -102,8 +135,10 @@ interface RunHandle {
   // follower's per-turn callback so it can advance the journal offset.
   quiet?: boolean;
   onFinalized?: () => void;
-  // Pending throttled publish of the in-progress turn to Maestro Web (§6.3).
+  // Pending throttled publish of the in-progress turn to Maestro Web (§6.3):
+  // the timer, and the block events it will carry.
   liveTimer?: ReturnType<typeof setTimeout>;
+  pendingEvents: AgentEvent[];
 }
 
 const runs = new Map<string, RunHandle>();
@@ -157,6 +192,24 @@ export function isAgentRunning(workspaceId: string, agentId: number): boolean {
   return runs.has(runKey(workspaceId, agentId));
 }
 
+/** Every running turn's blocks so far in one workspace, keyed by agentId — for a
+ *  renderer that came up mid-turn (a reload, or the window recovering from a
+ *  crash). Copies the arrays: the accumulator mutates its own in place. */
+export function liveTurnSnapshots(workspaceId: string): Record<string, LiveTurnSnapshot> {
+  const out: Record<string, LiveTurnSnapshot> = {};
+  for (const h of runs.values()) {
+    if (h.workspaceId !== workspaceId || h.doneHandled) continue;
+    out[String(h.agentId)] = {
+      finalBlocks: [...h.stream.finalBlocks],
+      deltaBlocks: [...h.stream.deltaBlocks],
+      accumType: h.stream.accumType,
+      accumText: h.stream.accumText,
+      startedAt: h.startedAt,
+    };
+  }
+  return out;
+}
+
 function setWorkspaceStatus(ws: Workspace, status: Workspace['status']) {
   const fresh = Workspaces.get(ws.id);
   if (!fresh) return;
@@ -189,36 +242,49 @@ function recordAskBlock(workspaceId: string, agentId: number, block: AgentBlock)
   if (!h || h.doneHandled) return;
   const event: AgentEvent = { kind: 'message-final', blocks: [block] };
   applyBlockEvent(h.stream, event);
+  queueLiveEvent(h, event);
   broadcast('chat:event', { workspaceId, agentId, event });
 }
 setAskRecordHook(recordAskBlock);
 
 /** Publish a LOCAL turn's lifecycle to Maestro Web (web-desktop-parity §6.3). The
  *  account service registers this once linked; cloud turns stream via the box
- *  journal instead, so the hook (account.publishLiveTurn) skips them. */
-export type LiveTurnPublish = { turnId: string; status: 'running' | 'done' | 'error'; blocks: unknown[]; meta?: unknown; startedAt: number; endedAt?: number };
+ *  journal instead, so the hook (account.publishLiveTurn) skips them.
+ *
+ *  A running tick carries the block EVENTS since the last one plus the stream
+ *  they were folded into — the relay stores deltas and only needs the stream when
+ *  it has to re-base (web-relay-event-bus §3.1). The terminal publish still
+ *  carries the whole finished turn. */
+export type LiveTurnPublish =
+  | { turnId: string; status: 'running'; events: AgentEvent[]; stream: BlockStream; startedAt: number }
+  | { turnId: string; status: 'done' | 'error'; blocks: unknown[]; meta?: unknown; startedAt: number; endedAt: number };
 let liveTurnHook: ((workspaceId: string, agentId: number, turn: LiveTurnPublish) => void) | null = null;
 export function setLiveTurnHook(fn: ((workspaceId: string, agentId: number, turn: LiveTurnPublish) => void) | null): void {
   liveTurnHook = fn;
 }
 
-// While a local turn streams, mirror its blocks-so-far to Maestro Web so the web
-// shows the same tool calls / reasoning / text the desktop does, instead of a
-// bare "Thinking…" until the turn ends (§6.3). Throttled trailing edge: the first
-// change since the last publish schedules one LIVE_STREAM_MS later and coalesces
-// the burst. finalize clears the timer and sets doneHandled, so no trailing
-// publish lands after the terminal one (the relay also refuses to revive a
-// finalized turn — putConvTurn).
+// While a local turn streams, mirror it to Maestro Web so the web shows the same
+// tool calls / reasoning / text the desktop does, instead of a bare "Thinking…"
+// until the turn ends (§6.3). Throttled trailing edge: the first change since the
+// last publish schedules one LIVE_STREAM_MS later and coalesces the burst.
+// finalize clears the timer and sets doneHandled, so no trailing publish lands
+// after the terminal one (the relay also refuses to revive a finalized turn —
+// putConvTurn).
 const LIVE_STREAM_MS = 400;
-function scheduleLivePublish(h: RunHandle): void {
-  if (!liveTurnHook || h.doneHandled || h.liveTimer) return;
+
+/** Note a block-changing event for the web's live stream and schedule the tick. */
+function queueLiveEvent(h: RunHandle, ev: AgentEvent): void {
+  if (!liveTurnHook || h.doneHandled) return;
+  h.pendingEvents.push(ev);
+  if (h.liveTimer) return;
   h.liveTimer = setTimeout(() => {
     h.liveTimer = undefined;
     if (h.doneHandled) return;
     liveTurnHook?.(h.workspaceId, h.agentId, {
       turnId: h.turnId,
       status: 'running',
-      blocks: snapshotBlocks(h.stream),
+      events: h.pendingEvents.splice(0),
+      stream: h.stream,
       startedAt: h.startedAt,
     });
   }, LIVE_STREAM_MS);
@@ -256,7 +322,7 @@ function applyEvent(h: RunHandle, ev: AgentEvent): boolean {
 /** Drop a system line into a chat — how an automatic send (a queued message, a
  *  rotation retry) reports what it did, since there's no UI action to return to.
  *  Shared with services/chat (one definition). */
-export function postSystem(workspaceId: string, agentId: number, content: string): void {
+export function postSystem(workspaceId: string, agentId: number, content: string, meta?: ChatMessage['meta']): void {
   const msg = {
     id: uid(),
     workspaceId,
@@ -265,9 +331,52 @@ export function postSystem(workspaceId: string, agentId: number, content: string
     content,
     attachments: [],
     ts: now(),
+    ...(meta ? { meta } : {}),
   };
   Messages.insert(msg);
   broadcast('chat:message', msg);
+}
+
+// The memory guard stopped a process one of our turns started: tell the user in
+// the chat it happened in. `midTurn` keeps the note from ending the live turn —
+// the agent is still running, it just watched one of its commands die. When the
+// victim was the turn's own CLI the turn ends with it, and the close handler
+// below words the error; no separate note.
+setMemGuardReporter((kill) => {
+  if (kill.wasRoot) return;
+  postSystem(
+    kill.turn.workspaceId,
+    kill.turn.agentId,
+    `**Maestro stopped a runaway process.** \`${describeProc(kill.victim)}\` (pid ${kill.victim.pid}), started by the ` +
+      `agent in this chat, had grown to ${formatGb(kill.victim.mem)} with only ${formatGb(kill.state.free)} of ` +
+      `${formatGb(kill.state.limit)} left on this machine — the point at which the OS starts failing every app, ` +
+      `Maestro's window and the agent included. The turn is still running; the agent sees the command as killed. ` +
+      `(Settings → General turns this guard off.)`,
+    { midTurn: true }
+  );
+});
+
+/**
+ * The error a turn ends with when its process died without a `result`. A fatal
+ * abort deserves a sentence, not a bare number: on Windows the Claude CLI (a Bun
+ * binary) leaves `0xC0000409` — 3221226505 — when it dies of memory exhaustion,
+ * which a fan-out turn on a big session can do (docs/specs/fan-out-turn-oom.md),
+ * and users read that as Maestro crashing. Whatever stderr left behind (a Bun
+ * panic report, an API error) follows, so nothing visible before is lost.
+ */
+export function crashError(code: number | null, stderrTail: string, cmdName: string): string {
+  const tail = stderrTail.trim();
+  const status = code == null ? -1 : code >>> 0; // NTSTATUS codes arrive signed or unsigned
+  const what =
+    status === 0xc0000409
+      ? `\`${cmdName}\` crashed (fatal error 0xC0000409 — on Windows this usually means it ran out of memory).`
+      : status === 0xc0000005
+        ? `\`${cmdName}\` crashed (access violation 0xC0000005).`
+        : code === 134 || code === 137
+          ? `\`${cmdName}\` was killed (exit ${code}${code === 137 ? ', usually out of memory' : ''}).`
+          : null;
+  if (!what) return tail || `exit code ${code}`;
+  return `${what} Its output so far was kept — send again to continue; if this recurs, update the CLI.${tail ? `\n${tail}` : ''}`;
 }
 
 /** A usage window's human label for the rotation message. */
@@ -524,6 +633,30 @@ export interface ResolvedTurn {
 }
 
 /**
+ * The model + effort a chat's turns run with — always explicit, so the UI and the
+ * CLI agree. A chat's stored model must be one of the workspace harness's
+ * *current* models. Codex's list is resolved live from its own catalog, so
+ * validate against that — otherwise a newly-shipped model the picker just offered
+ * would be rejected here and silently downgraded to the default. If the harness
+ * was switched, an id left over from the old one is likewise dropped so it isn't
+ * handed to the wrong CLI (e.g. `claude --model gpt-5.6-terra`) — we fall back to
+ * the default then.
+ */
+function resolveChatModelEffort(
+  ws: Workspace,
+  chatMeta: { model?: string; effort?: string },
+  settings: ReturnType<typeof Settings.global>
+) {
+  const validModels = effectiveHarnessModels()[ws.harness] ?? [];
+  const chatModel = validModels.some((m) => m.id === chatMeta.model) ? chatMeta.model : '';
+  return {
+    validModels,
+    model: chatModel || resolveDefaultModel(ws.harness, settings.defaultModels) || undefined,
+    effort: chatMeta.effort || resolveDefaultEffort(settings.defaultEffort) || undefined,
+  };
+}
+
+/**
  * Resolve the adapter, per-chat build options, and spawn env for a turn — the
  * shared prelude for a local spawn (`startAgent`) and a cloud `turn.sh`
  * (services/cloud). The env depends only on model/effort, so it's stable across
@@ -539,14 +672,7 @@ export function resolveTurn(
   const settings = Settings.global();
   const sessionId = Workspaces.getSessions(ws.id)[String(agentId)] ?? null;
   const chatMeta = Workspaces.getChats(ws.id)[String(agentId)] ?? {};
-  // A chat's stored model must be one of the workspace harness's *current* models.
-  // Codex's list is resolved live from its own catalog, so validate against that —
-  // otherwise a newly-shipped model the picker just offered would be rejected here
-  // and silently downgraded to the default. If the harness was switched, an id left
-  // over from the old one is likewise dropped so it isn't handed to the wrong CLI
-  // (e.g. `claude --model gpt-5.6-terra`) — we fall back to the default then.
-  const validModels = effectiveHarnessModels()[ws.harness] ?? [];
-  const chatModel = validModels.some((m) => m.id === chatMeta.model) ? chatMeta.model : '';
+  const { model, effort } = resolveChatModelEffort(ws, chatMeta, settings);
   // The per-chat plan toggle overrides the global permission mode, gated on the
   // harness actually having a plan-style mode — so a stale flag left over from a
   // harness switch can't distort another CLI's approval flags.
@@ -554,9 +680,8 @@ export function resolveTurn(
   const base = {
     permissionMode: planMode ? ('plan' as const) : settings.permissionMode,
     systemPrompt,
-    // Always resolve to an explicit model/effort so the UI and the CLI agree.
-    model: chatModel || resolveDefaultModel(ws.harness, settings.defaultModels) || undefined,
-    effort: chatMeta.effort || resolveDefaultEffort(settings.defaultEffort) || undefined,
+    model,
+    effort,
   };
   // env depends only on model/effort — a probe build yields it prompt-independently.
   const probeEnv = adapter.build({ ...base, prompt: '', sessionId: null }).env ?? {};
@@ -574,6 +699,18 @@ export function resolveTurn(
     ...(extraEnv ?? {}),
   };
   return { adapter, base, sessionId, spawnEnv, loginId };
+}
+
+/** The model + effort a turn in this chat runs with, as display labels — stamped
+ *  on the user message so the transcript shows what each prompt was sent with.
+ *  Labelled like the composer chips (effort omitted when the model has no
+ *  effort ladder). */
+export function turnModelLabels(ws: Workspace, agentId: number): { modelLabel?: string; effortLabel?: string } {
+  const chatMeta = Workspaces.getChats(ws.id)[String(agentId)] ?? {};
+  const { validModels, model, effort } = resolveChatModelEffort(ws, chatMeta, Settings.global());
+  const opt = validModels.find((m) => m.id === model);
+  const level = resolveEffortLevel(effort, effortLevelsForModel(ws.harness, model ?? '', opt), opt?.defaultEffort);
+  return { modelLabel: opt?.label ?? model, effortLabel: level?.label };
 }
 
 export function startAgent(opts: SendOpts): { ok: boolean; error?: string } {
@@ -606,7 +743,9 @@ export function startAgent(opts: SendOpts): { ok: boolean; error?: string } {
     send: opts,
     loginId,
   });
-  liveTurnHook?.(ws.id, agentId, { turnId, status: 'running', blocks: [], startedAt: Date.now() });
+  // Opens the turn on the relay (the row + `turn-started`); its blocks follow as
+  // deltas (web-relay-event-bus §3.1).
+  liveTurnHook?.(ws.id, agentId, { turnId, status: 'running', events: [], stream: newBlockStream(), startedAt: Date.now() });
   return { ok: true };
 }
 
@@ -653,6 +792,7 @@ export function beginTurn(
     agentId,
     turnId: opts.turnId,
     stream: newBlockStream(),
+    pendingEvents: [],
     doneHandled: false,
     stopped: false,
     stderrTail: '',
@@ -683,7 +823,7 @@ export function beginTurn(
       broadcast('chat:event', { workspaceId: ws.id, agentId, event });
     // Mirror the growing turn to Maestro Web as blocks arrive (§6.3). The hook
     // no-ops for cloud turns (they stream via the box journal) and when unlinked.
-    if (blocksChanged) scheduleLivePublish(handle);
+    if (blocksChanged) queueLiveEvent(handle, event);
     if (event.kind === 'done') void finalize(handle, event);
   };
 
@@ -691,11 +831,16 @@ export function beginTurn(
     emit({ kind: 'done', ok: false, error: `Failed to start ${opts.cmdName}: ${err.message}` });
   });
 
+  // Local turns only (`pid` is undefined elsewhere): the memory guard watches
+  // this process tree for a runaway while the turn runs.
+  const untrack = trackTurnProcess(child.pid, { workspaceId: ws.id, agentId });
+
   wireAdapterStream(child, adapter, opts.stdin, emit, (chunk) => {
     handle.stderrTail = (handle.stderrTail + chunk).slice(-2000);
   });
 
   child.onClose((code) => {
+    const guardKill = untrack();
     // The process that owned this chat's background tasks is gone, so any task
     // still marked running died with it — record that before the turn wraps up.
     reapBackgroundTasks(ws.id, agentId);
@@ -707,7 +852,15 @@ export function beginTurn(
       emit({
         kind: 'done',
         ok: handle.stopped || code === 0,
-        error: handle.stopped ? undefined : code !== 0 ? handle.stderrTail.trim() || `exit code ${code}` : undefined,
+        error: handle.stopped
+          ? undefined
+          : guardKill
+            ? `Maestro stopped \`${opts.cmdName}\`: it had grown to ${formatGb(guardKill.victim.mem)} with only ` +
+              `${formatGb(guardKill.state.free)} of ${formatGb(guardKill.state.limit)} left on this machine. ` +
+              `Its output so far was kept — send again to continue.`
+            : code !== 0
+              ? crashError(code, handle.stderrTail, opts.cmdName)
+              : undefined,
       });
     }
   });

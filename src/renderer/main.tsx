@@ -11,6 +11,7 @@ import 'katex/dist/katex.min.css';
 import './styles.css';
 import App from './App';
 import { useApp } from './store/app';
+import { installMotion } from '../shared/ui/motion';
 
 // Surface the otherwise-invisible class of errors — a render throw, an unhandled
 // invoke() rejection — as a red toast, so they become reportable with the same
@@ -33,4 +34,5 @@ window.addEventListener('unhandledrejection', (e) => {
   surfaceError(typeof r === 'string' ? r : r?.message || 'Unhandled promise rejection');
 });
 
+installMotion();
 ReactDOM.createRoot(document.getElementById('root')!).render(<App />);

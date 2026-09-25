@@ -8,14 +8,16 @@ import { cancelAsk, createAsk } from './ask';
 import { runPreviewCommand } from './preview';
 
 /**
- * Loopback HTTP bridge the agent's CLIs call back into. Two routes, both gated
- * on a per-launch bearer token and bound to 127.0.0.1 so nothing else on the box
+ * Loopback HTTP bridge the agent's CLIs call back into. Every route is gated on
+ * a per-launch bearer token and bound to 127.0.0.1 so nothing else on the box
  * can drive them:
  *   POST /run — `maestro-role` delegates a task to a specialist sub-agent.
  *   POST /ask — `maestro-ask` asks the user a structured question and blocks on
  *               the answer (rendered as a picker in the agent's live turn).
- * The agent is spawned by us with the matching MAESTRO_ROLE_ / MAESTRO_ASK_ env
- * vars, shells out to the CLI, and blocks on stdout until we reply.
+ *   POST /preview, /message — `maestro-preview` drives the browser pane;
+ *               `maestro-message` messages another chat's agent.
+ * The agent is spawned by us with the matching MAESTRO_* env vars (ROLE_ / ASK_ /
+ * PREVIEW_ / MESSAGE_), shells out to the CLI, and blocks on stdout until we reply.
  */
 let server: http.Server | null = null;
 let info: { url: string; token: string } | null = null;
@@ -65,7 +67,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     } catch {}
   };
   const pathName = (req.url ?? '').split('?')[0];
-  if (req.method !== 'POST' || (pathName !== '/run' && pathName !== '/ask' && pathName !== '/preview')) {
+  if (req.method !== 'POST' || !['/run', '/ask', '/preview', '/message'].includes(pathName)) {
     return send(404, { ok: false, error: 'not found' });
   }
   if (req.headers.authorization !== `Bearer ${token}`) return send(401, { ok: false, error: 'unauthorized' });
@@ -78,6 +80,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   const headerMode = !!hWorkspace;
 
   let body = '';
+  // Decode as one UTF-8 stream: per-chunk decoding mangles a multi-byte
+  // character split across chunks (long non-ASCII messages, questions, prompts).
+  req.setEncoding('utf8');
   req.on('data', (c) => (body += c));
   req.on('error', () => send(400, { ok: false, error: 'request error' }));
   req.on('end', async () => {
@@ -119,6 +124,47 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return send(200, result);
       } catch (e: any) {
         return send(200, { ok: false, text: String(e?.message ?? e) });
+      }
+    }
+
+    if (pathName === '/message') {
+      // `maestro-message` (docs/specs/agent-messaging.md). Local Node CLIs send
+      // `{ workspaceId, agentId, argv, text }`; remote curl shims send workspace/
+      // agent/args as x-maestro-* headers and the message text as the raw body.
+      // The shims get plain text and a real status (the shim's exit code); the
+      // Node CLI gets `{ ok, text }` JSON.
+      // Keyed on the shim's own marker, not on header mode: with its env missing
+      // the shim sends no workspace header, and must still get a failing status.
+      const shim = header(req, 'x-maestro-shim') === '1';
+      const reply = (r: { ok: boolean; text: string }) => {
+        if (!shim) return send(200, r);
+        try {
+          res.writeHead(r.ok ? 200 : 422, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end(r.text);
+        } catch {}
+      };
+      let j: any;
+      if (headerMode) {
+        // Node reads header bytes as latin1; the shim sends UTF-8 (project names).
+        // Split on single spaces: runMessageCommand rejoins everything after the
+        // command with single spaces, so an address keeps its exact spacing.
+        const args = Buffer.from(header(req, 'x-maestro-args') ?? '', 'latin1').toString('utf8');
+        j = { workspaceId: hWorkspace, agentId: header(req, 'x-maestro-agent'), argv: args.split(' '), text: body };
+      } else if (shim) {
+        return reply({ ok: false, text: 'this command only works inside a Maestro agent session.' });
+      } else {
+        j = tryParse(body);
+        if (j === undefined) return reply({ ok: false, text: 'bad json' });
+      }
+      if (!j?.workspaceId) return reply({ ok: false, text: 'missing workspaceId' });
+      try {
+        // Lazy: a static import would put messaging → chat into the startup
+        // graph as a cycle, and reordering module init there wipes harness hooks.
+        const { runMessageCommand } = await import('./messaging');
+        const argv = Array.isArray(j.argv) ? j.argv.map(String) : [];
+        return reply(await runMessageCommand(String(j.workspaceId), Number(j.agentId) || 1, argv, String(j.text ?? '')));
+      } catch (e: any) {
+        return reply({ ok: false, text: String(e?.message ?? e) });
       }
     }
 
@@ -211,6 +257,7 @@ export function installBridgeClis(): void {
     installCli(toolsDir, binDir, 'maestro-role', 'role-cli.cjs');
     installCli(toolsDir, binDir, 'maestro-ask', 'ask-cli.cjs');
     installCli(toolsDir, binDir, 'maestro-preview', 'preview-cli.cjs');
+    installCli(toolsDir, binDir, 'maestro-message', 'message-cli.cjs');
   } catch {
     // best-effort — leave the bridge CLIs unavailable rather than crash startup
   }

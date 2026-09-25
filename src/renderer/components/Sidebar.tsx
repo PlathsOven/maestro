@@ -3,22 +3,18 @@ import clsx from 'clsx';
 import {
   Archive,
   Book,
-  ChevronDown,
-  ChevronRight,
   Clock,
   Folder,
   FolderPlus,
   GitBranch,
   GitMerge,
   GitPullRequest,
-  Globe,
-  Loader2,
   Server,
   CircleDot,
   MessageSquare,
   MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
+  ChevronsLeft,
+  ChevronsRight,
   Plus,
   RotateCcw,
   Settings,
@@ -32,6 +28,7 @@ import {
   Circle,
   Laptop,
 } from 'lucide-react';
+import { GitHubMark } from '../../shared/ui/brandIcons';
 import { EMPTY_ARR, useApp, useActiveProject, useCaps, useShowPr, LAYOUT_LIMITS, DEFAULT_LAYOUT, type LiveTurn } from '../store/app';
 import {
   ContextMenu,
@@ -50,11 +47,13 @@ import {
   useDismiss,
   useHoverDetail,
 } from './common';
-import { RepoIcon as SharedRepoIcon } from '../../shared/ui/primitives';
+import { Chevron, RepoIcon as SharedRepoIcon } from '../../shared/ui/primitives';
+import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { tryInvoke } from '../lib/api';
 import { fmtStat } from '../lib/format';
 import FeedbackPopover from './FeedbackPopover';
 import { mergeabilityUnknown, mergeFailureMessage } from '../lib/resolveConflicts';
+import { StainedGlass } from '../../shared/ui/StainedGlass';
 import {
   INDICATOR_LABEL,
   hasAnyStatus,
@@ -98,6 +97,7 @@ function ExpandedSidebar() {
 
   return (
     <aside
+      data-morph="sidebar"
       className="relative flex shrink-0 flex-col"
       style={{ width: sidebarW }}
       onContextMenu={(e) => {
@@ -123,7 +123,7 @@ function ExpandedSidebar() {
         <button
           className={clsx(
             'no-drag flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-[13px] transition-colors',
-            showWorkspaces ? 'bg-accent-soft font-medium text-fg' : 'text-muted hover:bg-accent-soft/50 hover:text-fg'
+            showWorkspaces ? 'bg-accent-soft font-medium text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
           )}
           onClick={() => useApp.getState().openWorkspacesView()}
         >
@@ -131,19 +131,19 @@ function ExpandedSidebar() {
           Workspaces
         </button>
       </div>
-      <div className="mx-3 my-1.5 border-t" />
+      <div className="h-3" />
 
       {/* Projects header + [+] menu (Conductor flow: Open / GitHub / Quick start) */}
       <div className="relative px-3">
         <div className="flex items-center justify-between px-2 py-1">
-          <span className="text-[13px] font-semibold text-muted">Projects</span>
+          <span className="text-xs font-medium text-faint">Projects</span>
           <div className="flex items-center gap-0.5">
             <button
               className="no-drag rounded-ctl p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
               title="Collapse sidebar"
               onClick={() => void useApp.getState().saveSettings({ sidebarCollapsed: true })}
             >
-              <PanelLeftClose size={15} />
+              <ChevronsLeft size={15} strokeWidth={1.5} />
             </button>
             <button
               className="no-drag rounded-ctl p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
@@ -172,7 +172,7 @@ function ExpandedSidebar() {
                 setModal({ kind: 'clone-repo' });
               }}
             >
-              <Globe size={15} className="text-muted" /> Open GitHub project
+              <GitHubMark size={15} className="text-muted" /> Open GitHub project
             </MenuItem>
             <MenuItem
               big
@@ -222,7 +222,7 @@ function ExpandedSidebar() {
       {/* needs-attention glance */}
       {attention.length > 0 && (
         <button
-          className="mx-3 mt-1 flex items-center gap-2 rounded-ctl border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-left text-xs"
+          className="mx-3 mt-1 flex items-center gap-2 rounded-ctl border bg-raised px-2.5 py-1.5 text-left text-xs shadow-sm"
           onClick={() => {
             const ws = attention[0];
             useApp.getState().selectProject(ws.projectId);
@@ -251,17 +251,18 @@ function ExpandedSidebar() {
         {archived.length > 0 && (
           <div className="mt-4">
             <button
-              className="flex w-full items-center gap-1.5 px-2 py-1 text-2xs font-semibold uppercase tracking-wide text-faint hover:text-muted"
+              className="flex w-full items-center gap-1.5 px-2 py-1 text-xs font-medium text-faint hover:text-muted"
               onClick={() => setHistoryOpen((v) => !v)}
             >
               <Clock size={11} />
               History
               <span className="ml-auto">{archived.length}</span>
-              <ChevronDown size={11} className={clsx('transition-transform', !historyOpen && '-rotate-90')} />
+              <Chevron open={historyOpen} size={11} />
             </button>
-            {historyOpen &&
-              archived.map((ws) => (
-                <div key={ws.id} className="group flex items-center gap-2 rounded-ctl px-2 py-1.5 hover:bg-accent-soft">
+            {historyOpen && (
+              <div data-motion="collapse">
+              {archived.map((ws) => (
+                <div key={ws.id} data-motion="row" className="group flex items-center gap-2 rounded-ctl px-2 py-1.5 hover:bg-accent-soft">
                   <GitBranch size={13} aria-label="archived" className="shrink-0 text-faint" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-xs text-muted">{ws.title ?? (ws.wsKind === 'in-place' ? ws.name : ws.branch)}</div>
@@ -297,12 +298,20 @@ function ExpandedSidebar() {
                   </button>
                 </div>
               ))}
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* footer */}
-      <div className="relative flex items-center gap-1 border-t px-3 py-2">
+      {/* footer — z-20 because LiquidGlass isolates, which would otherwise trap the
+          feedback popover's z-50 beneath the (later-painted) stage. */}
+      <LiquidGlass
+        radius={16}
+        {...GLASS_CONTROL}
+        tint="light"
+        className="z-20 mx-2.5 mb-2.5 flex items-center gap-0.5 p-1"
+      >
         <button className="btn btn-ghost flex-1 justify-start text-muted" onClick={() => setModal({ kind: 'settings' })}>
           <Settings size={13} /> Settings
         </button>
@@ -322,7 +331,7 @@ function ExpandedSidebar() {
         </button>
         <GhBadge />
         {feedbackOpen && <FeedbackPopover />}
-      </div>
+      </LiquidGlass>
 
       {ctxMenu && <SidebarContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)} />}
     </aside>
@@ -331,7 +340,11 @@ function ExpandedSidebar() {
 
 /** Card popover that opens to the right of a thin-rail trigger. */
 function FlyoutPanel({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={clsx('glass absolute left-full top-0 z-50 ml-1.5 overflow-hidden', className)}>{children}</div>;
+  return (
+    <div data-motion="pop" className={clsx('glass absolute left-full top-0 z-50 ml-2 origin-top-left overflow-hidden', className)}>
+      {children}
+    </div>
+  );
 }
 
 /** Right-click dropdown for the sidebar (works collapsed or expanded). */
@@ -346,7 +359,8 @@ function SidebarContextMenu({ x, y, onClose }: { x: number; y: number; onClose: 
     <div
       ref={ref}
       style={{ position: 'fixed', left: x, top: Math.min(y, window.innerHeight - 300), zIndex: 60 }}
-      className="glass w-56 overflow-hidden py-1"
+      data-motion="pop"
+      className="glass w-56 origin-top-left overflow-hidden py-1.5"
     >
       <MenuItem
         onClick={() => {
@@ -354,7 +368,7 @@ function SidebarContextMenu({ x, y, onClose }: { x: number; y: number; onClose: 
           void useApp.getState().saveSettings({ sidebarCollapsed: !collapsed });
         }}
       >
-        {collapsed ? <PanelLeftOpen size={15} className="text-muted" /> : <PanelLeftClose size={15} className="text-muted" />}
+        {collapsed ? <ChevronsRight size={15} strokeWidth={1.5} className="text-muted" /> : <ChevronsLeft size={15} strokeWidth={1.5} className="text-muted" />}
         {collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       </MenuItem>
       <MenuDivider />
@@ -372,7 +386,7 @@ function SidebarContextMenu({ x, y, onClose }: { x: number; y: number; onClose: 
           setModal({ kind: 'clone-repo' });
         }}
       >
-        <Globe size={15} className="text-muted" /> Open GitHub project…
+        <GitHubMark size={15} className="text-muted" /> Open GitHub project…
       </MenuItem>
       <MenuItem
         onClick={() => {
@@ -432,6 +446,7 @@ function CollapsedSidebar() {
 
   return (
     <aside
+      data-morph="sidebar"
       className="relative flex w-14 shrink-0 flex-col items-center"
       onContextMenu={(e) => {
         e.preventDefault();
@@ -440,23 +455,26 @@ function CollapsedSidebar() {
     >
       <div className="drag-region h-11 w-full shrink-0" />
       <button
-        className="no-drag mb-1 rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+        className="no-drag mb-1 grid h-9 w-9 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
         title="Expand sidebar"
         onClick={() => void useApp.getState().saveSettings({ sidebarCollapsed: false })}
       >
-        <PanelLeftOpen size={16} />
+        <ChevronsRight size={16} strokeWidth={1.5} />
       </button>
 
       <div ref={addRef} className="relative">
         <button
-          className="rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+          className={clsx(
+            'grid h-9 w-9 place-items-center rounded-full transition-colors',
+            addOpen ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
+          )}
           title="Add project"
           onClick={() => setAddOpen(!addOpen)}
         >
           <FolderPlus size={16} />
         </button>
         {addOpen && (
-          <FlyoutPanel className="w-52 py-1">
+          <FlyoutPanel className="w-52 py-1.5">
             <MenuItem
               big
               onClick={() => {
@@ -473,7 +491,7 @@ function CollapsedSidebar() {
                 setModal({ kind: 'clone-repo' });
               }}
             >
-              <Globe size={15} className="text-muted" /> Open GitHub project
+              <GitHubMark size={15} className="text-muted" /> Open GitHub project
             </MenuItem>
             <MenuItem
               big
@@ -512,7 +530,7 @@ function CollapsedSidebar() {
 
       <button
         className={clsx(
-          'no-drag mt-1 rounded-ctl p-1.5 transition-colors',
+          'no-drag mt-1 grid h-9 w-9 place-items-center rounded-full transition-colors',
           showWorkspaces ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
         )}
         title="Workspaces"
@@ -521,29 +539,30 @@ function CollapsedSidebar() {
         <Clock size={16} />
       </button>
 
-      <div className="mt-2 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
+      <div className="mx-auto my-2 w-5 border-t" />
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
         {projects.map((p) => (
           <CollapsedProjectIcon key={p.id} project={p} active={p.id === activeProjectId} />
         ))}
       </div>
 
-      <div className="relative flex w-full flex-col items-center gap-1 border-t py-2">
+      <div className="relative flex w-full flex-col items-center gap-1 pb-3 pt-2">
         <button
-          className="rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+          className="grid h-9 w-9 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title="Set up Maestro Web on your phone"
           onClick={() => setModal({ kind: 'settings', tab: 'account' })}
         >
           <Smartphone size={16} />
         </button>
         <button
-          className="rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+          className="grid h-9 w-9 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title="Send feedback"
           onClick={() => useApp.getState().openFeedback()}
         >
           <MessageSquare size={16} />
         </button>
         <button
-          className="rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+          className="grid h-9 w-9 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title="Settings"
           onClick={() => setModal({ kind: 'settings' })}
         >
@@ -594,13 +613,13 @@ function CollapsedProjectIcon({ project, active }: { project: Project; active: b
   return (
     <div className="relative" onMouseEnter={openSoon} onMouseLeave={closeSoon}>
       {active && (
-        <span className="pointer-events-none absolute -left-2 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+        <span className="pointer-events-none absolute -left-2 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-fg/70" />
       )}
       <button
         ref={btnRef}
         className={clsx(
-          'flex h-10 w-10 items-center justify-center rounded-ctl transition-colors',
-          active ? 'bg-accent-soft' : 'hover:bg-accent-soft/50'
+          'flex h-10 w-10 items-center justify-center rounded-full transition-colors',
+          active ? 'bg-accent-soft' : 'hover:bg-accent-soft'
         )}
         title={project.name}
         onClick={() => useApp.getState().selectProject(project.id)}
@@ -612,13 +631,13 @@ function CollapsedProjectIcon({ project, active }: { project: Project; active: b
       {rect && (
         <div
           style={{ position: 'fixed', left: rect.right + 8, top: Math.min(rect.top, window.innerHeight - 340), zIndex: 50 }}
-          className="glass w-64 overflow-hidden p-1"
+          data-motion="pop"
+          className="glass w-64 origin-left overflow-hidden p-1.5"
         >
-          <div className="flex items-center gap-2 px-2 py-1.5">
+          <div className="flex items-center gap-2 px-2 pb-1.5 pt-1">
             <RepoIcon project={project} active />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{project.name}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-tight">{project.name}</span>
           </div>
-          <MenuDivider />
           <div className="max-h-[60vh] overflow-y-auto">
             {list.length === 0 && <div className="px-2 py-2 text-2xs text-faint">No workspaces yet</div>}
             {list.map((ws, i) => (
@@ -643,7 +662,7 @@ function HarnessSyncHint() {
   const label = cand.root.replace(/^\/Users\/[^/]+/, '~');
   const app = cand.app === 'codex' ? 'Codex' : 'Claude Code';
   return (
-    <div className="mx-3 mt-1 flex items-center gap-2 rounded-ctl border border-line bg-raised/40 px-2.5 py-1.5 text-2xs text-muted">
+    <div className="mx-3 mt-1 flex items-center gap-2 rounded-ctl border bg-raised px-2.5 py-1.5 text-2xs text-muted shadow-sm">
       <DownloadCloud size={13} className="shrink-0 text-faint" />
       <button
         className="min-w-0 flex-1 truncate text-left hover:text-fg"
@@ -653,7 +672,7 @@ function HarnessSyncHint() {
         {cand.count} {app} chat{cand.count === 1 ? '' : 's'} in {label} — Add project
       </button>
       <button
-        className="shrink-0 px-1 text-faint hover:text-fg"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-fg"
         title="Dismiss"
         onClick={() =>
           void useApp.getState().saveSettings({
@@ -691,11 +710,11 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
   const { rect, hoverProps, hideHover } = useHoverDetail();
 
   return (
-    <div className="relative mb-0.5">
+    <div data-motion="row" className="relative mb-0.5">
       <div
         className={clsx(
-          'group flex cursor-pointer items-center gap-1.5 rounded-ctl px-1.5 py-1.5',
-          active ? 'bg-accent-soft/60' : 'hover:bg-accent-soft/40'
+          'group flex cursor-pointer items-center gap-1.5 rounded-[10px] px-2 py-1.5 transition-colors hover:bg-accent-soft',
+          active ? 'text-fg' : 'text-fg/85'
         )}
         onClick={() => {
           hideHover();
@@ -704,12 +723,12 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
         }}
         {...hoverProps}
       >
-        {expanded ? <ChevronDown size={12} className="shrink-0 text-faint" /> : <ChevronRight size={12} className="shrink-0 text-faint" />}
+        <Chevron open={expanded} className="text-faint" />
         <RepoIcon project={project} active={active} />
-        <ScrollingTitle text={project.name} className={clsx('min-w-0 flex-1 text-[13px]', active && 'font-semibold')} />
+        <ScrollingTitle text={project.name} className={clsx('min-w-0 flex-1 text-[13px]', active && 'font-medium')} />
         <StatusStack counts={counts} size={12} />
         <button
-          className="hidden shrink-0 rounded p-0.5 text-muted hover:text-fg group-hover:block"
+          className="hidden h-5 w-5 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg group-hover:grid"
           title="Project options"
           onClick={(e) => {
             e.stopPropagation();
@@ -720,7 +739,7 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
           <MoreHorizontal size={13} />
         </button>
         <button
-          className="shrink-0 rounded p-0.5 text-muted hover:text-fg"
+          className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title={`New workspace in ${project.name}`}
           onClick={(e) => {
             e.stopPropagation();
@@ -737,7 +756,7 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
         <DetailCard rect={rect}>
           <div className="text-[13px] font-semibold leading-snug break-words">{project.name}</div>
           <div className="mt-2 border-t pt-2">
-            <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">Branches</div>
+            <div className="mb-1 text-xs font-medium text-faint">Branches</div>
             {list.length === 0 ? (
               <div className="text-2xs text-faint">No workspaces yet</div>
             ) : (
@@ -799,7 +818,7 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
       )}
 
       {expanded && (
-        <div className="ml-3.5 border-l pl-1.5">
+        <div data-motion="collapse" className="ml-3 space-y-px pb-1 pl-1">
           {list.map((ws, i) => (
             <WorkspaceRow key={ws.id} ws={ws} index={active ? i : -1} active={ws.id === activeWsId} />
           ))}
@@ -828,7 +847,7 @@ function NewWorkspaceButton({ project }: { project: Project }) {
   if (!caps.worktrees) {
     return (
       <button
-        className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-[13px] text-muted hover:bg-accent-soft hover:text-fg"
+        className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[13px] text-faint transition-colors hover:bg-accent-soft hover:text-fg"
         onClick={() => {
           if (!folderWs) return;
           useApp.getState().selectProject(project.id);
@@ -845,13 +864,13 @@ function NewWorkspaceButton({ project }: { project: Project }) {
     <div className="relative">
       <div className="flex items-center">
         <button
-          className="flex flex-1 items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-[13px] text-muted hover:bg-accent-soft hover:text-fg"
+          className="flex flex-1 items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[13px] text-faint transition-colors hover:bg-accent-soft hover:text-fg"
           onClick={() => open()}
         >
           <Plus size={13} /> New workspace
         </button>
         <button
-          className="rounded-ctl p-1.5 text-muted hover:bg-accent-soft hover:text-fg"
+          className="grid h-7 w-7 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-fg"
           title="New workspace from branch / PR / issue"
           onClick={() => setMenu((v) => !v)}
         >
@@ -967,7 +986,7 @@ function WorkspacePrAction({ ws, view, hasChanges }: { ws: Workspace; view: PrVi
     const disabled = creatingPr || !hasChanges;
     return (
       <button
-        className="rounded bg-surface p-1 text-muted hover:text-fg disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted"
+        className="grid h-6 w-6 place-items-center rounded-full bg-raised text-muted shadow-sm hover:text-fg disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted"
         title={hasChanges ? 'Commit changes & create pull request' : 'No changes yet — nothing to open a PR for'}
         disabled={disabled}
         onClick={(e) => {
@@ -983,7 +1002,7 @@ function WorkspacePrAction({ ws, view, hasChanges }: { ws: Workspace; view: PrVi
   if (view.state === 'OPEN' && view.conflicting && view.url) {
     return (
       <a
-        className="rounded bg-surface p-1 text-warn hover:text-warn"
+        className="grid h-6 w-6 place-items-center rounded-full bg-raised text-warn shadow-sm hover:text-warn"
         href={view.url}
         target="_blank"
         rel="noreferrer"
@@ -1003,7 +1022,7 @@ function WorkspacePrAction({ ws, view, hasChanges }: { ws: Workspace; view: PrVi
     };
     return (
       <button
-        className="rounded bg-surface p-1 text-ok hover:text-ok disabled:opacity-40"
+        className="grid h-6 w-6 place-items-center rounded-full bg-raised text-ok shadow-sm hover:text-ok disabled:opacity-40"
         title={`Squash & merge PR${view.number != null ? ` #${view.number}` : ''}`}
         disabled={merging}
         onClick={(e) => {
@@ -1089,9 +1108,10 @@ function WorkspaceRow({
 
   return (
     <div
+      data-motion="row"
       className={clsx(
-        'group relative flex cursor-pointer items-center gap-2 rounded-ctl px-2 py-1.5',
-        active ? 'bg-accent-soft' : 'hover:bg-accent-soft/60'
+        'group relative flex cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors',
+        active ? 'tab-lit' : 'hover:bg-accent-soft/60'
       )}
       onClick={
         editing
@@ -1142,7 +1162,7 @@ function WorkspaceRow({
             <ScrollingTitle text={title} className={clsx('min-w-0 flex-1 text-[13px]', active && 'font-medium')} />
             {cloudConversation && (
               <span
-                className="flex shrink-0 items-center gap-0.5 rounded bg-accent-soft px-1 py-0.5 text-[9px] font-medium text-accent group-hover:hidden"
+                className="flex shrink-0 items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-px text-[10px] font-medium text-muted group-hover:hidden"
                 title={`Runs in the cloud${cloudHost ? ` on ${cloudHost.label}` : ''} — keeps going when Maestro is closed`}
               >
                 <Cloud size={9} /> Cloud
@@ -1166,13 +1186,13 @@ function WorkspaceRow({
         </div>
       )}
       {!editing && (
-        <div className="absolute right-1 top-1 hidden items-center gap-0.5 group-hover:flex">
+        <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex">
           {/* ready-to-merge rows already carry a green merge button in the icon slot */}
           {showPr && !readyToMerge && <WorkspacePrAction ws={ws} view={view} hasChanges={hasStat} />}
           {/* merged rows already carry a purple archive button in the icon slot */}
           {!merged && (
             <button
-              className="rounded bg-surface p-1 text-muted hover:text-fg"
+              className="grid h-6 w-6 place-items-center rounded-full bg-raised text-muted shadow-sm hover:text-fg"
               title="Archive workspace"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1213,7 +1233,7 @@ function WorkspaceRow({
             {index >= 0 && index < 9 && <DetailRow label="Shortcut" value={`⌘${index + 1}`} />}
           </div>
           <div className="mt-2 border-t pt-2">
-            <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">Sessions</div>
+            <div className="mb-1 text-xs font-medium text-faint">Sessions</div>
             {sessions.length === 0 ? (
               <div className="text-2xs text-faint">No sessions yet</div>
             ) : (
@@ -1292,8 +1312,12 @@ function MergePrButton({ ws, view }: { ws: Workspace; view: PrView }) {
   const [merging, setMerging] = useState(false);
   const label = `Ready to merge — squash & merge PR${view.number != null ? ` #${view.number}` : ''}`;
   return (
-    <button
-      className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-ok text-white shadow-sm transition hover:brightness-110 active:scale-95 disabled:opacity-60"
+    <StainedGlass
+      as="button"
+      tone="ok"
+      radius={5}
+      ripple={merging}
+      className="flex h-[18px] w-[18px] shrink-0 items-center justify-center transition active:scale-95"
       title={label}
       aria-label={label}
       disabled={merging}
@@ -1303,8 +1327,8 @@ function MergePrButton({ ws, view }: { ws: Workspace; view: PrView }) {
         void squashMergePr(ws.id, view.number).finally(() => setMerging(false));
       }}
     >
-      {merging ? <Loader2 size={11} className="spin" /> : <GitMerge size={11} />}
-    </button>
+      {merging ? <Spinner size={11} className="!text-current" /> : <GitMerge size={11} />}
+    </StainedGlass>
   );
 }
 
@@ -1317,8 +1341,11 @@ function MergePrButton({ ws, view }: { ws: Workspace; view: PrView }) {
  */
 function ArchiveMergedButton({ ws }: { ws: Workspace }) {
   return (
-    <button
-      className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-st-merged text-white shadow-sm transition hover:brightness-110 active:scale-95"
+    <StainedGlass
+      as="button"
+      tone="merged"
+      radius={5}
+      className="flex h-[18px] w-[18px] shrink-0 items-center justify-center transition active:scale-95"
       title="Merged — archive this workspace"
       aria-label="Merged — archive this workspace"
       onClick={(e) => {
@@ -1327,7 +1354,7 @@ function ArchiveMergedButton({ ws }: { ws: Workspace }) {
       }}
     >
       <Archive size={11} />
-    </button>
+    </StainedGlass>
   );
 }
 
@@ -1351,10 +1378,25 @@ function liveActivity(t: LiveTurn | undefined): string {
 
 function GhBadge() {
   const gh = useApp((s) => s.ghAuth);
+  const [broken, setBroken] = useState(false);
   if (gh.authenticated) {
+    // The signed-in GitHub account as an avatar, like an account chip — the
+    // handle lives in the tooltip so the footer never overflows.
     return (
-      <span className="flex items-center gap-1 px-2 text-2xs text-muted" title={`GitHub: @${gh.user}`}>
-        @{gh.user}
+      <span
+        className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full bg-ink text-2xs font-semibold text-on-ink"
+        title={`GitHub: @${gh.user}`}
+      >
+        {gh.user && !broken ? (
+          <img
+            src={`https://avatars.githubusercontent.com/${gh.user}?s=56`}
+            alt=""
+            className="h-full w-full object-cover"
+            onError={() => setBroken(true)}
+          />
+        ) : (
+          (gh.user ?? '?').charAt(0).toUpperCase()
+        )}
       </span>
     );
   }
@@ -1364,6 +1406,7 @@ function GhBadge() {
       title="Sign in with GitHub — enables cloning, PRs, checks and pushes"
       onClick={() => void useApp.getState().startGithubSignIn()}
     >
+      <GitHubMark size={12} />
       Sign in to GitHub
     </button>
   );
@@ -1373,7 +1416,7 @@ export function Menu({ children, onClose }: { children: React.ReactNode; onClose
   const ref = useRef<HTMLDivElement>(null);
   useDismiss(true, onClose, ref);
   return (
-    <div ref={ref} className="glass absolute left-2 right-2 z-40 mt-1 overflow-hidden py-1">
+    <div ref={ref} data-motion="pop" className="glass absolute left-2 right-2 z-40 mt-1 overflow-hidden py-1.5">
       {children}
     </div>
   );

@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import { FileCode2, Boxes, Zap } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
-import { FolderField, finishProjectAdd, Kbd, Modal, Spinner, useProjectParentDir } from './common';
+import { FolderField, finishProjectAdd, Modal, Spinner, useProjectParentDir } from './common';
 
 type TemplateId = 'empty' | 'next' | 'vite';
 
@@ -56,9 +56,9 @@ export default function CreateProjectModal() {
       width={560}
       onCmdEnter={() => void create()}
       footer={
-        <button className="btn btn-accent h-8 gap-2 px-3" disabled={!name.trim() || busy} onClick={() => void create()}>
-          {busy ? <Spinner className="!text-white" /> : 'Create'}
-          <Kbd>⌘↵</Kbd>
+        <button className="btn btn-accent h-9 gap-2 pl-4 pr-3 text-[13px]" disabled={!name.trim() || busy} onClick={() => void create()}>
+          {busy ? <Spinner className="!text-on-ink" /> : 'Create'}
+          <span className="rounded-md bg-on-ink/15 px-1.5 py-px text-2xs font-medium text-on-ink/80">⌘↵</span>
         </button>
       }
     >
@@ -66,12 +66,12 @@ export default function CreateProjectModal() {
         Create a local folder, {gh.authenticated ? 'private GitHub repo, ' : ''}and first workspace.
       </p>
 
-      <div className="mt-4 space-y-4">
+      <div className="mt-5 space-y-5">
         <div>
-          <label className="label !normal-case !text-xs !font-medium !text-fg">Project name</label>
+          <label className="label !text-fg">Project name</label>
           <input
             autoFocus
-            className="input text-[13px]"
+            className="input h-9 text-[13px]"
             placeholder="my-awesome-project"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -82,18 +82,25 @@ export default function CreateProjectModal() {
         <FolderField label="Parent folder" value={parent} onChange={setParent} onBrowse={() => void browse()} />
 
         <div>
-          <div className="label !normal-case !text-xs !font-medium !text-fg">Template</div>
+          <div className="label !text-fg">Template</div>
           <div className="grid grid-cols-3 gap-2.5">
             {TEMPLATES.map((t) => (
               <button
                 key={t.id}
                 className={clsx(
                   'flex flex-col items-center gap-2 rounded-card border px-3 py-4 text-center transition-colors',
-                  template === t.id ? 'border-accent bg-accent-soft/40' : 'bg-surface hover:border-faint'
+                  template === t.id
+                    ? 'border-fg/70 bg-raised shadow-[0_0_0_3px_var(--accent-soft)]'
+                    : 'border-border/70 bg-raised hover:border-faint'
                 )}
                 onClick={() => setTemplate(t.id)}
               >
-                <span className={clsx('flex h-11 w-11 items-center justify-center rounded-lg border bg-raised', template === t.id ? 'text-accent' : 'text-muted')}>
+                <span
+                  className={clsx(
+                    'flex h-11 w-11 items-center justify-center rounded-xl',
+                    template === t.id ? 'bg-ink text-on-ink' : 'bg-accent-soft text-muted'
+                  )}
+                >
                   {t.icon}
                 </span>
                 <span className="text-[13px] font-medium">{t.name}</span>

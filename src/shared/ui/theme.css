@@ -13,94 +13,132 @@
  * preset src/shared/ui/tailwind.preset.cjs).
  */
 
-:root {
-  /* Light theme is white-forward. Only the navigation chrome (the far-left
-     sidebar and the session rail) carries a tint — `--bg`, a near-white grey a
-     few points off white, so it reads as "nav" without ever looking dark. All
-     content surfaces — chat, diff, the right panel, the terminal — ride on
-     `--canvas` (pure white). `--surface` is a subtle recessed fill for wells on
-     that white (file lists, code blocks, the composer). User messages get their
-     own faint Maestro-purple wash via `--user-msg`. */
-  --bg: #fafaf9;
-  --surface: #f8f7f5;
+/* Classic — the default theme family (other families: themes.css). Also keyed
+   on `[data-theme='classic']` so an element inside a differently themed page
+   (the Settings picker's preview cards) can still wear it. */
+:root,
+[data-theme='classic'] {
+  /* Minimal, Lovable-style light theme. The window chrome (`--bg`, the sidebar)
+     is a warm near-white; the working area floats above it as one white stage
+     (`--canvas`) with a hairline edge and a soft diffuse shadow. `--surface` is
+     a barely-there recessed fill for wells on that white (file lists, code
+     blocks); `--raised` is card white. Colour is used sparingly: text is near
+     black, primary actions are ink (`--ink`) pills, and the Maestro violet
+     (`--accent`) is kept for links, focus and live state. Selection and hover
+     fills are neutral (`--accent-soft`), never tinted. */
+  --bg: #f6f5f2;
+  --surface: #f7f6f4;
   --raised: #ffffff;
   --canvas: #ffffff;
-  --user-msg: #eeedf8;
-  --border: #ddd9d3;
-  --text: #1a1918;
-  --muted: #6b6864;
-  --faint: #a8a49e;
-  --accent: #5344b0;
-  --accent-soft: rgba(83, 68, 176, 0.12);
-  --st-idle: #a8a49e;
-  --st-running: #4a7dbd;
-  --st-attention: #d99114;
-  --st-review: #4a9d6e;
-  --st-unread: #3d8b5f;
-  --st-merged: #8a63c9;
-  --st-merged-soft: rgba(138, 99, 201, 0.15);
-  --ok: #3d8b5f;
-  --err: #c0453a;
-  --warn: #d99114;
-  --diff-add: rgba(74, 157, 110, 0.13);
-  --diff-del: rgba(192, 69, 58, 0.12);
-  --diff-add-strong: rgba(74, 157, 110, 0.32);
-  --diff-del-strong: rgba(192, 69, 58, 0.30);
+  /* The work area as glass: the canvas, slightly see-through, so the ambient
+     wash tints it and every floating control has colour to refract. */
+  --canvas-glass: rgba(255, 255, 255, 0.8);
+  --user-msg: #f3f2ef;
+  --border: #e8e6e1;
+  --text: #1c1b1a;
+  --muted: #6d6a65;
+  --faint: #a6a39d;
+  --accent: #5b4bd6;
+  --accent-soft: rgba(28, 27, 26, 0.055);
+  /* The one tinted fill, for the rare state that must read as "violet" (drop
+     targets, the active mention row). */
+  --accent-tint: rgba(91, 75, 214, 0.1);
+  --focus-ring: rgba(91, 75, 214, 0.16);
+  --ink: #1c1b1a;
+  --on-ink: #ffffff;
+  --st-idle: #b3b0aa;
+  --st-running: #3f7fe0;
+  --st-attention: #e0930f;
+  --st-review: #2f9e6a;
+  --st-unread: #2f9e6a;
+  --st-merged: #8a5cf0;
+  --st-merged-soft: rgba(138, 92, 240, 0.13);
+  --ok: #2f9e6a;
+  --err: #d9473b;
+  --warn: #e0930f;
+  --diff-add: rgba(47, 158, 106, 0.1);
+  --diff-del: rgba(217, 71, 59, 0.09);
+  --diff-add-strong: rgba(47, 158, 106, 0.28);
+  --diff-del-strong: rgba(217, 71, 59, 0.26);
   --term-bg: #ffffff;
-  --shadow: 0 1px 3px rgba(26, 25, 24, 0.07), 0 4px 16px rgba(26, 25, 24, 0.05);
+  --shadow: 0 1px 2px rgba(24, 22, 20, 0.04), 0 6px 20px -8px rgba(24, 22, 20, 0.08);
+  /* The floating work area ("stage") beside the sidebar. */
+  --stage-shadow: 0 0 0 1px rgba(24, 22, 20, 0.05), 0 1px 2px rgba(24, 22, 20, 0.04),
+    0 16px 40px -18px rgba(24, 22, 20, 0.12);
 
-  /* Liquid glass — floating surfaces (menus, popovers, hover cards, modals).
-     Translucent so the blurred app content refracts through; a bright top edge
-     and layered shadow lift it off the page. Tuned separately from `.card`,
-     which stays opaque for in-flow content panels. */
-  --glass-bg: transparent;
-  /* Thicker frosted fill for large, text-dense surfaces (modals, command
-     palette) — kept legible while still glass. Small popups use `--glass-bg`. */
-  --glass-panel-bg: rgba(248, 247, 245, 0.86);
-  --glass-blur: 15px;
-  --glass-shadow: 0 2px 6px rgba(26, 25, 24, 0.08), 0 14px 34px rgba(26, 25, 24, 0.16),
-    0 28px 64px rgba(26, 25, 24, 0.1);
+  /* Ambient wash: the soft blue → pink → peach glow behind hero surfaces and
+     the window chrome, so glass always has colour to refract. */
+  --wash-a: rgba(122, 148, 255, 0.26);
+  --wash-b: rgba(255, 138, 196, 0.2);
+  --wash-c: rgba(255, 186, 128, 0.2);
+
+  /* Glass for floating surfaces (menus, popovers, hover cards, modals). The
+     real refraction lives in <LiquidGlass> (`.lg*` below); `.glass` is the
+     CSS-only skin for the many small popups: a light frosted tint, a bright
+     inner rim and a soft diffuse shadow. */
+  --glass-bg: rgba(255, 255, 255, 0.62);
+  /* Thicker fill for large, text-dense surfaces (modals, command palette). */
+  --glass-panel-bg: rgba(255, 255, 255, 0.8);
+  --glass-blur: 22px;
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  --glass-shadow: 0 0 0 1px rgba(24, 22, 20, 0.06), 0 2px 6px rgba(24, 22, 20, 0.05),
+    0 18px 48px -12px rgba(24, 22, 20, 0.2);
 }
 
 .dark {
-  --bg: #1a1918;
-  --surface: #242322;
-  --raised: #2c2b29;
-  /* Dark keeps the chat canvas on the chrome tone — the salient-surface split is
-     a light-theme treatment; dark stays uniform. */
-  --canvas: var(--bg);
-  --user-msg: #2f2c3c;
-  --border: #34322f;
-  --text: #eae8e6;
-  --muted: #9a968f;
-  --faint: #6b6864;
-  --accent: #8271e8;
-  --accent-soft: rgba(130, 113, 232, 0.16);
-  --st-idle: #6b6864;
-  --st-running: #6ba1e0;
-  --st-attention: #e0a33a;
-  --st-review: #5fb885;
-  --st-unread: #5fb885;
-  --st-merged: #a687dd;
-  --st-merged-soft: rgba(166, 135, 221, 0.18);
-  --ok: #5fb885;
-  --err: #e06a5e;
-  --warn: #e0a33a;
-  --diff-add: rgba(95, 184, 133, 0.10);
-  --diff-del: rgba(224, 106, 94, 0.10);
-  --diff-add-strong: rgba(95, 184, 133, 0.28);
-  --diff-del-strong: rgba(224, 106, 94, 0.28);
-  --term-bg: #201f1e;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.2);
+  --bg: #111111;
+  --surface: #1f1f1f;
+  --raised: #232323;
+  --canvas: #181818;
+  --canvas-glass: rgba(24, 24, 24, 0.78);
+  --user-msg: #262626;
+  --border: #2b2b2b;
+  --text: #ececec;
+  --muted: #9b9b9b;
+  --faint: #636363;
+  --accent: #9a8cff;
+  --accent-soft: rgba(255, 255, 255, 0.07);
+  --accent-tint: rgba(154, 140, 255, 0.16);
+  --focus-ring: rgba(154, 140, 255, 0.22);
+  --ink: #f2f2f2;
+  --on-ink: #141414;
+  --st-idle: #5e5e5e;
+  --st-running: #6aa6ff;
+  --st-attention: #f0a93a;
+  --st-review: #4cc38a;
+  --st-unread: #4cc38a;
+  --st-merged: #a88bff;
+  --st-merged-soft: rgba(168, 139, 255, 0.16);
+  --ok: #4cc38a;
+  --err: #f0685c;
+  --warn: #f0a93a;
+  --diff-add: rgba(76, 195, 138, 0.1);
+  --diff-del: rgba(240, 104, 92, 0.1);
+  --diff-add-strong: rgba(76, 195, 138, 0.26);
+  --diff-del-strong: rgba(240, 104, 92, 0.26);
+  --term-bg: #181818;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -10px rgba(0, 0, 0, 0.45);
+  --stage-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 20px 50px -20px rgba(0, 0, 0, 0.7);
 
-  --glass-bg: transparent;
-  --glass-panel-bg: rgba(40, 39, 37, 0.82);
-  --glass-blur: 17px;
-  --glass-shadow: 0 2px 6px rgba(0, 0, 0, 0.36), 0 14px 34px rgba(0, 0, 0, 0.5), 0 28px 64px rgba(0, 0, 0, 0.4);
+  --wash-a: rgba(92, 116, 255, 0.16);
+  --wash-b: rgba(214, 92, 170, 0.1);
+  --wash-c: rgba(255, 150, 92, 0.08);
+
+  --glass-bg: rgba(34, 34, 36, 0.58);
+  --glass-panel-bg: rgba(30, 30, 32, 0.82);
+  --glass-blur: 24px;
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --glass-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 20px 50px -16px rgba(0, 0, 0, 0.7);
 }
 
 body {
   @apply bg-bg text-fg font-sans antialiased text-body;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  letter-spacing: -0.003em;
+}
+
+::selection {
+  background: var(--accent-tint);
 }
 
 * {
@@ -146,45 +184,55 @@ summary {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 6px;
-  border: 2px solid transparent;
+  border-radius: 999px;
+  border: 3px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--faint);
-  border: 2px solid transparent;
+  border: 3px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
+/* Scrollable without a visible bar — for compact strips (e.g. the right
+   panel's tab row) where a 10px scrollbar would crowd the row. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 .card {
-  @apply bg-surface border rounded-card;
+  @apply bg-raised border rounded-card;
   box-shadow: var(--shadow);
 }
 
-/* Liquid-glass floating surface. Apply in place of `.card` on menus, popovers,
-   hover cards, tooltips, toasts and modal shells. Apple-style: NO fill tint at
-   all (`--glass-bg: transparent`) — the backdrop blur + saturate is the entire
-   surface, so content and borders behind stay fully visible through it. NO rim
-   either (no border, no inset highlight — a bright edge just reads as a white
-   outline, not glass); only a soft drop shadow separates it from the content
-   below. Falls back to opaque where backdrop-filter is out.
+/* CSS-only liquid glass for floating surfaces. Apply in place of `.card` on
+   menus, popovers, hover cards, tooltips and toasts: a light frosted tint, a
+   bright inner rim and a soft diffuse shadow over a blurred, saturated backdrop.
+   Surfaces that deserve real refraction (the composer, segmented controls,
+   modals) use the <LiquidGlass> component instead — see `.lg` below. Falls back
+   to the opaque surface where backdrop-filter is out.
    This is a VISUAL SKIN ONLY — it must not set `position`, or it would override
    the `absolute`/`fixed` positioning utilities on popups (equal specificity, and
    `.glass` cascades after Tailwind's utilities), dropping them into normal flow
    and shoving their siblings around. Each popup owns its own positioning. */
 .glass {
   background-color: var(--glass-bg);
-  border-radius: 12px;
-  box-shadow: var(--glass-shadow);
+  border-radius: 14px;
+  box-shadow: var(--glass-rim), var(--glass-shadow);
 }
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .glass {
-    background-color: var(--glass-bg);
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
     backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   }
@@ -192,22 +240,202 @@ summary {
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   /* No backdrop blur → lean on the opaque surface token so text stays legible. */
   .glass {
-    background-color: var(--surface);
+    background-color: var(--raised);
   }
 }
 /* Thick-material variant for large, text-dense surfaces (modals, command
-   palette). Same glass edge + blur, but an opaque-enough fill so labels and body
-   copy stay legible over the busy backdrop — a fully transparent fill only works
-   for small popups. Apply BOTH classes: `glass glass-panel`. The doubled selector
-   outranks the `@supports .glass` background rule regardless of source order. */
+   palette). Apply BOTH classes: `glass glass-panel`. */
 .glass.glass-panel {
   background-color: var(--glass-panel-bg);
 }
 
+/* ---- Liquid glass (<LiquidGlass>, src/shared/ui/LiquidGlass.tsx) -----------
+   The backdrop layer is refracted by an SVG filter in Chromium (the component
+   sets it inline); elsewhere this frosted blur is the whole effect. The ::after
+   draws the tint and the inner rim light above the refracted backdrop but
+   below the content (the root is `isolation: isolate`). */
+.lg-backdrop {
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+}
+.lg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+    inset 0 0 0 1px rgba(24, 22, 20, 0.05);
+}
+.lg {
+  box-shadow: 0 12px 40px -14px rgba(24, 22, 20, 0.22), 0 2px 6px rgba(24, 22, 20, 0.05);
+}
+/* Chrome tints are near-clear, as in the reference (its bars and fields sit at
+   ~5% white): the refraction and the rim glint carry the surface. Text-bearing
+   glass (strong/panel) stays frosted enough to read. */
+.lg-clear::after {
+  background: rgba(255, 255, 255, 0.05);
+}
+.lg-light::after {
+  background: rgba(255, 255, 255, 0.16);
+}
+.lg-strong::after {
+  background: rgba(255, 255, 255, 0.62);
+}
+.lg-panel::after {
+  background: rgba(255, 255, 255, 0.9);
+}
+.dark .lg::after {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.dark .lg {
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.dark .lg-clear::after {
+  background: rgba(255, 255, 255, 0.03);
+}
+.dark .lg-light::after {
+  background: rgba(28, 28, 30, 0.22);
+}
+.dark .lg-strong::after {
+  background: rgba(30, 30, 32, 0.62);
+}
+.dark .lg-panel::after {
+  background: rgba(28, 28, 30, 0.84);
+}
+/* With real refraction the computed specular map draws the rim; the CSS rim
+   drops to a hairline so the edge isn't a flat bordered-card line. */
+.lg.lg-live::after {
+  box-shadow: inset 0 0 0 0.5px rgba(24, 22, 20, 0.06);
+}
+.dark .lg.lg-live::after {
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+/* Floating control glass: tab tracks and toolbar button groups that sit over
+   content. A light lift plus the rim reads as a raised pill at rest; once the
+   transcript scrolls under it the refraction does the rest. */
+.lg.lg-float {
+  box-shadow: 0 0 0 0.5px rgba(24, 22, 20, 0.06), 0 1px 2px rgba(24, 22, 20, 0.06), 0 8px 22px -8px rgba(24, 22, 20, 0.26);
+}
+.dark .lg.lg-float {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 8px 22px -10px rgba(0, 0, 0, 0.75);
+}
+
+/* Scroll-edge effect (the Liquid Glass toolbar treatment): chrome floats over
+   its scroller, and instead of a hard border the content softly blurs and fades
+   out beneath it. Put it on the absolutely positioned bar. */
+.scroll-edge-top {
+  isolation: isolate;
+}
+.scroll-edge-top::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 -20px 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    var(--canvas-glass) 0%,
+    color-mix(in srgb, var(--canvas-glass) 70%, transparent) 55%,
+    transparent 100%
+  );
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 45%, transparent);
+  mask-image: linear-gradient(to bottom, #000 45%, transparent);
+}
+
+/* Lit-glass selection (the dock's active tab, the selected sidebar workspace
+   and session): the segmented thumb's raised glass, as a plain class. */
+.tab-lit {
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(24, 22, 20, 0.05),
+    0 2px 8px -2px rgba(24, 22, 20, 0.16);
+}
+.dark .tab-lit {
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 2px 8px -2px rgba(0, 0, 0, 0.6);
+}
+
+/* Glass text fields (the composer): swell slightly and lift while focused,
+   like the reference search bar. */
+.lg-field {
+  transition:
+    transform 300ms cubic-bezier(0.25, 0.8, 0.25, 1),
+    box-shadow 300ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.lg.lg-field:focus-within {
+  transform: scale(1.008);
+  box-shadow: 0 16px 44px -14px rgba(24, 22, 20, 0.3), 0 2px 6px rgba(24, 22, 20, 0.06);
+}
+.dark .lg.lg-field:focus-within {
+  box-shadow: 0 22px 54px -18px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+/* <Segmented>: the track swells while the thumb is a moving lens; the thumb is
+   a raised bright pill at rest and a lifted clear lens in motion. */
+.seg {
+  transition: transform 160ms ease-out;
+}
+.seg.seg-lens {
+  transform: scale(1.035);
+}
+.lg.seg-thumb {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 4px 12px -6px rgba(24, 22, 20, 0.3);
+}
+.seg-lens .lg.seg-thumb {
+  box-shadow: 0 6px 18px -6px rgba(24, 22, 20, 0.35);
+}
+.dark .seg-thumb.lg-strong::after {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+/* ---- Ambient wash -------------------------------------------------------------
+   `.wash` is the Lovable-style glow: blue at the top-left, pink and peach toward
+   the bottom-right, fading into the chrome colour. `.wash-hero` is the stronger
+   version for empty states, onboarding and the web's landing. */
+.wash {
+  background:
+    radial-gradient(40% 35% at 18% 0%, var(--wash-a), transparent 70%),
+    radial-gradient(45% 40% at 100% 100%, var(--wash-b), transparent 70%),
+    radial-gradient(35% 30% at 70% 110%, var(--wash-c), transparent 70%),
+    var(--bg);
+}
+.wash-hero {
+  background:
+    radial-gradient(55% 45% at 50% 108%, var(--wash-c), transparent 70%),
+    radial-gradient(60% 55% at 28% 92%, var(--wash-a), transparent 72%),
+    radial-gradient(55% 50% at 78% 88%, var(--wash-b), transparent 72%),
+    var(--canvas);
+}
+
+/* The floating work area beside the sidebar (desktop): a pane of frosted glass
+   over the ambient wash, with a hairline edge and a diffuse shadow. Chat and
+   the right panel stay transparent on it; code surfaces (diff, editor,
+   terminal) keep their solid canvas for legibility. */
+.stage {
+  background: var(--canvas-glass);
+  -webkit-backdrop-filter: blur(40px) saturate(170%);
+  backdrop-filter: blur(40px) saturate(170%);
+  border-radius: 14px;
+  box-shadow: var(--stage-shadow);
+}
+
 /* A dimmed, frosted scrim behind centered modals so the whole app recedes. */
 .glass-scrim {
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  backdrop-filter: blur(6px) saturate(120%);
 }
 
 /* Every interactive control shows a pointer (buttons, links, summary, roles,
@@ -225,37 +453,44 @@ button:disabled {
 }
 
 .btn {
-  @apply inline-flex items-center justify-center gap-1.5 rounded-ctl border bg-raised px-2.5 h-7 text-xs font-medium text-fg select-none whitespace-nowrap;
-  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+  @apply inline-flex items-center justify-center gap-1.5 rounded-full border bg-raised px-3 h-7 text-xs font-medium text-fg select-none whitespace-nowrap;
+  box-shadow: 0 1px 1px rgba(24, 22, 20, 0.03);
+  transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease;
 }
-.btn:hover:not(:disabled) {
-  border-color: var(--faint);
+/* :where() keeps this at single-class specificity so bg-* utilities on a .btn
+   keep their fill on hover. */
+.btn:where(:hover:not(:disabled)) {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .btn:disabled {
   opacity: 0.45;
 }
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+/* The primary action: an ink pill (near-black on light, near-white on dark). */
 .btn-accent {
-  @apply bg-accent text-white border-transparent;
+  background: var(--ink);
+  color: var(--on-ink);
+  border-color: transparent;
+  box-shadow: 0 1px 2px rgba(24, 22, 20, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 .btn-accent:hover:not(:disabled) {
-  filter: brightness(1.07);
+  background: var(--ink);
+  filter: brightness(1.18);
   border-color: transparent;
 }
-/* State-colored solid buttons: green to merge, purple once merged — so the
-   header's primary action matches the PR-state wash behind it. */
-.btn-ok {
-  @apply bg-ok text-white border-transparent;
-}
-.btn-merged {
-  @apply bg-st-merged text-white border-transparent;
-}
-.btn-ok:hover:not(:disabled),
-.btn-merged:hover:not(:disabled) {
-  filter: brightness(1.07);
-  border-color: transparent;
+.dark .btn-accent:hover:not(:disabled) {
+  filter: brightness(0.9);
 }
 .btn-ghost {
   @apply border-transparent bg-transparent;
+  box-shadow: none;
 }
 .btn-ghost:hover:not(:disabled) {
   background: var(--accent-soft);
@@ -266,11 +501,12 @@ button:disabled {
 }
 
 .input {
-  @apply w-full rounded-ctl border bg-raised px-2.5 py-1.5 text-body text-fg outline-none;
-  transition: border-color 120ms ease;
+  @apply w-full rounded-ctl border bg-raised px-3 py-1.5 text-body text-fg outline-none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 .input:focus {
-  border-color: var(--accent);
+  border-color: var(--faint);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .input::placeholder {
   color: var(--faint);
@@ -287,29 +523,12 @@ select.input {
 }
 
 .label {
-  @apply block text-2xs font-semibold uppercase tracking-wide text-muted mb-1.5;
+  @apply block text-xs font-medium text-muted mb-1.5;
 }
 
 /* status dots */
 .dot {
   @apply inline-block w-2 h-2 rounded-full shrink-0;
-}
-.dot-setting-up,
-.dot-running {
-  background: var(--st-running);
-}
-.dot-running.pulse,
-.dot-setting-up.pulse {
-  animation: pulse 1.6s ease-in-out infinite;
-}
-.dot-idle {
-  background: var(--st-idle);
-}
-.dot-needs-attention {
-  background: var(--st-attention);
-}
-.dot-reviewing {
-  background: var(--st-review);
 }
 .dot-archived {
   background: transparent;
@@ -331,20 +550,104 @@ select.input {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-/* status-ping halo: an expanding, fading echo behind a running status dot */
-.status-ping {
-  animation: status-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+/* Stained glass (<StainedGlass>, StainedGlass.tsx): the one skin for status
+   dots and status-coloured buttons. The root stays filter-free — a filter,
+   opacity < 1 or mask on it would become the glass's backdrop root and the
+   glass would see nothing — so hover/disabled act on the layers instead. The
+   tone colour arrives as the inline `--sg-c`. */
+.sg {
+  position: relative;
+  isolation: isolate;
+  color: #fff;
 }
-@keyframes status-ping {
+.sg-ink {
+  color: var(--on-ink);
+}
+.sg-glass,
+.sg-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.sg-glass {
+  z-index: -1;
+  /* Fallback (no SVG backdrop filters): a flat fill with a lit rim. */
+  background: var(--sg-c);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.12),
+    0 1px 3px color-mix(in srgb, var(--sg-c) 35%, transparent);
+  transition: filter 140ms ease, opacity 140ms ease;
+}
+.sg-live > .sg-glass {
+  background: none;
+  box-shadow:
+    inset 0 0 0 0.5px color-mix(in srgb, var(--sg-c) 60%, #fff),
+    0 1px 4px color-mix(in srgb, var(--sg-c) 35%, transparent);
+}
+.dark .sg-live > .sg-glass {
+  box-shadow:
+    inset 0 0 0 0.5px color-mix(in srgb, var(--sg-c) 80%, #fff),
+    0 0 6px color-mix(in srgb, var(--sg-c) 40%, transparent);
+}
+/* Ripple: a ring of the same stained glass expanding past the edge. Without
+   refraction it degrades to the old solid ping. */
+.sg-ring {
+  z-index: -2;
+  opacity: 0;
+  background: var(--sg-c);
+  --sg-ring-o: 0.55;
+}
+.sg-live > .sg-ring {
+  background: none;
+  --sg-ring-o: 1;
+  box-shadow: inset 0 0 0 0.75px color-mix(in srgb, var(--sg-c) 55%, #fff);
+}
+.sg-ring-loop {
+  animation: sg-ripple 2s cubic-bezier(0.15, 0.6, 0.25, 1) infinite;
+}
+.sg-ring-once {
+  animation: sg-ripple 0.7s cubic-bezier(0.15, 0.6, 0.25, 1) 1;
+}
+@keyframes sg-ripple {
   0% {
     transform: scale(1);
-    opacity: 0.55;
+    opacity: var(--sg-ring-o);
   }
-  70%,
+  75%,
   100% {
-    transform: scale(2.2);
+    transform: scale(var(--sg-sx, 2.5), var(--sg-sy, 2.5));
     opacity: 0;
   }
+}
+.sg-dot {
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.45), 0 0.5px 1px rgba(0, 0, 0, 0.3);
+}
+/* As a .btn: drop the neutral chrome; hover brightens the glass, disabled dims
+   it (never the root — see above). */
+.btn.sg,
+.btn.sg:where(:hover:not(:disabled)) {
+  background: transparent;
+  border-color: transparent;
+}
+.sg:is(button, a):hover:not(:disabled) > .sg-glass {
+  filter: brightness(1.08);
+}
+.dark .sg:is(button, a):hover:not(:disabled) > .sg-glass {
+  filter: brightness(1.12);
+}
+.btn.sg:disabled {
+  opacity: 1;
+}
+/* Busy (rippling) stays at full strength — the ripple is the progress cue. */
+.btn.sg:disabled:not(.sg-busy) {
+  color: color-mix(in srgb, currentColor 70%, transparent);
+}
+.sg:disabled:not(.sg-busy) > .sg-glass {
+  opacity: 0.45;
 }
 
 /* Indeterminate progress bar: a short accent segment sweeping a soft track, for
@@ -380,6 +683,13 @@ select.input {
 .md {
   @apply text-body leading-relaxed;
   word-wrap: break-word;
+  /* Layout containment makes `.md` the containing block for BOTH absolute- and
+     fixed-positioned descendants, so an inline `style="position:fixed;inset:0"`
+     (or `absolute`) in message content is trapped inside the message box and
+     can't overlay the app. It does not clip overflow, so wide code/tables still
+     scroll. Paired with renderMarkdown (format.ts) stripping <style> blocks,
+     this makes message CSS unable to affect anything outside its own box. */
+  contain: layout;
 }
 .md p {
   margin: 0.4em 0;
@@ -421,11 +731,11 @@ select.input {
   margin: 0.15em 0;
 }
 .md code {
-  @apply font-mono text-[11.5px] rounded px-1 py-px;
+  @apply font-mono text-[11.5px] rounded-md px-1 py-px;
   background: var(--accent-soft);
 }
 .md pre {
-  @apply font-mono text-xs rounded-ctl border p-2.5 my-2 overflow-x-auto;
+  @apply font-mono text-xs rounded-card border p-3 my-2 overflow-x-auto;
   background: var(--surface);
 }
 .md pre code {
@@ -449,7 +759,7 @@ select.input {
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--muted);
@@ -463,8 +773,8 @@ select.input {
 }
 .code-copy:hover {
   color: var(--text);
-  background: var(--accent-soft);
-  border-color: var(--accent);
+  background: var(--surface);
+  border-color: var(--faint);
 }
 .code-copy .ico-copy,
 .code-copy .ico-check {
@@ -487,8 +797,10 @@ select.input {
 }
 /* worktree images: emitted inert by format.ts, filled in by useWorktreeImages.
    Capped in height so a full-page screenshot doesn't swallow the chat — a click
-   opens it in the zoomable lightbox (spotlight). */
-.md img[data-ws-src] {
+   opens it in the zoomable lightbox (spotlight). The web (`data-spotlight`)
+   gives its relay-hosted images the same treatment. */
+.md img[data-ws-src],
+.md[data-spotlight] img {
   @apply block rounded-ctl border my-2 max-w-full;
   max-height: 340px;
   width: auto;
@@ -578,16 +890,12 @@ select.input {
 .hljs-strong { font-weight: 600; }
 
 .fade-in {
-  animation: fadeIn 140ms ease;
+  animation: fadeIn var(--dur) var(--ease-glass);
 }
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
+    translate: 0 3px;
   }
 }
 
@@ -599,6 +907,129 @@ select.input {
     transform: rotate(360deg);
   }
 }
+/* <Spinner>: liquid drops on one orbit, each on its own easing, so they part
+   and re-merge at the half-turns; the drift (3 × the lap) moves the merge
+   points round so the loop never looks like it's ticking in place. */
+.lq-drop,
+.lq-drift {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+}
+.lq-drop {
+  animation: spin 1.3s infinite;
+}
+.lq-drop-1 {
+  animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+}
+.lq-drop-2 {
+  animation-timing-function: cubic-bezier(0.7, 0, 0.3, 1);
+}
+.lq-drop-3 {
+  animation-timing-function: cubic-bezier(0.87, 0, 0.13, 1);
+}
+.lq-drift {
+  animation: spin 3.9s linear infinite;
+}
+
+/* ---- Motion ------------------------------------------------------------------
+   One vocabulary for every transition in both apps, after the reference glass UI
+   (mkj0kjay/vue-web-liquid-glass): a soft "glass" ease for most things and a
+   springy overshoot for things that pop into place. Mounting is CSS (the
+   `[data-motion]` keyframes below); unmounting, and the height/width tween of
+   in-flow rows, tabs and sections, is the tiny observer in motion.ts — so a
+   component opts in with nothing but `data-motion="…"` on the element it
+   conditionally renders:
+     pop / pop-up   menus & popovers (pop-up: ones that open upward)
+     modal / sheet  a scrim whose first child is the dialog / bottom panel
+     fade           anything that should just fade
+     swap           a keyed view that replaces another, or a pane un-hidden
+                    from display:none (enter only — CSS restarts it)
+     toast          stacked notifications
+     collapse / row / tab   in-flow content that grows and shrinks in place
+   Individual `translate`/`scale` properties are used (not `transform`) so the
+   keyframes compose with Tailwind's transform utilities on the same element. */
+:root {
+  --ease-glass: cubic-bezier(0.25, 0.8, 0.25, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur: 220ms;
+  --dur-slow: 320ms;
+}
+
+/* Hover/press/selection colour changes glide instead of snapping. :where() keeps
+   this at zero specificity, so any explicit transition (.btn, Tailwind's
+   transition-* utilities) still wins. */
+:where(button, a[href], summary, [role='button'], [role='tab'], [role='menuitem'], [role='option'], .tap, .tab-lit) {
+  transition-property: color, background-color, border-color, box-shadow, opacity, filter;
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease-glass);
+}
+
+/* Disclosure chevron (<Chevron>): one icon that rotates open. */
+.chev {
+  transition: rotate var(--dur) var(--ease-spring);
+}
+.chev[data-open='true'] {
+  rotate: 90deg;
+}
+
+[data-motion='pop'] {
+  transform-origin: top center;
+  animation: motion-pop var(--dur) var(--ease-spring) backwards;
+}
+[data-motion='pop-up'] {
+  transform-origin: bottom center;
+  animation: motion-pop-up var(--dur) var(--ease-spring) backwards;
+}
+@keyframes motion-pop {
+  from { opacity: 0; scale: 0.96; translate: 0 -4px; }
+}
+@keyframes motion-pop-up {
+  from { opacity: 0; scale: 0.96; translate: 0 4px; }
+}
+/* Opacity only for `swap`: a swapped view may host fixed-position menus or be
+   measured for a native overlay (the preview), which a moving transform would
+   upset. `modal`/`sheet` fade their scrim; the panel animates separately. */
+[data-motion='fade'],
+[data-motion='swap'],
+[data-motion='modal'],
+[data-motion='sheet'] {
+  animation: motion-fade var(--dur) var(--ease-glass) backwards;
+}
+@keyframes motion-fade {
+  from { opacity: 0; }
+}
+[data-motion='modal'] > :first-child {
+  animation: motion-modal var(--dur-slow) var(--ease-spring) backwards;
+}
+@keyframes motion-modal {
+  from { opacity: 0; scale: 0.94; translate: 0 10px; }
+}
+[data-motion='sheet'] > :first-child {
+  animation: motion-sheet var(--dur-slow) var(--ease-out) backwards;
+}
+@keyframes motion-sheet {
+  from { translate: 0 100%; }
+}
+[data-motion='toast'] {
+  animation: motion-toast var(--dur-slow) var(--ease-spring) backwards;
+}
+@keyframes motion-toast {
+  from { opacity: 0; scale: 0.94; translate: 16px 0; }
+}
+/* The observer replays a removed element's exit itself (motion.ts); the enter
+   keyframes must not restart when it's put back for that. */
+[data-motion][data-exiting],
+[data-motion][data-exiting] > :first-child {
+  animation: none !important;
+}
+
+/* Same-document view transitions (a workspace switch, the sidebar collapsing):
+   a soft cross-fade on the glass curve instead of the UA's linear one. */
+::view-transition-group(*) {
+  animation-duration: var(--dur-slow);
+  animation-timing-function: var(--ease-glass);
+}
 
 /* --- Mobile additions (web-desktop-parity §3.4). No effect on the desktop,
    which never reports a coarse pointer. --------------------------------------- */
@@ -609,7 +1040,10 @@ select.input {
   .tap { min-height: 44px; }           /* apply to list rows / chips that are primary targets */
 }
 @media (prefers-reduced-motion: reduce) {
-  .pulse, .status-ping, .spin, .fade-in, .pulse-soft { animation: none !important; }
+  .sg-ring, .spin, .lq-drop, .lq-drift, .fade-in, .pulse-soft { animation: none !important; }
+  .seg, .lg-field, .btn, .chev { transition: none; }
+  [data-motion], [data-motion] > :first-child { animation: none !important; }
+  ::view-transition-group(*) { animation: none !important; }
 }
 :root { color-scheme: light; }
 .dark { color-scheme: dark; }

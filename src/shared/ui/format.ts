@@ -80,9 +80,62 @@ function withCodeCopyButtons(html: string): string {
     .replace(/<\/pre>/g, '</pre></div>');
 }
 
+/**
+ * A bounded memo for pure text→HTML work (perf spec §4.9.2, §4.9.7). `Map`
+ * iteration order is insertion order, so it doubles as the LRU list: a hit
+ * re-inserts to refresh recency, and eviction drops from the front. Two bounds,
+ * because the entries differ by orders of magnitude (one highlighted diff line
+ * vs. a megabyte of rendered markdown): a count, and a total-chars cap so a
+ * handful of huge values can't pin hundreds of MB.
+ */
+function boundedMemo(maxEntries: number, maxChars: number): (key: string, make: () => string) => string {
+  const cache = new Map<string, string>();
+  let chars = 0;
+  return (key, make) => {
+    const hit = cache.get(key);
+    if (hit !== undefined) {
+      cache.delete(key); // re-insert: most recently used moves to the back
+      cache.set(key, hit);
+      return hit;
+    }
+    const value = make();
+    cache.set(key, value);
+    chars += value.length;
+    // Never evict the entry we just made: one value bigger than the whole cap
+    // must still be returned.
+    while (cache.size > 1 && (cache.size > maxEntries || chars > maxChars)) {
+      const oldest = cache.keys().next();
+      if (oldest.done) break;
+      chars -= cache.get(oldest.value)!.length;
+      cache.delete(oldest.value);
+    }
+    return value;
+  };
+}
+
+/**
+ * A streaming turn re-renders the transcript several times a second and every
+ * pass used to re-parse *every* message (marked + KaTeX + DOMPurify) — the
+ * renderer's idle-CPU floor and its streaming ceiling. Keying on the source text
+ * makes every settled message a cache hit, so only the one growing block is
+ * parsed. The keys cost nothing extra: they're the same strings the transcript
+ * already holds (a message's `content`, or a block's `text`).
+ */
+const markdownMemo = boundedMemo(400, 8_000_000);
+
 export function renderMarkdown(text: string): string {
-  const html = marked.parse(text, { async: false }) as string;
-  return withCodeCopyButtons(DOMPurify.sanitize(html));
+  return markdownMemo(text, () => {
+    const parsed = marked.parse(text, { async: false }) as string;
+    // Forbid <style>: marked passes raw HTML through, and DOMPurify keeps <style>
+    // elements by default (it only sanitizes the CSS inside them). Since the
+    // result is mounted with dangerouslySetInnerHTML, a `<style>…</style>` in a
+    // message would apply to the whole document and restyle all of Maestro, not
+    // just that message. We deliberately keep the `style` *attribute* — KaTeX's
+    // `output: 'html'` math (see KATEX_OPTS) relies on inline styles — and
+    // `.md { contain: layout }` (theme.css) traps any inline-positioned element
+    // (fixed or absolute) inside the message box so it can't overlay the app.
+    return withCodeCopyButtons(DOMPurify.sanitize(parsed, { FORBID_TAGS: ['style'] }));
+  });
 }
 
 /**
@@ -153,13 +206,24 @@ export function langForPath(path: string): string | null {
 const escapeHtml = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/**
+ * Every rendered diff line is highlighted on every render — a 5 000-line diff
+ * re-runs hljs 5 000 times (10 000 in split view) whenever anything above it
+ * changes, and a refreshed diff arrives as brand-new objects, so component
+ * memoisation alone can't help. The lines themselves are the stable thing, so
+ * the memo is keyed by them (§4.9.7).
+ */
+const highlightMemo = boundedMemo(4000, 2_000_000);
+
 export function highlightLine(text: string, lang: string | null): string {
   if (!lang || text.length > 1000) return escapeHtml(text);
-  try {
-    return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
-  } catch {
-    return escapeHtml(text);
-  }
+  return highlightMemo(`${lang}\n${text}`, () => {
+    try {
+      return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+    } catch {
+      return escapeHtml(text);
+    }
+  });
 }
 
 export function timeAgo(ts: number): string {

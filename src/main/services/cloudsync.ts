@@ -33,10 +33,15 @@ function homeFor(host: ExecHost): Promise<string> {
 }
 
 /**
- * The shim. ~150 lines of POSIX sh + curl. Reads `~/.maestro/sync.url` +
+ * The shim. ~180 lines of POSIX sh + curl. Reads `~/.maestro/sync.url` +
  * `~/.maestro/sync.token`; the relay is the arbiter (409/offset), so the worst
  * failure mode is staleness, never corruption — journal pushes are read-only and
  * job writes are create-only.
+ *
+ * It is also, by construction, hard to orphan (perf-cpu-ram §4.8): SIGTERM exits,
+ * a cycle can never run faster than MIN_CYCLE, an unanswered poll backs off, and
+ * it stands down by itself once its install (home / token / lock) is gone — a
+ * loop we can't stop is a loop that burns a laptop's CPU for a week.
  */
 // NOTE: written to avoid POSIX ${...} parameter expansion so the whole script
 // fits in a JS template literal (same convention as DRAIN_SH). Literal
@@ -49,6 +54,8 @@ TOKEN=$(cat "$HOME/.maestro/sync.token" 2>/dev/null)
 BASE="$HOME/maestro/cloud"
 WAIT=$MAESTRO_SYNC_WAIT; [ -n "$WAIT" ] || WAIT=5
 HASH=$MAESTRO_SYNC_HASH; [ -n "$HASH" ] || HASH=unknown
+GITEVERY=$MAESTRO_SYNC_GIT_EVERY; [ -n "$GITEVERY" ] || GITEVERY=30 # git-report throttle, seconds (test:shim lowers it)
+TRACE=$MAESTRO_SYNC_TRACE # unset in production; a file the cycle counter appends to (test:shim)
 UNAME=$(uname -sm 2>/dev/null | tr ' ' '_')
 mkdir -p "$BASE" 2>/dev/null
 
@@ -60,12 +67,50 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || exit 0
 fi
 echo $$ > "$LOCK/pid"
-cleanup() { rm -rf "$LOCK"; }
-trap cleanup EXIT INT TERM
+echo "$HASH" > "$LOCK/hash" # which shim is running — the desktop restarts a stale one
+# Release only a lock that is still ours: a takeover (our pid was reused while we
+# were considered dead) must keep the new owner's.
+cleanup() { [ -n "$slp" ] && kill "$slp" 2>/dev/null; [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"; true; }
+# INT/TERM must EXIT, not just clean up: teardownSync/unlinkBox kill by pid, and a
+# swallowed signal is how e2e temp homes ended up with week-old orphans spinning.
+trap cleanup EXIT
+trap 'cleanup; exit 0' INT TERM
+
+# --- are we still the installed loop? (deleted home, teardown, or another
+#     instance took the lock) — checked every cycle AND between sleep slices. ---
+still_ours() {
+  [ -d "$HOME/.maestro" ] || return 1
+  [ -f "$HOME/.maestro/sync.token" ] || return 1
+  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || return 1
+  return 0
+}
+
+# --- sleep, but stay killable and stoppable: the sleep runs in the background and
+#     is waited on (a foreground one would defer the TERM trap until it ended),
+#     in 2s slices so a vanished install ends the loop promptly. ---
+nap() {
+  left="$1"
+  while [ "$left" -gt 0 ]; do
+    still_ours || exit 0
+    s=$left; [ "$s" -gt 2 ] && s=2
+    sleep "$s" & slp=$!
+    wait "$slp" 2>/dev/null; slp=
+    left=$((left - s))
+  done
+}
 
 api() { # method path [extra curl args...]  (reads/writes stdin/stdout)
   m="$1"; p="$2"; shift 2
   curl -s -m 40 -X "$m" -H "Authorization: Bearer $TOKEN" "$@" "$URL$p"
+}
+api_code() { # like api, but appends a final line with the HTTP status (000 = no answer)
+  m="$1"; p="$2"; shift 2
+  curl -s -m 40 -w '\\n%{http_code}' -X "$m" -H "Authorization: Bearer $TOKEN" "$@" "$URL$p"
+}
+token_revoked() {
+  fresh=$(cat "$HOME/.maestro/sync.token" 2>/dev/null)
+  if [ -n "$fresh" ] && [ "$fresh" != "$TOKEN" ]; then TOKEN=$fresh; return 0; fi
+  rm -f "$HOME/.maestro/sync.token"; exit 0
 }
 decode() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | base64 -D 2>/dev/null; }
 enc() { base64 2>/dev/null | tr -d '\\n'; }
@@ -136,7 +181,22 @@ report_queues() {
 
 # --- report git status + diff per workspace so the phone's Changes/Diff work
 #     while the desktop is closed (web-desktop-parity §9.6). Throttled to 30s;
-#     needs a "worktree" (+ optional "base") file the desktop drops at the ws dir. ---
+#     needs a "worktree" (+ optional "base") file the desktop drops at the ws dir.
+#
+#     ONLY ON CHANGE (web-neon-usage-diet §3.1). This POST was unconditional, so a
+#     box with an idle workspace re-sent the identical report 2,880 times a day —
+#     each one a select, an update, a diff upsert and a fleet event, which by
+#     itself kept the relay's Postgres awake 24/7 (~$20/mo of compute for nothing;
+#     the live evidence was a 33-second-old .gitreport carrying a 0-byte diff).
+#     cksum (POSIX CRC32 + length, in every base system) over the two base64
+#     payloads is the change gate; the relay treats the value as opaque and
+#     answers 200 {unchanged:true} if it ever sees one it already has. The status
+#     code decides the stamp, so api_code is used rather than api: 2xx records the
+#     hash, 404 means the workspace is gone or archived (§3.5) and we stop
+#     reporting until the desktop re-drops the marker, anything else leaves the
+#     hash alone so the report is retried. The 30s throttle ticks on every
+#     attempt either way — a relay erroring on this route must not turn into a
+#     2MB POST every MIN_CYCLE. ---
 report_git() {
   for wsdir in "$BASE"/*/; do
     [ -d "$wsdir" ] || continue
@@ -148,12 +208,19 @@ report_git() {
     base=$(cat "$wsdir""base" 2>/dev/null); [ -n "$base" ] || base=HEAD
     now=$(date +%s 2>/dev/null || echo 0)
     last=$(cat "$wsdir"".gitreport" 2>/dev/null); [ -n "$last" ] || last=0
-    [ $((now - last)) -lt 30 ] && continue
+    [ $((now - last)) -lt "$GITEVERY" ] && continue
     st=$(git -C "$wt" status --porcelain=v2 --branch 2>/dev/null | enc)
     pt=$(git -C "$wt" diff "$base"...HEAD 2>/dev/null | head -c 2097152 | enc)
-    api POST "/api/box/workspaces/$ws/git" -H "Content-Type: application/json" \\
-      --data "{\\"base\\":\\"$base\\",\\"statusB64\\":\\"$st\\",\\"patchB64\\":\\"$pt\\"}" >/dev/null 2>&1 &&
-      echo "$now" > "$wsdir"".gitreport"
+    h=$(printf '%s%s' "$st" "$pt" | cksum | cut -d' ' -f1)
+    if [ "$h" = "$(cat "$wsdir"".githash" 2>/dev/null)" ]; then echo "$now" > "$wsdir"".gitreport"; continue; fi
+    out=$(api_code POST "/api/box/workspaces/$ws/git" -H "Content-Type: application/json" \\
+      --data "{\\"base\\":\\"$base\\",\\"statusB64\\":\\"$st\\",\\"patchB64\\":\\"$pt\\",\\"hash\\":\\"$h\\"}" 2>/dev/null)
+    code=$(printf '%s' "$out" | tail -n 1)
+    case "$code" in
+      2??) echo "$h" > "$wsdir"".githash";;
+      404) rm -f "$wtf" "$wsdir"".githash";;
+    esac
+    echo "$now" > "$wsdir"".gitreport"
   done
 }
 
@@ -176,10 +243,22 @@ next_seq() { # $1 = queue dir -> zero-padded next NNNN
   printf '%04d' "$n"
 }
 
-# --- long-poll for jobs; execute into the queue dir; ack each ---
+# --- long-poll for jobs; execute into the queue dir; ack each. Anything but a 2xx
+#     (including "no answer at all", which curl reports as 000) is a failure, so
+#     the caller's backoff applies instead of spinning on an unreachable relay. An
+#     empty 2xx body is the normal "no jobs" reply.
+#
+#     401 is different: our token was revoked (box unlinked, account reset), and
+#     that is permanent. Retrying it forever is how a forgotten box kept the
+#     relay's Postgres awake 24/7 (neon-idle-compute). If the desktop has since
+#     written a fresh token (a relink while we ran), switch to it; otherwise drop
+#     the dead one — the */10 cron relaunch then exits at the top too — and stand
+#     down until a relink writes a new one. ---
 poll_jobs() {
-  qd=$(find "$BASE" -name '*.job' 2>/dev/null | wc -l | tr -d ' ')
-  resp=$(api GET "/api/box/poll?wait=$WAIT&fmt=lines&shim=$HASH&uname=$UNAME&qd=$qd")
+  out=$(api_code GET "/api/box/poll?wait=$WAIT&fmt=lines&shim=$HASH&uname=$UNAME&qd=$QD")
+  code=$(printf '%s' "$out" | tail -n 1)
+  case "$code" in 2??) ;; 401) token_revoked; return 1;; *) return 1;; esac
+  resp=$(printf '%s' "$out" | sed '$d')
   [ -n "$resp" ] || return 0
   printf '%s\\n' "$resp" | while IFS="	" read -r jid kind conv turnid textb64; do
     [ -n "$jid" ] || continue
@@ -214,24 +293,39 @@ poll_jobs() {
 #     existed (or one left behind when a worker died) would otherwise sit forever.
 #     This sweep makes the box run what it accepts: a synced box is never a black
 #     hole. ensure_drain is idempotent (it no-ops when a live worker holds the
-#     chat), so re-checking every cycle is cheap and safe. ---
+#     chat), so re-checking every cycle is cheap and safe. It also totals the queue
+#     depth the next poll reports (QD) — it is already listing exactly those dirs,
+#     so the status chip costs nothing extra and no tree-wide find is needed. ---
 drain_pending() {
+  depth=0
   for wsdir in "$BASE"/*/; do
     [ -d "$wsdir" ] || continue
     ws=$(basename "$wsdir"); case "$ws" in .*) continue;; esac
     for adir in "$wsdir"*/; do
       [ -d "$adir" ] || continue
       q="$adir""queue"; [ -d "$q" ] || continue
-      first=$(ls "$q" 2>/dev/null | grep '\\.job$' | head -n 1)
-      [ -n "$first" ] || continue
+      n=$(ls "$q" 2>/dev/null | grep -c '\\.job$')
+      [ "$n" -gt 0 ] || continue
+      depth=$((depth + n))
       ensure_drain "$adir"
     done
   done
+  QD=$depth
 }
 
-# --- main loop with jittered backoff on network failure ---
+# --- main loop: one cycle per MIN_CYCLE seconds, jittered backoff on failure.
+#     The floor matters as much as the backoff: without it a relay that answers
+#     instantly (or an empty long-poll) turns the loop into a fork storm. ---
+MIN_CYCLE=3
+QD=0
 fails=0
-while :; do
+# A fresh loop (new link, new shim, desktop boot) can't know what the relay holds,
+# so forget the git change-gate stamps: each workspace re-reports exactly once
+# (web-neon-usage-diet §3.1) and then goes quiet again until something changes.
+rm -f "$BASE"/*/.githash 2>/dev/null
+while still_ours; do
+  started=$(date +%s 2>/dev/null || echo 0)
+  [ -n "$TRACE" ] && echo cycle >> "$TRACE"
   ok=1
   push_journals || ok=0
   report_queues
@@ -240,11 +334,13 @@ while :; do
   drain_pending
   if [ "$ok" -eq 0 ]; then
     fails=$((fails + 1)); [ "$fails" -gt 12 ] && fails=12
-    nap=$((fails * 5)); [ "$nap" -gt 60 ] && nap=60
+    secs=$((fails * 5)); [ "$secs" -gt 60 ] && secs=60
     jit=$(( ($$ + $(date +%s 2>/dev/null || echo 0)) % 5 ))
-    sleep $((nap + jit))
+    nap $((secs + jit))
   else
     fails=0
+    rest=$((MIN_CYCLE - ($(date +%s 2>/dev/null || echo 0) - started)))
+    [ "$rest" -gt 0 ] && nap "$rest"
   fi
 done
 `;
@@ -267,21 +363,46 @@ export async function ensureSyncShim(host: ExecHost): Promise<string> {
   return shim;
 }
 
-/** Is the sync loop alive (lock pid points at a live process)? */
-export async function syncAlive(host: ExecHost): Promise<boolean> {
-  const home = await homeFor(host);
-  const lockPid = host.path.join(home, 'maestro', 'cloud', '.sync.lock', 'pid');
+async function lockDir(host: ExecHost): Promise<string> {
+  return host.path.join(await homeFor(host), 'maestro', 'cloud', '.sync.lock');
+}
+
+/** The shim hash the live sync loop was launched with ('' for one older than the
+ *  stamp), or null when no loop is running (lock pid dead or absent). */
+async function runningSync(host: ExecHost): Promise<string | null> {
+  const lock = await lockDir(host);
   const r = await host.exec('sh', [
     '-lc',
-    `pid=$(cat ${shq(lockPid)} 2>/dev/null); [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo 1 || echo 0`,
+    `pid=$(cat ${shq(host.path.join(lock, 'pid'))} 2>/dev/null); [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ` +
+      `{ echo up; cat ${shq(host.path.join(lock, 'hash'))} 2>/dev/null; } || echo down`,
   ]);
-  return r.ok && r.stdout.trim() === '1';
+  if (!r.ok) return null;
+  const [state, hash = ''] = r.stdout.trim().split('\n');
+  return state === 'up' ? hash.trim() : null;
+}
+
+/** Is the sync loop alive (lock pid points at a live process)? */
+export async function syncAlive(host: ExecHost): Promise<boolean> {
+  return (await runningSync(host)) !== null;
+}
+
+/** Shell that stops the loop holding `lock` and drops the lock: TERM (the shim
+ *  exits on it), then KILL for a pre-§4.8 shim whose trap swallowed the signal. */
+function stopSyncSh(host: ExecHost, lock: string): string {
+  return (
+    `pid=$(cat ${shq(host.path.join(lock, 'pid'))} 2>/dev/null); ` +
+    `if [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; then ` +
+    `for i in 1 2; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done; kill -KILL "$pid" 2>/dev/null; fi; ` +
+    `rm -rf ${shq(lock)} 2>/dev/null; `
+  );
 }
 
 /**
  * Provision + launch sync for a host: write sync.url/sync.token (0600), upload
  * the shim, launch it detached. Mechanism identical to `ensureDrain`
- * (setsid-else-nohup). Idempotent — a second call no-ops if the loop is alive.
+ * (setsid-else-nohup). Idempotent — a second call no-ops if the loop is alive
+ * and current; a loop running an older shim is restarted, since it would
+ * otherwise keep the old code until the box rebooted.
  */
 export async function ensureSync(host: ExecHost, relayUrl: string, boxToken: string): Promise<void> {
   const home = await homeFor(host);
@@ -292,7 +413,9 @@ export async function ensureSync(host: ExecHost, relayUrl: string, boxToken: str
   await host.fs.chmod(host.path.join(mdir, 'sync.url'), 0o600).catch(() => {});
   await host.fs.chmod(host.path.join(mdir, 'sync.token'), 0o600).catch(() => {});
   const shim = await ensureSyncShim(host);
-  if (await syncAlive(host)) return;
+  const running = await runningSync(host);
+  if (running === SYNC_HASH) return;
+  if (running !== null) await host.exec('sh', ['-lc', `${stopSyncSh(host, await lockDir(host))} true`]).catch(() => {});
   const launcher = `if command -v setsid >/dev/null 2>&1; then setsid sh ${shq(shim)}; else nohup sh ${shq(shim)}; fi`;
   await host.exec('sh', [
     '-lc',
@@ -300,15 +423,16 @@ export async function ensureSync(host: ExecHost, relayUrl: string, boxToken: str
   ]);
 }
 
-/** Stop + remove sync (unlink): kill the loop, delete the token/url + shim. */
+/** Stop + remove sync (unlink): kill the loop, delete the token/url + shim. The
+ *  loop honours SIGTERM, and belt-and-braces it also stands down on its own when
+ *  the token or its lock is gone — so an unlink can't leave a shim running. */
 export async function teardownSync(host: ExecHost): Promise<void> {
   const home = await homeFor(host);
-  const lockPid = host.path.join(home, 'maestro', 'cloud', '.sync.lock', 'pid');
   const mdir = host.path.join(home, '.maestro');
   await host
     .exec('sh', [
       '-lc',
-      `pid=$(cat ${shq(lockPid)} 2>/dev/null); [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; ` +
+      stopSyncSh(host, await lockDir(host)) +
         `rm -f ${shq(host.path.join(mdir, 'sync.token'))} ${shq(host.path.join(mdir, 'sync.url'))} ${shq(host.path.join(mdir, 'bin', 'maestro-sync'))} 2>/dev/null; true`,
     ])
     .catch(() => {});

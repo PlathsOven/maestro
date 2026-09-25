@@ -19,6 +19,8 @@ import {
 import { invoke, tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
 import { Menu, MenuItem, MenuDivider } from './Sidebar';
+import { Segmented } from './common';
+import { StainedDot } from '../../shared/ui/StainedGlass';
 import AnnotateOverlay from './AnnotateOverlay';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
@@ -165,11 +167,18 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
   }, [active, live, err, wsId, agentId, keys, platform]);
 
   const secure = /^https:/i.test(preview?.url ?? '');
+  // Open the page the pane is showing (not just the dev-server root) in the OS
+  // browser; main's window-open handler routes http(s) to shell.openExternal.
+  const openInBrowser = () => {
+    const url = preview?.url;
+    if (url && /^https?:/i.test(url)) window.open(url);
+    else void tryInvoke('workspace:openPreview', { workspaceId: wsId });
+  };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       {/* toolbar */}
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b bg-surface px-2">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2.5">
         <ToolbarBtn title="Back" disabled={!preview?.canGoBack} onClick={() => navigate('back')}>
           <ChevronLeft size={15} />
         </ToolbarBtn>
@@ -180,7 +189,7 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
           <RotateCw size={13} className={preview?.loading ? 'spin' : ''} />
         </ToolbarBtn>
 
-        <div className="mx-1 flex min-w-0 flex-1 items-center gap-1.5 rounded-ctl border bg-bg px-2 py-1">
+        <div className="mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-full bg-accent-soft px-3 transition-shadow focus-within:shadow-[0_0_0_3px_var(--focus-ring)]">
           {secure ? <Lock size={11} className="shrink-0 text-ok" /> : <Globe size={11} className="shrink-0 text-faint" />}
           <input
             className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-faint"
@@ -195,10 +204,10 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
           />
           {preview?.agentActive && (
             <span
-              className="flex shrink-0 items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 text-2xs font-medium text-accent"
+              className="flex shrink-0 items-center gap-1 rounded-full bg-accent-tint px-2 py-0.5 text-2xs font-medium text-accent"
               title="An agent is driving the preview"
             >
-              <span className="dot dot-running pulse" /> Agent is testing
+              <StainedDot tone="running" size={8} ripple /> Agent is testing
             </span>
           )}
         </div>
@@ -206,8 +215,8 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
         {live && (
           <button
             className={clsx(
-              'flex shrink-0 items-center gap-1 rounded-ctl px-2 py-1 text-2xs font-medium transition-colors',
-              drawerOpen ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-accent-soft hover:text-fg'
+              'flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-2xs font-medium transition-colors',
+              drawerOpen ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
             )}
             title="Console"
             onClick={() => setDrawerOpen((v) => !v)}
@@ -221,7 +230,7 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
 
         <button
           className={clsx(
-            'flex shrink-0 items-center gap-1 rounded-ctl px-2 py-1 text-2xs font-medium transition-colors',
+            'flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-2xs font-medium transition-colors',
             annotating ? 'btn-accent' : 'text-muted hover:bg-accent-soft hover:text-fg'
           )}
           title="Annotate — draw on the page and send it to the agent (⌘⇧A)"
@@ -230,6 +239,10 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
         >
           <PenLine size={12} /> Annotate
         </button>
+
+        <ToolbarBtn title="Open in browser" onClick={openInBrowser}>
+          <ExternalLink size={13} />
+        </ToolbarBtn>
 
         <div className="relative shrink-0">
           <ToolbarBtn title="More" onClick={() => setOverflow((v) => !v)}>
@@ -240,7 +253,7 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
               <Menu onClose={() => setOverflow(false)}>
                 <MenuItem
                   onClick={() => {
-                    void tryInvoke('workspace:openPreview', { workspaceId: wsId });
+                    openInBrowser();
                     setOverflow(false);
                   }}
                 >
@@ -293,12 +306,12 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
               onRetry={() => navigate('goto', preview?.url || `http://localhost:${workspace.port}`)}
             />
           ) : (
-            <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b bg-warn/10 px-4 py-2 text-2xs text-warn">
+            <div className="absolute inset-x-3 top-3 z-10 flex items-center gap-2 rounded-ctl bg-warn/10 px-4 py-2 text-2xs text-warn backdrop-blur">
               <AlertTriangle size={13} className="shrink-0" />
               <span className="min-w-0 flex-1 truncate">
                 {err.description} ({err.code}) — {err.url}
               </span>
-              <button className="btn btn-ghost h-5 px-1.5 text-2xs" onClick={() => navigate('goto', err.url)}>
+              <button className="btn btn-ghost h-6 px-2 text-2xs" onClick={() => navigate('goto', err.url)}>
                 Retry
               </button>
             </div>
@@ -327,7 +340,7 @@ function ToolbarBtn({
 }) {
   return (
     <button
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-ctl text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent"
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent"
       title={title}
       disabled={disabled}
       onClick={onClick}
@@ -350,10 +363,10 @@ function EmptyCard({
 }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center p-6">
-      <div className="flex max-w-md flex-col items-center gap-3 rounded-card border bg-surface px-6 py-8 text-center">
+      <div className="flex max-w-md flex-col items-center gap-3 px-6 py-8 text-center">
         <Globe size={26} className="text-faint" strokeWidth={1.5} />
         <div>
-          <div className="text-sm font-medium text-fg">Preview this workspace's app</div>
+          <div className="text-[15px] font-semibold tracking-tight text-fg">Preview this workspace's app</div>
           <div className="mt-1 font-mono text-2xs text-muted">http://localhost:{workspace.port}</div>
         </div>
         <div className="mt-1 flex items-center gap-2">
@@ -387,10 +400,10 @@ function ErrorCard({
 }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center p-6">
-      <div className="flex max-w-md flex-col items-center gap-3 rounded-card border bg-surface px-6 py-8 text-center">
+      <div className="flex max-w-md flex-col items-center gap-3 px-6 py-8 text-center">
         <AlertTriangle size={26} className="text-warn" strokeWidth={1.5} />
         <div>
-          <div className="text-sm font-medium text-fg">{title}</div>
+          <div className="text-[15px] font-semibold tracking-tight text-fg">{title}</div>
           <div className="mt-1 text-2xs text-muted">{body}</div>
         </div>
         <div className="mt-1 flex items-center gap-2">
@@ -446,36 +459,30 @@ function ConsoleDrawer({ wsId, agentId, onClose }: { wsId: string; agentId: numb
   const LEVELS: (ConsoleLevel | 'all')[] = ['all', 'error', 'warn'];
 
   return (
-    <div className="flex h-56 shrink-0 flex-col border-t bg-surface">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b px-2 text-2xs">
-        <div className="flex items-center rounded-ctl border bg-bg p-0.5">
-          {LEVELS.map((l) => (
-            <button
-              key={l}
-              className={clsx('rounded px-1.5 py-0.5 font-medium capitalize', level === l ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg')}
-              onClick={() => setLevel(l)}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
+    <div className="flex h-56 shrink-0 flex-col border-t bg-canvas">
+      <div className="flex h-10 shrink-0 items-center gap-1.5 px-2.5 text-2xs">
+        <Segmented<ConsoleLevel | 'all'>
+          value={level}
+          options={LEVELS.map((l) => ({ value: l, label: <span className="capitalize">{l}</span> }))}
+          onChange={setLevel}
+        />
         <div className="flex-1" />
-        <button className="btn btn-ghost h-5 gap-1 px-1.5 text-2xs" title="Stage the console in the composer" onClick={() => void sendToAgent()}>
+        <button className="btn btn-ghost h-6 gap-1 px-2 text-2xs" title="Stage the console in the composer" onClick={() => void sendToAgent()}>
           <Terminal size={11} /> Send to agent
         </button>
-        <button className="btn btn-ghost h-5 gap-1 px-1.5 text-2xs" onClick={clear}>
+        <button className="btn btn-ghost h-6 gap-1 px-2 text-2xs" onClick={clear}>
           <Trash2 size={11} /> Clear
         </button>
-        <button className="btn btn-ghost h-5 w-5 !px-0" onClick={onClose}>
+        <button className="btn btn-ghost h-6 w-6 !px-0" onClick={onClose}>
           <X size={12} />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-1 font-mono text-2xs leading-relaxed">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5 font-mono text-2xs leading-relaxed">
         {entries.length === 0 ? (
           <div className="p-3 text-center text-faint">No console output.</div>
         ) : (
           entries.map((e, i) => (
-            <div key={i} className={clsx('flex gap-2 border-b border-border/40 px-2 py-1 last:border-b-0', LEVEL_TINT[e.level])}>
+            <div key={i} className={clsx('flex gap-2 rounded-lg px-2 py-1', LEVEL_TINT[e.level])}>
               <span className="shrink-0 uppercase opacity-70">{e.level}</span>
               <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{e.text}</span>
               {e.url && <span className="shrink-0 text-faint">{shortLoc(e.url, e.line)}</span>}

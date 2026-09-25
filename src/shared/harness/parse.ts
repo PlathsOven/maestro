@@ -136,13 +136,19 @@ export function parseClaudeLine(line: string): AgentEvent[] {
       break;
     }
     case 'stream_event': {
+      // A sub-agent's stream is not this turn. The CLI tags every line a
+      // sub-agent (the Agent tool) produces with `parent_tool_use_id` — the
+      // parent's tool call that spawned it — and its tokens, tool calls and
+      // results belong to the sub-agent's own transcript; the parent's turn sees
+      // that work only through the Agent tool's result. Folding them in made a
+      // fan-out turn N× its real size in the live view, on disk and on the
+      // relay, and re-rendered every token N-fold (docs/specs/fan-out-turn-oom.md).
+      if (j.parent_tool_use_id) break;
       const ev = j.event;
       if (!ev) break;
       if (ev.type === 'message_start') {
-        if (!j.parent_tool_use_id) {
-          const c = claudeContextEvent(ev.message?.usage);
-          if (c) events.push(c);
-        }
+        const c = claudeContextEvent(ev.message?.usage);
+        if (c) events.push(c);
       } else if (ev.type === 'content_block_start') {
         const cb = ev.content_block;
         if (cb?.type === 'text') events.push({ kind: 'seg-start', segType: 'text' });
@@ -158,6 +164,7 @@ export function parseClaudeLine(line: string): AgentEvent[] {
       break;
     }
     case 'assistant': {
+      if (j.parent_tool_use_id) break; // a sub-agent's message (see stream_event)
       const content = j.message?.content;
       if (Array.isArray(content)) {
         const blocks: AgentBlock[] = [];
@@ -168,13 +175,12 @@ export function parseClaudeLine(line: string): AgentEvent[] {
         }
         if (blocks.length) events.push({ kind: 'message-final', blocks });
       }
-      if (!j.parent_tool_use_id) {
-        const c = claudeContextEvent(j.message?.usage);
-        if (c) events.push(c);
-      }
+      const c = claudeContextEvent(j.message?.usage);
+      if (c) events.push(c);
       break;
     }
     case 'user': {
+      if (j.parent_tool_use_id) break; // a sub-agent's tool result (see stream_event)
       const content = j.message?.content;
       if (Array.isArray(content)) {
         for (const c of content) {

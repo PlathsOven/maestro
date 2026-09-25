@@ -14,7 +14,7 @@ export function ContextRing({ tokens, usage, window }: { tokens: number; usage?:
   const r = 7;
   const c = 2 * Math.PI * r;
   return (
-    <span className="group relative flex h-7 w-6 items-center justify-center">
+    <span className="group relative flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-accent-soft">
       <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
         <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
         <circle
@@ -34,7 +34,7 @@ export function ContextRing({ tokens, usage, window }: { tokens: number; usage?:
         {tokens > 0 ? (
           <>
             <span className="flex items-baseline justify-between text-xs">
-              <span className="font-semibold">Context used</span>
+              <span className="font-medium">Context used</span>
               <span className="text-muted">
                 {fmtK(tokens)} / {fmtWindow(window)} · {Math.round(pct * 100)}%
               </span>

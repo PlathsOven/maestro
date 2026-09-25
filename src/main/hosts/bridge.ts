@@ -41,6 +41,24 @@ const REMOTE_PREVIEW =
   `-H "X-Maestro-Agent: $MAESTRO_PREVIEW_AGENT" ` +
   `--data-binary @- "$MAESTRO_PREVIEW_URL/preview"\n`;
 
+// `maestro-message` passes its args in a header and the message text (stdin) as
+// the body — `list` sends an empty body (docs/specs/agent-messaging.md). The
+// route answers these shims in plain text; the shim prints it and turns the HTTP
+// status (appended by `-w`, split back off in POSIX sh) into its exit code, so a
+// refused send fails like the local CLI's does. No `--fail-with-body` (curl 7.76+).
+export const REMOTE_MESSAGE =
+  `#!/bin/sh\n` +
+  `if [ "$1" = send ]; then body=@-; else body=; fi\n` +
+  `out=$(curl -s --max-time 180 -w '\\n%{http_code}' -X POST -H 'X-Maestro-Shim: 1' ` +
+  `-H "Authorization: Bearer $MAESTRO_MESSAGE_TOKEN" ` +
+  `-H "X-Maestro-Workspace: $MAESTRO_MESSAGE_WORKSPACE" ` +
+  `-H "X-Maestro-Agent: $MAESTRO_MESSAGE_AGENT" ` +
+  `-H "X-Maestro-Args: $*" ` +
+  `--data-binary "$body" "$MAESTRO_MESSAGE_URL/message") || { echo 'maestro-message: could not reach Maestro' >&2; exit 1; }\n` +
+  `code=\${out##*"\n"}\n` +
+  `printf '%s\\n' "\${out%"\n"*}"\n` +
+  `[ "$code" = 200 ]\n`;
+
 const bridges = new Map<string, { url: string; token: string } | null>(); // null = tried & failed
 
 /** Set up (once per host) the reverse tunnel + remote shims; returns the tunnel
@@ -54,11 +72,18 @@ export async function ensureRemoteBridge(host: ExecHost): Promise<{ url: string;
     const home = (await host.exec('sh', ['-lc', 'printf %s "$HOME"'])).stdout.trim() || '.';
     const binDir = host.path.join(home, '.maestro', 'bin');
     await host.fs.mkdirp(binDir);
-    for (const [name, body] of [['maestro-ask', REMOTE_ASK], ['maestro-role', REMOTE_ROLE], ['maestro-preview', REMOTE_PREVIEW]] as const) {
+    const install = async ([name, body]: readonly [string, string]) => {
       const p = host.path.join(binDir, name);
       await host.fs.write(p, body);
       await host.fs.chmod(p, 0o755);
-    }
+    };
+    // The first upload opens the host's SFTP session (memoized once open); the
+    // rest pipeline on it concurrently rather than each adding round-trips to
+    // the first message's time-to-first-token.
+    await install(['maestro-ask', REMOTE_ASK]);
+    await Promise.all(
+      ([['maestro-role', REMOTE_ROLE], ['maestro-preview', REMOTE_PREVIEW], ['maestro-message', REMOTE_MESSAGE]] as const).map(install)
+    );
     const localPort = Number(new URL(info.url).port);
     const { remotePort } = await host.forwardLoopback(localPort);
     const bridge = { url: `http://127.0.0.1:${remotePort}`, token: info.token };

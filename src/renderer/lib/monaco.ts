@@ -85,8 +85,11 @@ export function monacoLanguage(pathRel: string): string {
 
 let themeReady = false;
 
+// Monaco throws on anything but 6/8-digit hex, and the prod CSS minifier
+// shortens tokens like `#ffffff` → `#fff`, so expand shorthand back out.
 function readVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return /^#[0-9a-f]{3}$/i.test(v) ? v.replace(/[0-9a-f]/gi, '$&$&') : v;
 }
 
 /** Append an 8-bit alpha to a `#rrggbb` token (Monaco theme colors take hex, not
@@ -108,7 +111,9 @@ function withAlpha(hex: string, alpha: number): string {
  * theme on every call (mount + theme change).
  */
 export function applyEditorTheme(theme: 'dark' | 'light'): void {
-  const bg = readVar('--bg') || (theme === 'dark' ? '#1a1918' : '#fafaf9');
+  // The editor sits on the floating white stage, so it paints the stage colour
+  // (`--canvas`), not the window chrome (`--bg`).
+  const bg = readVar('--canvas') || readVar('--bg') || (theme === 'dark' ? '#181818' : '#ffffff');
   const surface = readVar('--surface') || bg;
   const raised = readVar('--raised') || surface;
   const text = readVar('--text') || (theme === 'dark' ? '#eae8e6' : '#1a1918');

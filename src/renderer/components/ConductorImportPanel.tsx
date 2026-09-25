@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, ChevronDown, GitBranch, RefreshCw, Check, AlertTriangle, MessageSquare } from 'lucide-react';
+import { GitBranch, RefreshCw, Check, AlertTriangle, MessageSquare } from 'lucide-react';
 import { useApp } from '../store/app';
 import { Spinner } from './common';
 import type { ConductorProjectPreview, ConductorSelection } from '../../shared/types';
+import { Chevron } from '../../shared/ui/primitives';
 
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 
@@ -109,11 +110,11 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
   if (!scan || projects.length === 0) {
     if (scanError && !scanning) {
       return (
-        <div className="card flex items-center justify-between gap-3 px-4 py-3.5 text-xs">
+        <div className="flex items-center justify-between gap-3 rounded-card border border-border/70 bg-raised px-4 py-3.5 text-xs">
           <span className="flex items-center gap-2 text-muted">
             <AlertTriangle size={14} className="text-warn" /> Couldn’t read your Conductor projects.
           </span>
-          <button className="btn h-7 shrink-0 text-2xs" onClick={() => void doScan(true)}>
+          <button className="btn shrink-0" onClick={() => void doScan(true)}>
             Retry
           </button>
         </div>
@@ -121,7 +122,7 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
     }
     if (scanning || !scan) {
       return (
-        <div className="card flex items-center gap-2.5 px-4 py-4 text-xs text-muted">
+        <div className="flex items-center gap-2.5 rounded-card border border-border/70 bg-raised px-4 py-4 text-xs text-muted">
           <Spinner /> Loading your Conductor projects…
         </div>
       );
@@ -133,10 +134,10 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
   const allImported = projects.every((p) => p.alreadyImported || p.missing);
 
   return (
-    <div className="card overflow-hidden">
-      <div className="flex items-start justify-between gap-2 border-b bg-raised/40 px-4 py-3">
+    <div className="overflow-hidden rounded-card border border-border/70 bg-raised">
+      <div className="flex items-start justify-between gap-2 px-4 pb-3 pt-3.5">
         <div className="min-w-0">
-          {!hideTitle && <div className="text-[13px] font-semibold">Continue from Conductor</div>}
+          {!hideTitle && <div className="text-[13px] font-semibold tracking-tight">Continue from Conductor</div>}
           <div className={`text-xs text-muted ${hideTitle ? '' : 'mt-0.5'}`}>
             {allImported
               ? 'All your Conductor projects are already in Maestro.'
@@ -145,15 +146,22 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-2xs">
-          <button className="text-accent hover:underline" onClick={() => setAll(true)} disabled={importing}>
+          <button
+            className="rounded-full px-2 py-1 font-medium text-fg transition-colors hover:bg-accent-soft"
+            onClick={() => setAll(true)}
+            disabled={importing}
+          >
             Select all
           </button>
-          <span className="text-faint">·</span>
-          <button className="text-muted hover:underline" onClick={() => setAll(false)} disabled={importing}>
+          <button
+            className="rounded-full px-2 py-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+            onClick={() => setAll(false)}
+            disabled={importing}
+          >
             none
           </button>
           <button
-            className="ml-1 rounded-ctl p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+            className="flex h-6 w-6 items-center justify-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
             title="Re-scan Conductor"
             onClick={() => void doScan(true)}
             disabled={importing}
@@ -163,7 +171,7 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
         </div>
       </div>
 
-      <div className="max-h-[46vh] overflow-y-auto">
+      <div className="max-h-[46vh] overflow-y-auto border-y border-border/60 px-1.5 py-1.5">
         {projects.map((p, i) => {
           const disabled = isRowDisabled(p);
           const checked = sel.projects.has(p.key);
@@ -171,10 +179,10 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
           const wsCount = p.workspaces.length;
           const sessionCount = p.workspaces.reduce((n, w) => n + w.sessionCount, 0);
           return (
-            <div key={p.key} className={i > 0 ? 'border-t' : ''}>
+            <div key={p.key} className={i > 0 ? 'mt-0.5' : ''}>
               <div
-                className={`flex items-center gap-3 px-4 py-2.5 ${
-                  disabled ? 'opacity-55' : 'cursor-pointer hover:bg-accent-soft/50'
+                className={`flex items-center gap-3 rounded-ctl px-2.5 py-2.5 ${
+                  disabled ? 'opacity-55' : 'cursor-pointer hover:bg-accent-soft'
                 }`}
                 onClick={() => toggleProject(p)}
               >
@@ -210,7 +218,7 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
                 </div>
                 {wsCount > 0 && (
                   <button
-                    className="shrink-0 rounded-ctl p-0.5 text-faint hover:bg-accent-soft hover:text-fg"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-faint hover:bg-accent-soft hover:text-fg"
                     onClick={(e) => {
                       e.stopPropagation();
                       setExpanded((s) => {
@@ -221,21 +229,21 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
                     }}
                     title={isOpen ? 'Hide workspaces' : 'Show workspaces'}
                   >
-                    {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    <Chevron open={isOpen} size={15} />
                   </button>
                 )}
               </div>
 
               {isOpen && wsCount > 0 && (
-                <div className="border-t bg-raised/30 pb-1">
+                <div data-motion="collapse" className="pb-1">
                   {p.workspaces.map((w) => {
                     const wsDisabled = w.alreadyImported || p.missing || p.alreadyImported;
                     const wsChecked = w.alreadyImported ? true : !!sel.workspaces[p.key]?.has(w.name);
                     return (
                       <div
                         key={w.name}
-                        className={`flex items-center gap-3 py-1.5 pl-11 pr-4 ${
-                          wsDisabled ? 'opacity-55' : 'cursor-pointer hover:bg-accent-soft/40'
+                        className={`flex items-center gap-3 rounded-ctl py-1.5 pl-9 pr-2.5 ${
+                          wsDisabled ? 'opacity-55' : 'cursor-pointer hover:bg-accent-soft'
                         }`}
                         onClick={() => !wsDisabled && toggleWorkspace(p, w.name)}
                       >
@@ -263,10 +271,10 @@ export default function ConductorImportPanel({ hideTitle }: { hideTitle?: boolea
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t bg-raised/40 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
         <span className="text-2xs text-faint">Read-only: your Conductor setup is not modified.</span>
         <button
-          className="btn btn-accent h-8 shrink-0 text-xs"
+          className="btn btn-accent h-8 shrink-0 px-3.5"
           disabled={count === 0 || importing}
           onClick={() => void doImport(selections)}
         >
@@ -298,8 +306,8 @@ function CheckBox({ checked, disabled, small }: { checked: boolean; disabled?: b
   const size = small ? 15 : 17;
   return (
     <span
-      className={`flex shrink-0 items-center justify-center rounded border transition-colors ${
-        checked ? 'border-accent bg-accent text-white' : 'border-line bg-raised'
+      className={`flex shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+        checked ? 'border-transparent bg-ink text-on-ink' : 'border-faint/60 bg-raised'
       } ${disabled ? '' : ''}`}
       style={{ width: size, height: size }}
     >

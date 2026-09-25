@@ -35,7 +35,7 @@ export default function GitHubSignInModal() {
           <span className="mr-auto text-2xs text-faint">
             Prefer a terminal? <code className="font-mono">gh auth login</code> works too.
           </span>
-          <button className="btn" onClick={cancel}>
+          <button className="btn btn-ghost text-muted hover:text-fg" onClick={cancel}>
             Cancel
           </button>
         </>
@@ -64,7 +64,7 @@ export default function GitHubSignInModal() {
           </p>
 
           <button
-            className="group flex w-full items-center justify-center gap-3 rounded-card border bg-raised py-3.5 font-mono text-xl font-semibold tracking-[0.3em] hover:border-accent/60"
+            className="group flex w-full items-center justify-center gap-3 rounded-card bg-accent-soft py-4 font-mono text-xl font-semibold tracking-[0.3em] transition-colors hover:bg-fg/[0.08]"
             title="Copy code"
             onClick={copyCode}
           >
@@ -76,13 +76,13 @@ export default function GitHubSignInModal() {
             )}
           </button>
 
-          <button className="btn btn-accent w-full justify-center gap-2 !h-8" onClick={openGithub}>
+          <button className="btn btn-accent w-full justify-center gap-2 !h-9 text-[13px]" onClick={openGithub}>
             <ExternalLink size={13} />
             Open github.com/login/device
           </button>
           <p className="-mt-2 text-center text-2xs text-faint">The code is copied automatically when you open GitHub.</p>
 
-          <div className="flex items-center gap-2 rounded-ctl border bg-surface px-3 py-2 text-xs text-muted">
+          <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-muted">
             <Spinner />
             Waiting for approval — this finishes automatically once you authorize on GitHub.
           </div>

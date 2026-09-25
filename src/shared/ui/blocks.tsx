@@ -1,13 +1,9 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import {
   Bot,
-  Brain,
   Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   FileText,
   Globe,
   Image as ImageIcon,
@@ -24,7 +20,7 @@ import {
 import type { AgentBlock, Attachment } from '../types';
 import { Markdown } from './Markdown';
 import { EditDiff, buildEditDiff, parseEditTool } from './EditDiff';
-import { Spinner } from './primitives';
+import { Chevron, Spinner } from './primitives';
 
 /**
  * The agent-turn block renderer, moved to the shared UI package (web-desktop-parity
@@ -33,12 +29,15 @@ import { Spinner } from './primitives';
  * activity fold, thinking folds, resolved-ask records, and edit diffs.
  */
 
-export function BlockView({ b, running }: { b: AgentBlock; running?: boolean }) {
+// Memoised on the block's identity: a live turn re-renders its list per token,
+// and a settled block (the store keeps its object stable) must neither re-render
+// nor — worse — have its DOM rebuilt under the user's text selection.
+export const BlockView = memo(function BlockView({ b, running }: { b: AgentBlock; running?: boolean }) {
   if (b.type === 'text') return <Markdown text={b.text} className="px-1" />;
   if (b.type === 'thinking') return <ThinkingBlock text={b.text} />;
   if (b.type === 'ask') return <AskBlock block={b} />;
   return <ToolBlock block={b} running={running} />;
-}
+});
 
 /**
  * A resolved `maestro-ask` prompt as it reads back in the trace: the question(s)
@@ -51,13 +50,13 @@ function AskBlock({ block }: { block: Extract<AgentBlock, { type: 'ask' }> }) {
   const answerFor = (qi: number): string[] =>
     answers?.find((a) => a.question === questions[qi].question)?.selected ?? answers?.[qi]?.selected ?? [];
   return (
-    <div className="mx-1 rounded-ctl border bg-surface/60 text-xs">
-      <div className="flex items-center gap-2 border-b px-2.5 py-1.5 text-2xs font-semibold uppercase tracking-wide text-muted">
-        <ListChecks size={12} className="shrink-0 text-accent" />
+    <div className="mx-1 rounded-card bg-surface text-xs">
+      <div className="flex items-center gap-2 px-3.5 pb-1 pt-3 text-xs font-medium text-muted">
+        <ListChecks size={12} className="shrink-0 text-faint" />
         {questions.length > 1 ? `Asked the user ${questions.length} questions` : 'Asked the user'}
         {answers === null && <span className="font-normal normal-case text-faint">· skipped</span>}
       </div>
-      <div className="space-y-2.5 px-2.5 py-2">
+      <div className="space-y-3 px-3.5 pb-3 pt-1.5">
         {questions.map((q, qi) => {
           const picked = answerFor(qi);
           return (
@@ -68,9 +67,9 @@ function AskBlock({ block }: { block: Extract<AgentBlock, { type: 'ask' }> }) {
                   picked.map((p, i) => (
                     <span
                       key={i}
-                      className="inline-flex items-center gap-1 rounded-ctl border border-accent bg-accent-soft px-2 py-0.5 text-2xs text-fg"
+                      className="inline-flex items-center gap-1 rounded-full bg-raised px-2.5 py-1 text-2xs text-fg shadow-sm ring-1 ring-inset ring-border"
                     >
-                      <Check size={11} className="shrink-0 text-accent" />
+                      <Check size={11} className="shrink-0 text-muted" />
                       {p}
                     </span>
                   ))
@@ -145,7 +144,7 @@ export function groupConsecutiveTools(blocks: AgentBlock[]): (AgentBlock | ToolC
 export function BlockList({ blocks, streaming, folded }: { blocks: AgentBlock[]; streaming?: boolean; folded?: boolean }) {
   if (folded) {
     return (
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {foldBlocks(blocks).map((seg, i) =>
           Array.isArray(seg) ? <ActivityFold key={i} blocks={seg} /> : <BlockView key={i} b={seg} />
         )}
@@ -155,16 +154,24 @@ export function BlockList({ blocks, streaming, folded }: { blocks: AgentBlock[];
   // Live turn: collapse consecutive same-tool calls into one group so a burst of
   // reads or writes reads as "Read ×5" instead of a wall of identical rows. Only
   // the very last tool — the one still executing — carries the running spinner.
+  //
+  // Rows are keyed by the index of their first block. Blocks only ever append,
+  // so a row keeps its key — and React keeps its DOM — for the whole turn, even
+  // as later blocks arrive or a tool joins the group before it. (Keying by row
+  // index shifted every later row whenever grouping changed.)
   const rows = groupConsecutiveTools(blocks);
+  let at = 0;
   return (
     <div className="space-y-1.5">
       {rows.map((row, i) => {
-        if (!Array.isArray(row)) return <BlockView key={i} b={row} />;
+        const key = at;
+        at += Array.isArray(row) ? row.length : 1;
+        if (!Array.isArray(row)) return <BlockView key={key} b={row} />;
         const running = streaming && i === rows.length - 1 && !row[row.length - 1].result;
         return row.length === 1 ? (
-          <ToolBlock key={i} block={row[0]} running={running} />
+          <ToolBlock key={key} block={row[0]} running={running} />
         ) : (
-          <ToolGroup key={i} tools={row} running={running} />
+          <MemoToolGroup key={key} tools={row} running={running} />
         );
       })}
     </div>
@@ -201,20 +208,27 @@ function ActivityFold({ blocks }: { blocks: AgentBlock[] }) {
   const label = parts.join(', ') || plural(blocks.length, 'step');
   const icons = [...new Set(tools.map((t) => toolIcon(t.name)))].slice(0, 4);
   return (
-    <div className="px-1">
+    <div>
       <button
-        className="group/fold flex items-center gap-1.5 py-0.5 text-xs text-faint transition-colors hover:text-muted"
+        className={clsx(
+          'group/fold flex items-center gap-1.5 rounded-full py-1 pl-2 pr-2.5 text-xs text-faint transition-colors hover:bg-accent-soft hover:text-muted',
+          open && 'bg-accent-soft text-muted'
+        )}
         onClick={() => setOpen(!open)}
       >
-        {open ? <ChevronDown size={11} className="shrink-0" /> : <ChevronRight size={11} className="shrink-0" />}
+        <Chevron open={open} size={11} />
         <span>{label}</span>
-        {icons.map((Icon, i) => (
-          <Icon key={i} size={11} className="shrink-0 opacity-70" />
-        ))}
+        {icons.length > 0 && (
+          <span className="flex items-center gap-1 pl-0.5">
+            {icons.map((Icon, i) => (
+              <Icon key={i} size={11} className="shrink-0 opacity-60" />
+            ))}
+          </span>
+        )}
         {failed > 0 && <span className="text-err">· {plural(failed, 'failed call')}</span>}
       </button>
       {open && (
-        <div className="mt-1 space-y-1.5 border-l-2 pl-2">
+        <div data-motion="collapse" className="ml-3 mt-1.5 space-y-1.5 border-l pl-2.5">
           {blocks.map((b, i) => (
             <BlockView key={i} b={b} />
           ))}
@@ -227,13 +241,17 @@ function ActivityFold({ blocks }: { blocks: AgentBlock[] }) {
 function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="px-1">
-      <button className="flex items-center gap-1 text-2xs italic text-faint hover:text-muted" onClick={() => setOpen(!open)}>
-        <Brain size={11} />
+    <div>
+      <button
+        className="flex items-center gap-1.5 rounded-full py-0.5 pl-2 pr-2.5 text-xs text-faint transition-colors hover:bg-accent-soft hover:text-muted"
+        onClick={() => setOpen(!open)}
+      >
+        <Chevron open={open} size={11} />
         Thinking
-        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
       </button>
-      {open && <div className="mt-1 whitespace-pre-wrap border-l-2 pl-2.5 text-xs italic text-muted">{text}</div>}
+      {open && (
+        <div data-motion="collapse" className="ml-3 mt-1 whitespace-pre-wrap border-l pl-2.5 text-xs italic leading-relaxed text-muted">{text}</div>
+      )}
     </div>
   );
 }
@@ -246,7 +264,7 @@ export function toolSummary(input: unknown): string {
   );
 }
 
-function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
+const ToolBlock = memo(function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
   // File-editing tools render as a diff, not raw JSON. Detected by input shape.
   const edit = useMemo(() => parseEditTool(block.name, block.input), [block.name, block.input]);
   const diff = useMemo(() => (edit ? buildEditDiff(edit) : null), [edit]);
@@ -261,11 +279,14 @@ function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
       ? TerminalIcon
       : Wrench;
   return (
-    <div className={clsx('mx-1 rounded-ctl border bg-surface/60 text-xs', failed && 'border-err/40')}>
-      <button className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left" onClick={() => setOpen(!open)}>
-        <Icon size={12} className="shrink-0 text-muted" />
-        <span className="shrink-0 font-medium">{block.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-muted">{summary}</span>
+    <div className={clsx('rounded-ctl text-xs transition-colors', open ? 'bg-surface' : failed && 'bg-err/5')}>
+      <button
+        className="flex w-full items-center gap-2 rounded-ctl px-2 py-1 text-left transition-colors hover:bg-accent-soft"
+        onClick={() => setOpen(!open)}
+      >
+        <Icon size={12} className="shrink-0 text-faint" />
+        <span className={clsx('shrink-0 font-medium', failed ? 'text-err' : 'text-muted')}>{block.name}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-faint">{summary}</span>
         {diff && (diff.adds > 0 || diff.dels > 0) && (
           <span className="shrink-0 font-mono text-2xs">
             {diff.adds > 0 && <span className="text-ok">+{diff.adds}</span>}
@@ -278,12 +299,12 @@ function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
         ) : failed ? (
           <XCircle size={12} className="shrink-0 text-err" />
         ) : block.result ? (
-          <CheckCircle2 size={12} className="shrink-0 text-ok" />
+          <Check size={12} className="shrink-0 text-faint" />
         ) : null}
-        {open ? <ChevronDown size={11} className="shrink-0 text-faint" /> : <ChevronRight size={11} className="shrink-0 text-faint" />}
+        <Chevron open={open} size={11} className="text-faint" />
       </button>
       {open && (
-        <div className="space-y-1.5 border-t px-2.5 py-2">
+        <div data-motion="collapse" className="space-y-1.5 px-2.5 pb-2.5 pt-1">
           {diff ? (
             <EditDiff diff={diff} />
           ) : (
@@ -306,7 +327,7 @@ function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
       )}
     </div>
   );
-}
+});
 
 /**
  * A run of same-named tool calls (e.g. five Reads) collapsed into one row while
@@ -320,24 +341,27 @@ function ToolGroup({ tools, running }: { tools: ToolCall[]; running?: boolean })
   const failed = tools.filter((t) => t.result && !t.result.ok).length;
   const Icon = toolIcon(name);
   return (
-    <div className={clsx('mx-1 rounded-ctl border bg-surface/60 text-xs', failed > 0 && 'border-err/40')}>
-      <button className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left" onClick={() => setOpen(!open)}>
-        <Icon size={12} className="shrink-0 text-muted" />
-        <span className="shrink-0 font-medium">{name}</span>
+    <div className={clsx('rounded-ctl text-xs transition-colors', open ? 'bg-surface' : failed > 0 && 'bg-err/5')}>
+      <button
+        className="flex w-full items-center gap-2 rounded-ctl px-2 py-1 text-left transition-colors hover:bg-accent-soft"
+        onClick={() => setOpen(!open)}
+      >
+        <Icon size={12} className="shrink-0 text-faint" />
+        <span className="shrink-0 font-medium text-muted">{name}</span>
         <span className="shrink-0 text-2xs text-faint">×{tools.length}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-muted">{toolSummary(last.input)}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-faint">{toolSummary(last.input)}</span>
         {failed > 0 && <span className="shrink-0 text-2xs text-err">{failed} failed</span>}
         {running ? (
           <Spinner className="!h-3 !w-3" />
         ) : failed > 0 ? (
           <XCircle size={12} className="shrink-0 text-err" />
         ) : (
-          <CheckCircle2 size={12} className="shrink-0 text-ok" />
+          <Check size={12} className="shrink-0 text-faint" />
         )}
-        {open ? <ChevronDown size={11} className="shrink-0 text-faint" /> : <ChevronRight size={11} className="shrink-0 text-faint" />}
+        <Chevron open={open} size={11} className="text-faint" />
       </button>
       {open && (
-        <div className="space-y-1.5 border-t px-2 py-2">
+        <div data-motion="collapse" className="space-y-0.5 px-1 pb-1.5 pt-0.5">
           {tools.map((t, i) => (
             <ToolBlock key={t.id || i} block={t} running={running && i === tools.length - 1} />
           ))}
@@ -346,6 +370,12 @@ function ToolGroup({ tools, running }: { tools: ToolCall[]; running?: boolean })
     </div>
   );
 }
+
+// Grouping rebuilds the `tools` array every render, so compare the calls it holds.
+const MemoToolGroup = memo(
+  ToolGroup,
+  (a, b) => a.running === b.running && a.tools.length === b.tools.length && a.tools.every((t, i) => t === b.tools[i])
+);
 
 /**
  * A chat attachment pill. Presentational: `onOpen` (when set) makes it a button
@@ -375,7 +405,7 @@ export function AttachmentChip({
       <FileText size={10} />
     );
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border bg-raised px-2 py-0.5 text-2xs text-muted">
+    <span className="inline-flex items-center gap-1 rounded-full bg-raised px-2 py-0.5 text-2xs text-muted ring-1 ring-inset ring-border">
       {onOpen ? (
         <button
           type="button"

@@ -17,7 +17,7 @@ process.env.NODE_ENV = 'test';
 
 import { and, eq, isNull } from 'drizzle-orm';
 import { getDb } from '../web/lib/db';
-import { boxes, conversations, devices, events, jobs, readState, users } from '../web/lib/db/schema';
+import { boxes, conversations, devices, jobs, readState, userMessages, users } from '../web/lib/db/schema';
 import { hashToken } from '../web/lib/tokens';
 import {
   webWorkspaces,
@@ -36,13 +36,15 @@ import {
   putAsk,
   deleteAsk,
 } from '../web/lib/handlers/workspaces';
-import { devicePoll, deviceJobDone } from '../web/lib/handlers/device';
-import { resyncDevices, resyncStatus } from '../web/lib/handlers/account';
+import { devicePoll, deviceJobDone, deviceList } from '../web/lib/handlers/device';
+import { resyncDevices, resyncStatus, revokeDevice } from '../web/lib/handlers/account';
 import { boxWorkspaceGit } from '../web/lib/handlers/box';
 import { postAttachment, getAttachment } from '../web/lib/handlers/attachments';
-import { webSend, webReadState, webTurns } from '../web/lib/handlers/web';
-import { putConversation, deviceReadState, putConvTurn } from '../web/lib/handlers/desktop';
+import { webSend, webReadState, webTurns, webQueueEdit, webQueueRemove, webQueueSendNow, webStop } from '../web/lib/handlers/web';
+import { putConversation, deviceReadState, putConvTurn, putDeviceSettings, putWebSettings } from '../web/lib/handlers/desktop';
 import { boxPoll } from '../web/lib/handlers/box';
+import { eventsSince, type EventKind } from '../web/lib/events';
+import { getBus, seenKey } from '../web/lib/bus';
 import { toTranscript } from '../web/lib/transcript';
 
 const USER = 'user-1';
@@ -65,6 +67,17 @@ function req(method: string, url: string, headers: Record<string, string>, body?
   return new Request(`http://x${url}`, { method, headers, body: body != null ? JSON.stringify(body) : undefined });
 }
 const jbody = (r: Response) => r.json() as Promise<any>;
+/** This user's feed events of one kind — the feed lives on the bus now, not in
+ *  Postgres (web-relay-event-bus §2.1). */
+const feed = async (kind: EventKind) => (await eventsSince(USER, 0, 1000)).filter((e) => e.kind === kind);
+
+/** Age a desktop. Presence is bus-first with the row as the fallback (§4.2), so
+ *  a test that moves a desktop online/offline has to move both. */
+async function setSeen(deviceId: string, at: number) {
+  const db = await getDb();
+  await db.update(devices).set({ lastSeenAt: new Date(at) }).where(eq(devices.id, deviceId));
+  await getBus().set(seenKey('d', deviceId), String(at), 300);
+}
 
 async function main() {
   const db = await getDb();
@@ -87,6 +100,38 @@ async function main() {
   check('project derived from workspaces', wsResp.projects.length === 1 && wsResp.projects[0].id === 'p1');
   check('device reported online', wsResp.devices.length === 1 && wsResp.devices[0].online === true);
   check('cloud workspace flagged isCloud', !!wsResp.workspaces.find((w: any) => w.id === 'wsCloud')?.isCloud);
+  // The fleet reports a linkedAt (newest desktop link time) so the web can collapse
+  // every project once per new link (settings-sync).
+  check('GET /api/workspaces reports a linkedAt', typeof wsResp.linkedAt === 'number' && wsResp.linkedAt > 0, `${wsResp.linkedAt}`);
+
+  // ---- 1b. settings-sync: the desktop mirrors its new-conversation defaults ----
+  const setResp = await putDeviceSettings(
+    req('PUT', '/api/settings', devH, { defaultHarness: 'codex', defaultModels: { 'claude-code': 'claude-opus-5' }, defaultEffort: 'medium' })
+  );
+  check('PUT /api/settings accepted (device token)', setResp.status === 200, `${setResp.status}`);
+  const setUnauth = await putDeviceSettings(req('PUT', '/api/settings', { 'content-type': 'application/json' }, { defaultEffort: 'low' }));
+  check('PUT /api/settings rejects a non-device caller', setUnauth.status === 401, `${setUnauth.status}`);
+  const wsSettings = await jbody(await webWorkspaces(req('GET', '/api/workspaces', webH)));
+  check(
+    'fleet carries the mirrored defaults (harness/model/effort)',
+    wsSettings.settings?.defaultHarness === 'codex' &&
+      wsSettings.settings?.defaultEffort === 'medium' &&
+      wsSettings.settings?.defaultModels?.['claude-code'] === 'claude-opus-5',
+    JSON.stringify(wsSettings.settings)
+  );
+  // The theme rides the same mirror; a web pick merges onto it and an unknown
+  // family is never stored.
+  await putDeviceSettings(req('PUT', '/api/settings', devH, { defaultHarness: 'codex', theme: 'dark', colorTheme: 'nord' }));
+  const themed = await jbody(await webWorkspaces(req('GET', '/api/workspaces', webH)));
+  check('fleet carries the mirrored theme', themed.settings?.theme === 'dark' && themed.settings?.colorTheme === 'nord', JSON.stringify(themed.settings));
+  const webPick = await putWebSettings(req('PUT', '/api/settings', webH, { colorTheme: 'solarized' }));
+  const bogus = await putWebSettings(req('PUT', '/api/settings', webH, { colorTheme: 'bogus', theme: 'sepia' }));
+  const afterPick = await jbody(await webWorkspaces(req('GET', '/api/workspaces', webH)));
+  check(
+    'a web theme pick merges (mode kept) and an unknown family is ignored',
+    webPick.status === 200 && bogus.status === 200 && afterPick.settings?.colorTheme === 'solarized' && afterPick.settings?.theme === 'dark' && afterPick.settings?.defaultHarness === 'codex',
+    JSON.stringify(afterPick.settings)
+  );
 
   // ---- 2. send to the local workspace → job addressed to the device ----
   const sLocal = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'hi local' }), { id: 'wsLocal:1' }));
@@ -100,8 +145,7 @@ async function main() {
   await deviceJobDone(req('POST', `/api/device/jobs/${localJob.id}/done`, devH, { ok: true }), { id: localJob.id });
   const [doneJob] = await db.select().from(jobs).where(eq(jobs.id, localJob.id));
   check('device job marked done', doneJob?.status === 'done');
-  const jobDoneEv = await db.select().from(events).where(and(eq(events.userId, USER), eq(events.kind, 'job-done')));
-  check('job-done event emitted', jobDoneEv.length >= 1);
+  check('job-done event emitted', (await feed('job-done')).length >= 1);
 
   // ---- 3. send to the cloud workspace → job addressed to the box ----
   const sCloud = await jbody(await webSend(req('POST', '/api/conversations/wsCloud:1/send', webH, { text: 'hi cloud' }), { id: 'wsCloud:1' }));
@@ -116,13 +160,19 @@ async function main() {
   check('pr_create accepted while desktop online', prResp.status === 200, `${prResp.status}`);
   const [prJob] = await db.select().from(jobs).where(and(eq(jobs.workspaceId, 'wsCloud'), eq(jobs.kind, 'pr_create')));
   check('pr_create job routed to device', prJob?.deviceId === DEVICE && !prJob?.boxId);
+  // The in-flight job shows up on the workspace row (§10.1 action feedback) until the device acks it.
+  const wsPending = await jbody(await webWorkspace(req('GET', '/api/workspaces/wsCloud', webH), { id: 'wsCloud' }));
+  check('workspace reports pr_create in pendingJobs while in flight', wsPending.workspace.pendingJobs?.includes('pr_create'), JSON.stringify(wsPending.workspace.pendingJobs));
+  await deviceJobDone(req('POST', `/api/device/jobs/${prJob.id}/done`, devH, { ok: false, error: 'nope' }), { id: prJob.id });
+  const wsSettled = await jbody(await webWorkspace(req('GET', '/api/workspaces/wsCloud', webH), { id: 'wsCloud' }));
+  check('pendingJobs clears once the job is acked (even failed)', !wsSettled.workspace.pendingJobs?.includes('pr_create'), JSON.stringify(wsSettled.workspace.pendingJobs));
 
   // chat_set (meta) also routes to device
   const metaResp = await convMeta(req('POST', '/api/conversations/wsLocal:1/meta', webH, { model: 'claude-opus-5' }), { id: 'wsLocal:1' });
   check('chat_set accepted', metaResp.status === 200);
 
   // ---- 5. desktop offline → non-queueable jobs 409; message still queues ----
-  await db.update(devices).set({ lastSeenAt: new Date(Date.now() - 120_000) }).where(eq(devices.id, DEVICE));
+  await setSeen(DEVICE, Date.now() - 120_000);
   const prOffline = await wsPrCreate(req('POST', '/api/workspaces/wsCloud/pr', webH, {}), { id: 'wsCloud' });
   check('pr_create 409 when desktop offline', prOffline.status === 409, `${prOffline.status}`);
   const sendOffline = await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'queue me' }), { id: 'wsLocal:1' });
@@ -132,10 +182,10 @@ async function main() {
   await putAsk(req('PUT', '/api/conversations/wsLocal:1/ask', devH, { askId: 'ask-1', questions: [{ question: 'Which?', options: ['a', 'b'] }] }), { id: 'wsLocal:1' });
   const [convAfterAsk] = await db.select().from(conversations).where(eq(conversations.id, 'wsLocal:1'));
   check('pendingAsk set on the conversation', !!(convAfterAsk?.pendingAsk as any)?.askId);
-  const askQEv = await db.select().from(events).where(and(eq(events.userId, USER), eq(events.kind, 'ask-question')));
+  const askQEv = await feed('ask-question');
   check('ask-question event emitted', askQEv.length >= 1);
   // desktop must be back online for a non-queueable ask_answer job
-  await db.update(devices).set({ lastSeenAt: new Date() }).where(eq(devices.id, DEVICE));
+  await setSeen(DEVICE, Date.now());
   const ans = await convAskAnswer(req('POST', '/api/conversations/wsLocal:1/ask/ask-1/answer', webH, { answers: [{ question: 'Which?', selected: ['a'] }] }), { id: 'wsLocal:1', askId: 'ask-1' });
   check('ask_answer accepted', ans.status === 200);
   const [answerJob] = await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'ask_answer')));
@@ -143,8 +193,54 @@ async function main() {
   await deleteAsk(req('DELETE', '/api/conversations/wsLocal:1/ask/ask-1', devH), { id: 'wsLocal:1', askId: 'ask-1' });
   const [convAfterResolve] = await db.select().from(conversations).where(eq(conversations.id, 'wsLocal:1'));
   check('pendingAsk cleared', !convAfterResolve?.pendingAsk);
-  const askREv = await db.select().from(events).where(and(eq(events.userId, USER), eq(events.kind, 'ask-resolved')));
+  const askREv = await feed('ask-resolved');
   check('ask-resolved event emitted', askREv.length >= 1);
+
+  // ---- 6b. queue lifecycle: edit / send-now / remove all resolve by messageId ----
+  // (device is online here, so send-now — which can't wait for an offline executor
+  // — is accepted). A web send inserts a queued=true relay row keyed by messageId.
+  const qSend = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'first queued' }), { id: 'wsLocal:1' }));
+  const qMsgId = qSend.messageId as string;
+  const [qRow] = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
+  check('web send inserts a queued relay row', qRow?.queued === true && qRow?.origin === 'web', JSON.stringify(qRow && { queued: qRow.queued, origin: qRow.origin }));
+
+  // Edit → queue_edit job carries the messageId (so the desktop rewrites the real
+  // queued row), and the relay row's text updates immediately.
+  const qEdit = await webQueueEdit(req('POST', `/api/queue/${qMsgId}/edit`, webH, { text: 'edited queued' }), { messageId: qMsgId });
+  check('queue edit accepted', qEdit.status === 200, `${qEdit.status}`);
+  const [editJob] = await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'queue_edit')));
+  check('queue_edit job routed to device with the messageId', editJob?.deviceId === DEVICE && (editJob?.payload as any)?.messageId === qMsgId, JSON.stringify(editJob?.payload));
+  const [editedRow] = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
+  check('relay queued row text updated', editedRow?.text === 'edited queued', editedRow?.text);
+
+  // Send now → queue_send_now job routed to the device, keyed by the messageId. The
+  // relay row is left queued (the desktop drains it into a running turn and clears
+  // it on the next publish).
+  const qNow = await webQueueSendNow(req('POST', `/api/queue/${qMsgId}/send-now`, webH), { messageId: qMsgId });
+  check('queue send-now accepted', qNow.status === 200, `${qNow.status}`);
+  const [nowJob] = await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'queue_send_now')));
+  check('queue_send_now job routed to device with the messageId', nowJob?.deviceId === DEVICE && !nowJob?.boxId && (nowJob?.payload as any)?.messageId === qMsgId, JSON.stringify(nowJob?.payload));
+
+  // Send-now needs a reachable executor: offline → 409 (the UI disables it).
+  await setSeen(DEVICE, Date.now() - 120_000);
+  const qNowOffline = await webQueueSendNow(req('POST', `/api/queue/${qMsgId}/send-now`, webH), { messageId: qMsgId });
+  check('send-now 409 when desktop offline', qNowOffline.status === 409, `${qNowOffline.status}`);
+  await setSeen(DEVICE, Date.now());
+
+  // Remove → queue_remove job carries the messageId and the relay row is deleted.
+  const qRemove = await webQueueRemove(req('POST', `/api/queue/${qMsgId}/remove`, webH), { messageId: qMsgId });
+  check('queue remove accepted', qRemove.status === 200, `${qRemove.status}`);
+  const [removeJob] = await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'queue_remove')));
+  check('queue_remove job carries the messageId', (removeJob?.payload as any)?.messageId === qMsgId, JSON.stringify(removeJob?.payload));
+  const removedRows = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
+  check('relay queued row removed', removedRows.length === 0, `${removedRows.length} rows`);
+
+  // Stop clears any remaining web-origin queued rows for the conversation.
+  const qSend2 = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'to be stopped' }), { id: 'wsLocal:1' }));
+  const stopResp = await webStop(req('POST', '/api/conversations/wsLocal:1/stop', webH), { id: 'wsLocal:1' });
+  check('stop accepted', stopResp.status === 200, `${stopResp.status}`);
+  const afterStop = await db.select().from(userMessages).where(and(eq(userMessages.conversationId, 'wsLocal:1'), eq(userMessages.queued, true)));
+  check('stop cleared web-origin queued rows', afterStop.every((m: any) => m.id !== qSend2.messageId), `${afterStop.length} still queued`);
 
   // ---- Phase 2: workflow surfaces data plane ----
   // git_refresh routes to the device.
@@ -242,6 +338,33 @@ async function main() {
   const getRes = await getAttachment(req('GET', att.url, webH), { id: att.id });
   check('attachment served as image', getRes.status === 200 && (getRes.headers.get('content-type') || '').startsWith('image/'));
 
+  // ---- photos web → desktop (§6.4): the phone uploads over its SESSION, sends the
+  //      photo, and the desktop downloads it over its DEVICE token ----
+  const photo = await jbody(await postAttachment(req('POST', '/api/attachments', webH, { dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' })));
+  check('web session can upload a photo', !!photo.id, JSON.stringify(photo));
+  const devGet = await getAttachment(req('GET', `/api/attachments/${photo.id}`, devH), { id: photo.id });
+  check('desktop can download the web photo (device token)', devGet.status === 200 && (devGet.headers.get('content-type') || '').startsWith('image/'));
+  // Photo-only send (empty text) is accepted and the job carries the ref.
+  const sPhoto = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: '', attachments: [{ id: photo.id, name: 'beach.jpg' }] }), { id: 'wsLocal:1' }));
+  check('photo-only send accepted (empty text)', !!sPhoto.messageId, JSON.stringify(sPhoto));
+  const photoJob = (await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'message')))).find((j: any) => (j.payload as any)?.messageId === sPhoto.messageId);
+  check('message job carries the photo ref', ((photoJob?.payload as any)?.attachments ?? [])[0]?.id === photo.id, JSON.stringify(photoJob?.payload));
+  // Forged / foreign attachment ids never reach the executor.
+  const sForged = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'hi', attachments: [{ id: 'not-mine', name: 'x' }] }), { id: 'wsLocal:1' }));
+  const forgedJob = (await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'message')))).find((j: any) => (j.payload as any)?.messageId === sForged.messageId);
+  check('foreign attachment ids are dropped', ((forgedJob?.payload as any)?.attachments ?? []).length === 0);
+  // webTurns returns the stored refs; toTranscript renders them as image chips.
+  const tPhoto = await jbody(await webTurns(req('GET', '/api/conversations/wsLocal:1/turns', webH), { id: 'wsLocal:1' }));
+  const photoMsg = tPhoto.userMessages.find((m: any) => m.id === sPhoto.messageId);
+  check('webTurns returns the photo attachment', (photoMsg?.attachments ?? [])[0]?.id === photo.id, JSON.stringify(photoMsg?.attachments));
+  const trPhoto = toTranscript({
+    conversation: { id: 'wsLocal:1', title: null, harness: 'claude-code', state: null, hasRun: true, boxId: null },
+    turns: [],
+    userMessages: [{ id: 'um-photo', text: '', origin: 'web', turnId: 't', queued: false, attachments: [{ id: photo.id, name: 'beach.jpg' }], seq: 1, createdAt: Date.now() }],
+  } as any);
+  const chip = trPhoto.messages.find((m: any) => m.id === 'um-photo');
+  check('toTranscript maps a photo to an image chip', chip?.attachments?.length === 1 && chip.attachments[0].kind === 'image', JSON.stringify(chip?.attachments));
+
   // ---- 7. read-state: web marks read (now), desktop marks unread (0) ----
   await webReadState(req('PUT', '/api/read-state', webH, { conversationId: 'wsLocal:1', lastReadAt: Date.now() }));
   await deviceReadState(req('PUT', '/api/read-state', devH, { conversationId: 'wsLocal:1', lastReadAt: 0 }));
@@ -250,7 +373,7 @@ async function main() {
   check('mark-unread (lastReadAt: 0) applied, not coerced to now', readMs === 0, `${readMs}`);
 
   // ---- 8. web "Re-sync" button enqueues a device-global resync for online desktops ----
-  await db.update(devices).set({ lastSeenAt: new Date() }).where(eq(devices.id, DEVICE));
+  await setSeen(DEVICE, Date.now());
   const rs1 = await jbody(await resyncDevices(req('POST', '/api/account/resync', webH)));
   check('resync reports the online desktop', rs1.online === 1 && rs1.offline === 0, JSON.stringify(rs1));
   check('resync returns the enqueued job id to poll', Array.isArray(rs1.jobIds) && rs1.jobIds.length === 1, JSON.stringify(rs1.jobIds));
@@ -272,9 +395,30 @@ async function main() {
   const statDone = await jbody(await resyncStatus(req('GET', `/api/account/resync?ids=${resyncJob.id}`, webH)));
   check('resync status reports done + the workspace count', statDone.jobs[0]?.status === 'done' && statDone.jobs[0]?.workspaces === 2, JSON.stringify(statDone.jobs));
   // Offline desktop: nothing to enqueue, reported as offline so the web can say so.
-  await db.update(devices).set({ lastSeenAt: new Date(Date.now() - 120_000) }).where(eq(devices.id, DEVICE));
+  await setSeen(DEVICE, Date.now() - 120_000);
   const rs2 = await jbody(await resyncDevices(req('POST', '/api/account/resync', webH)));
   check('resync reports an offline desktop and enqueues nothing', rs2.online === 0 && rs2.offline === 1 && rs2.jobIds.length === 0, JSON.stringify(rs2));
+
+  // ---- 9. device fleet: a linked desktop lists + revokes SIBLINGS over bearer ----
+  // Settings → Account on the desktop lists every linked desktop (relay is the
+  // source of truth) and can unlink any one — over the same endpoints the web uses,
+  // but authed by the desktop's bearer token, not a cookie session.
+  const DEVICE2 = 'device-2';
+  const DEVICE2_TOKEN = 'device-token-secret-2';
+  await db
+    .insert(devices)
+    .values({ id: DEVICE2, userId: USER, kind: 'desktop', name: 'Studio', platform: 'linux', tokenHash: hashToken(DEVICE2_TOKEN), lastSeenAt: new Date() })
+    .onConflictDoNothing();
+  const devList = await jbody(await deviceList(req('GET', '/api/devices', devH)));
+  check('bearer device list returns every linked desktop', devList.devices.length === 2 && devList.devices.some((d: any) => d.id === DEVICE2), JSON.stringify(devList.devices.map((d: any) => d.id)));
+  check('bearer device list marks the caller current', devList.devices.find((d: any) => d.id === DEVICE)?.current === true && devList.devices.find((d: any) => d.id === DEVICE2)?.current === false);
+  // The desktop revokes a sibling by id (bearer) over the same DELETE the web uses.
+  await revokeDevice(req('DELETE', `/api/devices/${DEVICE2}`, devH), { id: DEVICE2 });
+  const [revoked2] = await db.select().from(devices).where(eq(devices.id, DEVICE2));
+  check('bearer revoke tombstones the sibling device', !!revoked2?.revokedAt);
+  const devList2 = await jbody(await deviceList(req('GET', '/api/devices', devH)));
+  check('revoked sibling drops out of the device list', !devList2.devices.some((d: any) => d.id === DEVICE2), JSON.stringify(devList2.devices.map((d: any) => d.id)));
+  check('caller stays in the list after revoking a sibling', devList2.devices.some((d: any) => d.id === DEVICE));
 
   console.log('');
   if (failures) {

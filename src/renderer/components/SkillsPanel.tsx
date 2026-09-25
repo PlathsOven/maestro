@@ -35,9 +35,9 @@ export default function SkillsPanel({ workspace }: { workspace: Workspace }) {
   }, [skills, query]);
 
   return (
-    <div className="space-y-3 px-3 py-3">
+    <div className="space-y-3 px-3 py-3.5">
       <div className="flex items-center gap-2">
-        <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-ctl border bg-raised px-2 transition-colors focus-within:border-accent">
+        <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-full bg-accent-soft px-3 transition-shadow focus-within:shadow-[0_0_0_3px_var(--focus-ring)]">
           <Search size={12} className="shrink-0 text-faint" />
           <input
             className="w-full bg-transparent text-xs outline-none placeholder:text-faint"
@@ -46,12 +46,12 @@ export default function SkillsPanel({ workspace }: { workspace: Workspace }) {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <button className="btn h-7 w-7 !px-0" title="New skill" onClick={() => setEditor({ skill: null })}>
+        <button className="btn h-8 w-8 !px-0" title="New skill" onClick={() => setEditor({ skill: null })}>
           <Plus size={14} />
         </button>
       </div>
 
-      <div className="px-1 text-2xs text-faint">
+      <div className="px-1.5 text-2xs leading-relaxed text-faint">
         Type <span className="font-mono">/</span> in the chat box to run a skill. Personal skills work in every
         workspace; project skills ship with this repo.
       </div>
@@ -61,7 +61,7 @@ export default function SkillsPanel({ workspace }: { workspace: Workspace }) {
           <Spinner />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-card border border-dashed px-4 py-8 text-center">
+        <div className="rounded-card bg-accent-soft px-4 py-8 text-center">
           <Blocks size={18} className="mx-auto mb-2 text-faint" />
           <div className="text-xs text-muted">
             {skills.length === 0 ? (
@@ -74,11 +74,11 @@ export default function SkillsPanel({ workspace }: { workspace: Workspace }) {
           </div>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-card border bg-surface">
+        <div className="-mx-1 space-y-px">
           {filtered.map((s) => (
             <button
               key={s.path}
-              className="block w-full border-b px-2.5 py-2 text-left last:border-b-0 hover:bg-accent-soft/50"
+              className="block w-full rounded-ctl px-2.5 py-2 text-left transition-colors hover:bg-accent-soft"
               title={s.source === 'plugin' ? 'View skill (plugin — read-only)' : 'View / edit skill'}
               onClick={() => setEditor({ skill: s })}
             >
@@ -87,8 +87,8 @@ export default function SkillsPanel({ workspace }: { workspace: Workspace }) {
                 <span className="min-w-0 truncate text-[13px] font-medium">{s.name}</span>
                 <span
                   className={clsx(
-                    'ml-auto shrink-0 rounded-full px-1.5 py-px text-2xs',
-                    s.source === 'project' ? 'bg-accent-soft text-accent' : 'bg-border text-muted'
+                    'ml-auto shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-2xs',
+                    s.source === 'project' ? 'text-fg' : 'text-muted'
                   )}
                 >
                   {s.source === 'plugin' ? s.plugin : s.source === 'project' ? 'project' : 'personal'}
@@ -193,7 +193,7 @@ function SkillEditor({
           <span className="flex items-center gap-2">
             <span className="font-mono">/{skill!.name}</span>
             {readOnly && (
-              <span className="rounded-full bg-border px-1.5 py-px text-2xs font-normal text-muted">
+              <span className="rounded-full bg-accent-soft px-2 py-px text-2xs font-normal text-muted">
                 {skill!.plugin} plugin — read-only
               </span>
             )}
@@ -208,7 +208,7 @@ function SkillEditor({
           <>
             {!isNew && (
               <button
-                className={clsx('btn mr-auto h-8 px-3 text-xs', confirmDelete ? 'border-err text-err' : 'text-muted')}
+                className={clsx('btn mr-auto h-8 px-3 text-xs', confirmDelete ? 'border-err/40 text-err' : 'btn-ghost text-muted')}
                 onClick={() => void remove()}
               >
                 {confirmDelete ? 'Really delete?' : 'Delete'}
@@ -225,7 +225,7 @@ function SkillEditor({
               />
             )}
             <button className="btn btn-accent h-8 px-3" disabled={saving || markdown === null} onClick={() => void save()}>
-              {saving ? <Spinner className="!text-white" /> : 'Save skill'}
+              {saving ? <Spinner className="!text-on-ink" /> : 'Save skill'}
             </button>
           </>
         )
@@ -239,7 +239,7 @@ function SkillEditor({
         <>
           <textarea
             autoFocus={!readOnly}
-            className="h-72 w-full resize-y rounded-ctl border bg-raised px-3 py-2.5 font-mono text-xs leading-relaxed outline-none focus:border-accent"
+            className="input h-72 resize-y px-3 py-2.5 font-mono text-xs leading-relaxed"
             value={markdown}
             readOnly={readOnly}
             spellCheck={false}

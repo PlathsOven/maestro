@@ -83,20 +83,20 @@ export default function UpdateToast() {
   // never both apply on the same launch.
   if (installed && !installedDismissed) {
     return (
-      <div className="fixed bottom-4 right-4 z-[101] w-80">
-        <div className="glass fade-in p-3">
-          <div className="flex items-start gap-2">
+      <div data-motion="toast" className="fixed bottom-4 right-4 z-[101] w-80">
+        <div className="glass !rounded-[18px] py-3 pl-3.5 pr-2.5">
+          <div className="flex items-start gap-2.5">
             <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-ok" />
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium text-fg">Updated · v{installed.version}</div>
               <p className="mt-0.5 text-2xs text-muted">Maestro is now up to date.</p>
             </div>
             <button
-              className="shrink-0 text-faint hover:text-fg"
+              className="-my-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-faint hover:bg-accent-soft hover:text-fg"
               onClick={() => setInstalledDismissed(true)}
               aria-label="Dismiss"
             >
-              <X size={13} />
+              <X size={12} />
             </button>
           </div>
         </div>
@@ -106,9 +106,9 @@ export default function UpdateToast() {
 
   if (!update || dismissed) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-[101] w-80">
-      <div className="glass fade-in p-3">
-        <div className="flex items-start gap-2">
+    <div data-motion="toast" className="fixed bottom-4 right-4 z-[101] w-80">
+      <div className="glass !rounded-[18px] p-3.5 pr-2.5">
+        <div className="flex items-start gap-2.5">
           <ArrowUpCircle size={15} className="mt-0.5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
             <div className="text-xs font-medium text-fg">Update ready · v{update.version}</div>
@@ -117,21 +117,21 @@ export default function UpdateToast() {
             )}
           </div>
           <button
-            className="shrink-0 text-faint hover:text-fg"
+            className="-my-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-faint hover:bg-accent-soft hover:text-fg"
             onClick={() => setDismissed(true)}
             aria-label="Dismiss update"
           >
-            <X size={13} />
+            <X size={12} />
           </button>
         </div>
         <button
-          className="btn btn-accent mt-2.5 h-7 w-full text-xs"
+          className="btn btn-accent mt-3 h-8 w-[calc(100%-0.25rem)] text-xs"
           onClick={install}
           disabled={installing}
         >
           {installing ? 'Restarting…' : 'Restart to update'}
         </button>
-        {error && <p className="mt-1.5 text-2xs text-err">{error}</p>}
+        {error && <p className="mt-2 pr-1 text-2xs text-err">{error}</p>}
       </div>
     </div>
   );

@@ -13,7 +13,7 @@ import * as wsvc from './services/workspaces';
 import { clearQueue, deleteChat, editQueued, editScheduledChat, removeQueued, scheduleChat, sendChat, sendQueuedNow } from './services/chat';
 import { cancelScheduled, dropDueRemoteForAgent, sendScheduledNow } from './services/schedule';
 import { submitAskAnswer } from './services/ask';
-import { detectHarnesses, getSubUsage, runningAgents, stopAgent } from './services/harness';
+import { detectHarnesses, getSubUsage, liveTurnSnapshots, runningAgents, stopAgent } from './services/harness';
 import {
   detectHarnessAuth,
   repairHarnessAuth,
@@ -125,7 +125,12 @@ function localAbs(workspaceId: string, relPath: string): string | null {
 async function openInIde(target: string): Promise<void> {
   const cmd = Settings.global().ideCommand.trim() || 'code';
   const r = await run(cmd, [target], { timeout: 15_000 });
-  if (!r.ok) throw new Error(`Could not run "${cmd}": ${r.stderr.trim() || 'command failed'}`);
+  if (r.ok) return;
+  // VS Code's `code` CLI is an opt-in install on macOS; open the app directly.
+  if (cmd === 'code' && process.platform === 'darwin') {
+    if ((await run('open', ['-b', 'com.microsoft.VSCode', target], { timeout: 15_000 })).ok) return;
+  }
+  throw new Error(`Could not run "${cmd}": ${r.stderr.trim() || 'command failed'}`);
 }
 
 /** Open the OS terminal app rooted at `dir` (best-effort per platform). */
@@ -531,6 +536,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('chat:tasks', ({ workspaceId }) => workspaceBackgroundTasks(workspaceId));
   handle('chat:tasks:clear', ({ workspaceId, agentId }) => clearFinishedTasks(workspaceId, agentId));
   handle('chat:running', ({ workspaceId }) => runningAgents(workspaceId));
+  handle('chat:live', ({ workspaceId }) => liveTurnSnapshots(workspaceId));
   handle('chat:meta', ({ workspaceId }) => Workspaces.getChats(workspaceId));
   handle('chat:meta:set', ({ workspaceId, agentId, patch }) => {
     Workspaces.patchChat(workspaceId, agentId, patch);
@@ -548,6 +554,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('account:linkStart', ({ deviceName }) => account.startLink(deviceName));
   handle('account:linkCancel', () => account.cancelLink());
   handle('account:signOut', () => account.signOut());
+  handle('account:deviceUnlink', ({ deviceId }) => account.unlinkDevice(deviceId));
   handle('account:boxLink', ({ hostId, label, cron }) => account.linkBox(hostId, label, cron));
   handle('account:boxUnlink', ({ hostId }) => account.unlinkBox(hostId));
   handle('account:cronPreview', () => account.cronPreview());
@@ -641,6 +648,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('fs:write', ({ workspaceId, path, text, expectedMtimeMs, force }) =>
     files.writeFile(mustWorkspace(workspaceId).worktreePath, path, text, expectedMtimeMs, force)
   );
+  handle('fs:create', ({ workspaceId, path, dir }) =>
+    files.createEntry(mustWorkspace(workspaceId).worktreePath, path, dir)
+  );
 
   // ---------- notebook kernel execution ----------
 
@@ -732,6 +742,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
 
   handle('github:auth', () => gh.ghAuth(true));
   handle('github:repoList', () => gh.repoList());
+  handle('github:repoSearch', ({ query }) => gh.repoSearch(query));
   handle('github:signInStart', () => startDeviceSignIn());
   handle('github:signInCancel', () => cancelDeviceSignIn());
   handle('github:signOut', () => signOutGitHub());
@@ -797,6 +808,14 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     const next = Settings.setGlobal(patch);
     // A shortcut change must re-render the menu accelerators (§9). Menu.setApplicationMenu is idempotent.
     if ('shortcuts' in patch) rebuildMenu();
+    // Turning disk reclaim (back) on frees the archives that piled up meanwhile.
+    if (patch.freeArchivedFiles === true) void wsvc.sweepArchivedWorkspaces().catch(() => {});
+    // Mirror the new-conversation defaults to Maestro Web so its composer + new-
+    // workspace chips stay in sync with this desktop (settings-sync). Safe to call
+    // on every write: it's a no-op when unlinked or when the synced subset is
+    // unchanged (fingerprint-gated inside publishSettings), so there's no key list
+    // here to fall out of sync with SyncedSettings.
+    void account.publishSettings().catch(() => {});
     return next;
   });
 

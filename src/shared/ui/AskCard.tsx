@@ -81,13 +81,13 @@ export default function AskCard({
   };
 
   return (
-    <div className="rounded-card border border-accent bg-surface">
-      <div className="flex items-center gap-2 border-b px-3.5 py-2 text-2xs font-semibold uppercase tracking-wide text-muted">
+    <div className="rounded-card border bg-raised shadow-[var(--shadow)]">
+      <div className="flex items-center gap-2 px-4 pb-1 pt-3.5 text-xs font-medium text-muted">
         <ListChecks size={13} className="text-accent" />
         {questions.length > 1 ? `The agent is asking ${questions.length} questions` : 'The agent is asking'}
       </div>
 
-      <div className="space-y-4 px-3.5 py-3">
+      <div className="space-y-5 px-4 pb-3 pt-2">
         {questions.map((q, qi) => {
           const st = state[qi];
           const name = `ask-${uid}-${qi}`;
@@ -95,7 +95,7 @@ export default function AskCard({
             <div key={qi} className="space-y-2">
               <div className="text-body font-medium text-fg">{q.question}</div>
               {q.multiSelect && <div className="text-2xs text-faint">Select all that apply.</div>}
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 {q.options.map((opt, i) => (
                   <OptionRow
                     key={i}
@@ -131,7 +131,7 @@ export default function AskCard({
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t px-3.5 py-2.5">
+      <div className="flex items-center justify-between gap-3 px-4 pb-3.5 pt-1">
         <button className="btn btn-ghost text-muted" onClick={onSkip} title="Let the agent proceed without answering">
           Skip
         </button>
@@ -159,8 +159,8 @@ function OptionRow({
   return (
     <label
       className={clsx(
-        'flex cursor-pointer items-center gap-2.5 rounded-ctl border px-3 py-2 text-body transition-colors tap',
-        checked ? 'border-accent bg-accent-soft text-fg' : 'border-border bg-raised text-fg hover:border-faint'
+        'flex cursor-pointer items-center gap-2.5 rounded-ctl px-3 py-2 text-body text-fg transition-colors tap',
+        checked ? 'bg-accent-soft ring-1 ring-inset ring-faint' : 'ring-1 ring-inset ring-border hover:bg-accent-soft/60'
       )}
     >
       <input

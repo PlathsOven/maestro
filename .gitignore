@@ -6,3 +6,4 @@ release/
 .context/
 *.local
 build/icon.iconset/
+.vercel

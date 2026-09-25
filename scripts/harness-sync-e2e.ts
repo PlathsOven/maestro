@@ -30,7 +30,7 @@ import { initDb, Messages, Projects, Settings, Workspaces } from '../src/main/db
 import { setWindow } from '../src/main/bus';
 import { foldClaudeLines, foldCodexLines } from '../src/shared/harness/transcripts';
 import { scanHarnessSync, importHarnessSync, harnessSyncStatus } from '../src/main/services/harnessSync';
-import { ingest } from '../src/main/services/harnessSync/ingest';
+import { ingest, ingestBytesRead, resetLiveState } from '../src/main/services/harnessSync/ingest';
 import { liveElsewhere } from '../src/main/services/harnessSync/live';
 
 let failures = 0;
@@ -231,6 +231,88 @@ async function main() {
   check('guard: live interactive pid ⇒ elsewhere', !!liveElsewhere('claude-code', 'SESS-A', ''), null);
   check('guard: sdk-cli child not elsewhere', liveElsewhere('claude-code', 'SESS-B', '') === null, null);
   check('guard: dead pid ignored', liveElsewhere('claude-code', 'SESS-C', '') === null, null);
+
+  // ---------- Phase 5: incremental fold of a growing open turn (perf-cpu-ram §4.5.1, §6.4) ----------
+  // An external turn is re-ingested ~2.5×/s while the CLI streams it. Each pass
+  // must cost only the bytes that arrived, must leave the persisted cursor parked
+  // at the open turn's first line (so a restart still replays it), and must end up
+  // with exactly the blocks a from-scratch fold produces.
+  {
+    const gFile = claudeFile(REPO, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+    const gAgent = agentId + 1;
+    const headRows = [cUser('g0', 'first question', REPO), cAssistant('g0a', 'First answer.', REPO)];
+    const headBytes = Buffer.byteLength(jl(headRows));
+    fs.writeFileSync(gFile, jl(headRows));
+    Workspaces.patchChat(ws.id, gAgent, { mirror: { app: 'claude-code', file: gFile, cursor: 0 } });
+
+    const all = [...headRows]; // every line on disk, for the from-scratch comparison
+    const cursor = () => Workspaces.getChats(ws.id)[String(gAgent)]?.mirror?.cursor ?? -1;
+    /** Append lines, ingest live, and report bytes read vs bytes appended. */
+    const step = async (rows: any[]) => {
+      const chunk = jl(rows);
+      all.push(...rows);
+      fs.appendFileSync(gFile, chunk);
+      const before = ingestBytesRead();
+      await ingest(Workspaces.get(ws.id)!, gAgent, { live: true });
+      return { read: ingestBytesRead() - before, wrote: Buffer.byteLength(chunk) };
+    };
+
+    const s1 = await step([cUser('g1', 'build the thing', REPO)]);
+    check('grow: first ingest reads the whole window', s1.read === headBytes + s1.wrote, { read: s1.read, want: headBytes + s1.wrote });
+    check('grow: the settled head turn is persisted', Messages.exists('sync:cc:g0:a'));
+    check('grow: cursor parked at the open turn start', cursor() === headBytes, { cursor: cursor(), want: headBytes });
+
+    const s2 = await step([cToolUse('g1a', 'tool-9', 'Bash', { command: 'npm run build' }, REPO), cToolResult('g1b', 'tool-9', 'built', REPO)]);
+    check('grow: second ingest reads only the new bytes', s2.read === s2.wrote, s2);
+    const s3 = await step([cAssistant('g1c', 'Halfway there.', REPO, 'tool_use')]);
+    check('grow: third ingest reads only the new bytes', s3.read === s3.wrote, s3);
+    check('grow: cursor still parked while the turn is open', cursor() === headBytes, cursor());
+
+    // A restart drops the in-memory carry; the persisted cursor must still replay
+    // the whole open turn (harness-chat-sync §6.3) without duplicating rows.
+    resetLiveState(ws.id, gAgent);
+    const rowsBefore = Messages.list(ws.id).length;
+    const atRestart = ingestBytesRead();
+    await ingest(Workspaces.get(ws.id)!, gAgent, { live: true });
+    const replayed = ingestBytesRead() - atRestart;
+    check('grow: restart replays the open turn from the cursor', replayed === fs.statSync(gFile).size - headBytes, {
+      replayed,
+      want: fs.statSync(gFile).size - headBytes,
+    });
+    check('grow: replay inserts no rows', Messages.list(ws.id).length === rowsBefore, {
+      before: rowsBefore,
+      after: Messages.list(ws.id).length,
+    });
+
+    const s4 = await step([cAssistant('g1d', 'Built it.', REPO)]); // end_turn ⇒ closed
+    check('grow: closing ingest reads only the new bytes', s4.read === s4.wrote, s4);
+    check('grow: cursor advances past the closed turn', cursor() === fs.statSync(gFile).size, cursor());
+    const grown = Messages.list(ws.id).find((m) => m.id === 'sync:cc:g1:a');
+    const oneShot = foldClaudeLines(all.map((o) => JSON.stringify(o))).closed.find((t) => t.id === 'g1');
+    check('grow: incremental blocks match a from-scratch fold', !!grown && grown.content === JSON.stringify(oneShot?.blocks), {
+      incremental: grown?.content,
+      oneShot: JSON.stringify(oneShot?.blocks),
+    });
+
+    const s5 = await step([cUser('g2', 'and ship it', REPO), cAssistant('g2a', 'Shipped.', REPO)]);
+    check('grow: the turn after a close folds on its own', s5.read === s5.wrote && Messages.exists('sync:cc:g2:a'), s5);
+
+    // Truncation (a rewritten transcript): the carry's window is no longer inside
+    // the file, so ingest falls back to the persisted cursor and re-folds.
+    const openRows = [cUser('g3', 'third question', REPO), cAssistant('g3a', 'Working…', REPO, 'tool_use')];
+    const turnStart = fs.statSync(gFile).size;
+    const s6 = await step(openRows);
+    check('grow: a new open turn parks the cursor again', cursor() === turnStart, { cursor: cursor(), want: turnStart, s6 });
+    const shorter = jl(all.slice(0, -1)); // the last line vanishes
+    fs.writeFileSync(gFile, shorter);
+    const atTruncate = ingestBytesRead();
+    await ingest(Workspaces.get(ws.id)!, gAgent, { live: true });
+    check('grow: truncation re-reads from the cursor', ingestBytesRead() - atTruncate === Buffer.byteLength(shorter) - turnStart, {
+      read: ingestBytesRead() - atTruncate,
+      want: Buffer.byteLength(shorter) - turnStart,
+    });
+    check('grow: truncation leaves the cursor at the turn start', cursor() === turnStart, cursor());
+  }
 
   const status = harnessSyncStatus();
   check('status: enabled + mirrored count', status.enabled === true && status.mirrored >= 1, status);

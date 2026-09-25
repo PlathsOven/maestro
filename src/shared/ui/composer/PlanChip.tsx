@@ -12,7 +12,7 @@ export function PlanChip({ harness, on, onToggle }: { harness: HarnessId; on: bo
   if (!tip) return null;
   return (
     <button
-      className={clsx('btn btn-ghost h-6 gap-1 px-1.5 text-xs', on && 'bg-accent-soft text-accent')}
+      className={clsx('btn btn-ghost h-7 gap-1.5 px-2.5 text-xs', on ? 'bg-accent-soft text-fg' : 'text-muted hover:text-fg')}
       title="Plan mode (⇧Tab)"
       onClick={onToggle}
     >

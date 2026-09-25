@@ -18,11 +18,11 @@ export type ShortcutId =
   | 'tab-diff'
   | 'tab-editor'
   | 'tab-preview'
-  | 'tab-checks'
   | 'zoom-in'
   | 'zoom-out'
   | 'zoom-reset'
   | 'create-pr'
+  | 'chat.find'
   | 'composer.plan-mode'
   | 'preview.annotate'
   | 'editor.save';
@@ -30,7 +30,7 @@ export type ShortcutId =
 export interface ShortcutDef {
   id: ShortcutId;
   label: string; // "Toggle Preview"
-  group: 'File' | 'View' | 'Workspace' | 'Composer' | 'Preview' | 'Editor';
+  group: 'File' | 'View' | 'Workspace' | 'Chat' | 'Composer' | 'Preview' | 'Editor';
   /** Electron accelerator syntax: 'CmdOrCtrl+Shift+B', 'Shift+Tab'. */
   default: string;
   /** Who dispatches it: the application menu, or a renderer keydown handler. */
@@ -50,11 +50,11 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'tab-diff', label: 'Diff Viewer', group: 'View', default: 'CmdOrCtrl+Shift+D', where: 'menu' },
   { id: 'tab-editor', label: 'Editor', group: 'View', default: 'CmdOrCtrl+Shift+E', where: 'menu' },
   { id: 'tab-preview', label: 'Preview', group: 'View', default: 'CmdOrCtrl+Shift+B', where: 'menu' },
-  { id: 'tab-checks', label: 'Checks', group: 'View', default: 'CmdOrCtrl+Shift+K', where: 'menu' },
   { id: 'zoom-in', label: 'Zoom In', group: 'View', default: 'CmdOrCtrl+Plus', where: 'menu' },
   { id: 'zoom-out', label: 'Zoom Out', group: 'View', default: 'CmdOrCtrl+-', where: 'menu' },
   { id: 'zoom-reset', label: 'Actual Size', group: 'View', default: 'CmdOrCtrl+0', where: 'menu' },
   { id: 'create-pr', label: 'Create Pull Request', group: 'Workspace', default: 'CmdOrCtrl+Shift+P', where: 'menu' },
+  { id: 'chat.find', label: 'Find in Chat', group: 'Chat', default: 'CmdOrCtrl+F', where: 'renderer' },
   { id: 'composer.plan-mode', label: 'Toggle Plan Mode', group: 'Composer', default: 'Shift+Tab', where: 'renderer' },
   { id: 'preview.annotate', label: 'Annotate Preview', group: 'Preview', default: 'CmdOrCtrl+Shift+A', where: 'renderer' },
   { id: 'editor.save', label: 'Save File', group: 'Editor', default: 'CmdOrCtrl+S', where: 'renderer' },

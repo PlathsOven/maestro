@@ -1,94 +1,127 @@
 <div align="center">
 
-<img src="docs/images/logo.png" width="92" alt="Maestro" />
+<img src="docs/images/logo.png" width="84" alt="Maestro" />
 
 # Maestro
 
-**Run coding agents in parallel.** Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Grok Build,
-each in its own git worktree — on its own branch, with its own chat, terminal, and diff.
+### Run a fleet of coding agents. Steer it from your phone.
 
-[Download](https://maestro-build.com) · [Website](https://maestro-build.com) · [Why not Conductor?](https://maestro-build.com/maestro-vs-conductor)
+Claude Code, Codex, and more in parallel, each in its own git worktree.<br />
+Free on macOS, Windows, and Linux, with **[Maestro Web](https://app.maestro-build.com)** in your pocket.
 
-![platforms](https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-lightgrey)
-&nbsp;![built with](https://img.shields.io/badge/Electron-React%2019-blue)
-&nbsp;![license](https://img.shields.io/badge/license-BSL%201.1-green)
+**[Download](https://maestro-build.com)** &nbsp;·&nbsp; [Open Maestro Web](https://app.maestro-build.com) &nbsp;·&nbsp; [Maestro vs Conductor](https://maestro-build.com/maestro-vs-conductor)
 
 <br />
 
-<img src="docs/images/demo.gif" width="880" alt="Typing a follow-up task, then switching to the diff to review the agent's changes" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/app-dark.png" />
+  <img src="docs/images/app-light.png" width="960" alt="The Maestro desktop app: a sidebar of parallel agent workspaces with live statuses, an agent chat, and the branch status panel" />
+</picture>
 
 </div>
 
-## Why
+<br />
 
-I kept running four agents in four terminal tabs and losing track of who was stuck, who was waiting on
-me, and which two were about to edit the same checkout. Maestro gives each one its own worktree so they
-never collide, and one window to hand out work and review what comes back. It's an open clone of
-[Conductor](https://conductor.build) for macOS, Windows, and Linux.
+## One window for the whole fleet
 
-## How it works
-
-**1. Hand out tasks.** Describe a task and go. Each workspace is a fresh `git worktree` on its own
-branch, cut from the latest remote — so agents start clean and never step on each other.
-
-**2. Glance, don't babysit.** The rail shows who's working, who's waiting on you, and what's done, with
-a desktop notification when a background agent finishes. Run a second agent in the same workspace to
-review the first, or delegate scoped work to sub-agents.
-
-**3. Review and ship.** Read the diff, leave inline comments, ask for changes in the same chat, then
-push and open the PR without leaving the app.
-
-## Read, run, and review in one window
-
-Every workspace has a diff, a terminal, an editor, a preview, and a checklist behind the same tabs — so
-reviewing an agent never means alt-tabbing away to your own tools.
+Every agent gets its own branch, chat, terminal, and diff, so a dozen can run at once without touching
+each other's files. See who is working, who needs you, and what is done, at a glance.
 
 <div align="center">
-  <img src="docs/images/diff.png" width="820" alt="The diff viewer with a file tree, syntax-highlighted hunks, and an inline comment being sent back to the agent" />
+  <img src="docs/images/demo.gif" width="880" alt="Typing a follow-up task in Maestro, then switching to the diff to review the agent's changes" />
 </div>
 
-- **Diff** (`⌘⇧D`) — worktree against the merge-base, file tree, split/unified, and comment threads that
-  persist and can be sent back to the agent.
-- **Terminal** — a real login shell (node-pty + xterm) in the worktree.
-- **Editor** (`⌘⇧E`) — Monaco with `⌘S` to save, notebooks included.
-- **Preview** (`⌘⇧B`) — an embedded browser on your dev server that both you and the agent can drive: it
-  navigates, screenshots, and reads the console; you annotate the page and send it back.
-- **Checks** (`⌘⇧K`) — git ahead/behind, PR state and CI from `gh`, comments, deployments, and todos.
-  Merge is gated on approval + green checks + resolved comments + done todos, with an override.
-- **PR flow** (`⌘⇧P`) — push, draft the title and body from the real diff, `gh pr create`, poll checks,
-  merge, archive.
-
-## Agents, your keys
-
-- Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok Build, or a plain shell when you have no CLI.
-- Auth passes straight through to each CLI's own login; Maestro never stores model API keys.
-- Pick the model and reasoning effort per chat. Claude Code is the most exercised harness.
-- Coming from [Conductor](https://conductor.build)? One-click import brings your workspaces over.
-
-## Fits how you work
+## Hand out work. Glance. Ship.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/palette.png" alt="The command palette open with a search query" /></td>
-    <td width="50%"><img src="docs/images/hero-dark.png" alt="Maestro in dark theme" /></td>
+    <td width="50%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/newws-dark.png" /><img src="docs/images/newws-light.png" alt="The new workspace dialog: a task prompt with model, effort, and agent pickers" /></picture>
+      <p><b>Hand out.</b> Describe the task. Maestro cuts a fresh worktree from the latest remote and starts the agent.</p>
+    </td>
+    <td width="50%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/palette-dark.png" /><img src="docs/images/palette-light.png" alt="The command palette listing workspaces and commands" /></picture>
+      <p><b>Glance.</b> <code>⌘K</code> to any workspace or command, <code>⌘1</code> to <code>⌘9</code> to switch. A notification lands when an agent finishes or needs you.</p>
+    </td>
   </tr>
   <tr>
-    <td align="center"><sub>Command palette — <code>⌘K</code> for anything</sub></td>
-    <td align="center"><sub>Light, dark, and system themes</sub></td>
+    <td colspan="2" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/diff-dark.png" /><img src="docs/images/diff-light.png" alt="The diff viewer: a file list, syntax-highlighted changes, and an inline review comment for the agent" /></picture>
+      <p><b>Ship.</b> Read the diff, comment on any line and send it back to the agent, then push and open the PR without leaving the app.</p>
+    </td>
   </tr>
 </table>
 
-- Command palette (`⌘K`), `⌘1`–`9` to switch workspaces, light / dark / system themes.
-- **Sign in with GitHub** in-app — a device flow that hands the token to `gh` (never stored by Maestro)
-  and installs the GitHub CLI for you if it's missing.
-- Work on a **remote machine over SSH** — open a folder on another host and every exec, pty, and file
-  op runs there. Or work on a plain folder with no branches at all.
-- Dictation on macOS, background auto-update, and `maestro-ask` — an agent can pause and ask you a
-  multiple-choice question, answered inline in the chat.
+## Then walk away. Your fleet follows you.
 
-## Repo settings — `.maestro/settings.toml`
+Link the desktop to **[Maestro Web](https://app.maestro-build.com)** once and every workspace shows up on
+your phone, live. Watch the transcript stream, send or queue the next task (even a screenshot from your
+camera roll), review the diff, and get a push when an agent needs you. Add it to your home screen and it
+behaves like an app. Free, with your GitHub sign-in.
 
-Checked into the repo so the whole team shares them (or edit under Settings → Repository):
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/mobile-fleet-dark.png" /><img src="docs/images/mobile-fleet-light.png" alt="Maestro Web on a phone: the whole fleet of agent workspaces across projects, each with a live status" /></picture>
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/mobile-chat-dark.png" /><img src="docs/images/mobile-chat-light.png" alt="Maestro Web on a phone: an agent conversation streaming live, with the next task being sent from the phone" /></picture>
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/mobile-diff-dark.png" /><img src="docs/images/mobile-diff-light.png" alt="Maestro Web on a phone: a syntax-highlighted diff of the agent's changes, ready to review" /></picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Your whole fleet</b>: working, waiting on you, or done</sub></td>
+    <td align="center"><sub><b>Watch and steer</b>: live transcript, send the next task</sub></td>
+    <td align="center"><sub><b>Review</b>: syntax-highlighted, comment back</sub></td>
+  </tr>
+</table>
+
+## Your machine. Your keys. Free.
+
+- **Agents run on your computer**, each through its own CLI with your own subscription or API key.
+  Maestro never sits between you and your provider, and never stores model keys.
+- **Nothing to pay.** The desktop app and Maestro Web are both free. No card, no seats, no metered compute.
+- **Private by default.** Nothing leaves your machine until you link Maestro Web, and then only the projects
+  you choose, over HTTPS, visible only to your GitHub account. Unlinking purges the relay.
+- **Works with** Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Grok Build, or a plain shell.
+  Coming from [Conductor](https://conductor.build)? One-click import brings your workspaces over.
+
+<br />
+
+<details>
+<summary><b>Everything in the window</b></summary>
+
+<br />
+
+Every workspace has a diff, a terminal, an editor, a preview, and checks behind the same tabs.
+
+- **Diff** (`⌘⇧D`): worktree against the merge-base, file tree, split or unified, and comment threads that
+  persist and can be sent back to the agent.
+- **Terminal**: a real login shell (node-pty + xterm) in the worktree.
+- **Editor** (`⌘⇧E`): Monaco with `⌘S` to save, notebooks included.
+- **Preview** (`⌘⇧B`): an embedded browser on your dev server that you and the agent can both drive. It
+  navigates, screenshots, and reads the console; you annotate the page and send it back.
+- **Checks** (`⌘⇧K`): ahead/behind, PR state and CI from `gh`, comments, deployments, and todos. Merge is
+  gated on approval, green checks, resolved comments, and done todos, with an override.
+- **PR flow** (`⌘⇧P`): push, draft the title and body from the real diff, `gh pr create`, poll checks,
+  merge, archive.
+- **Sessions**: several chats per workspace, split side by side; run a second agent to review the first, or
+  delegate scoped work to sub-agents.
+- **Also**: light, dark, and system themes; in-app GitHub sign-in (a device flow that hands the token to
+  `gh`); remote projects over SSH, where every exec, pty, and file op runs on the host; plain folders with
+  no branches; dictation on macOS; background auto-update; and `maestro-ask`, so an agent can pause and ask
+  you a multiple-choice question inline.
+
+</details>
+
+<details>
+<summary><b>Repo settings: <code>.maestro/settings.toml</code></b></summary>
+
+<br />
+
+Checked into the repo so the whole team shares them (or edit under Settings, Repository):
 
 ```toml
 [scripts]
@@ -99,10 +132,15 @@ run   = "npm run dev -- --port $WORKSPACE_PORT"    # each workspace gets its own
 instructions = "Durable guidance included in every agent session for this repo."
 ```
 
-Scripts, terminals, and agents get `WORKSPACE_PORT`, `MAESTRO_WORKSPACE_NAME`, `MAESTRO_ROOT_PATH`,
-and `MAESTRO_BRANCH` in their environment.
+Scripts, terminals, and agents get `WORKSPACE_PORT`, `MAESTRO_WORKSPACE_NAME`, `MAESTRO_ROOT_PATH`, and
+`MAESTRO_BRANCH` in their environment.
 
-## Development
+</details>
+
+<details>
+<summary><b>Development</b></summary>
+
+<br />
 
 ```bash
 npm install       # also rebuilds better-sqlite3 + node-pty for Electron
@@ -111,16 +149,15 @@ npm start         # launch a production build
 npm run dist:dmg  # macOS .dmg   (dist:win / dist:linux for the others)
 ```
 
-Needs `git`. GitHub features use the GitHub CLI (preinstalled or auto-downloaded by the sign-in flow),
-and each agent needs its own CLI (`claude`, `codex`, `cursor-agent`, `opencode`, `kimi`, or `grok`) —
-the shell fallback needs none.
+Needs `git`. GitHub features use the GitHub CLI (preinstalled or auto-downloaded by the sign-in flow), and
+each agent needs its own CLI (`claude`, `codex`, `cursor-agent`, `opencode`, `kimi`, or `grok`); the shell
+fallback needs none.
 
 > **Windows:** native modules can't be cross-compiled from macOS, so the installer is built on a
 > `windows-latest` runner by the `build-desktop` GitHub Actions workflow (trigger it, or push a `v*` tag).
 
-### Tests
-
-An end-to-end suite drives real repos, worktrees, and ptys (add `--with-claude` for a live model call):
+**Tests.** An end-to-end suite drives real repos, worktrees, and ptys (add `--with-claude` for a live model
+call):
 
 ```bash
 npx esbuild scripts/e2e.ts --bundle --platform=node --format=cjs \
@@ -128,15 +165,20 @@ npx esbuild scripts/e2e.ts --bundle --platform=node --format=cjs \
 ELECTRON_RUN_AS_NODE=1 npx electron dist/e2e.cjs
 ```
 
-Companion scripts under `scripts/` cover process launching (`launch-probe.ts` — worth running on
-Windows after touching `src/main/launch.ts`), the GitHub PR pipeline against a throwaway repo
-(`gh-e2e.ts`), and a headless UI smoke that screenshots the running app:
+Companion scripts under `scripts/` cover process launching (`launch-probe.ts`, worth running on Windows
+after touching `src/main/launch.ts`), the GitHub PR pipeline against a throwaway repo (`gh-e2e.ts`), and a
+headless UI smoke that screenshots the running app:
 
 ```bash
 npm run build && npx electron . --smoke --screenshot=/tmp/maestro.png
 ```
 
-## Architecture
+</details>
+
+<details>
+<summary><b>Architecture</b></summary>
+
+<br />
 
 ```
 ┌────────────────────── Renderer (React 19 + Zustand) ──────────────────────┐
@@ -149,22 +191,33 @@ npm run build && npx electron . --smoke --screenshot=/tmp/maestro.png
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-Every exec / spawn / pty / fs call goes through a **host** — `LocalHost` or an `SshHost` — so the same
+Every exec, spawn, pty, and fs call goes through a **host** (`LocalHost` or an `SshHost`), so the same
 services run locally or over SSH. Workspaces live in `~/maestro/workspaces/<project>/<name>`; the DB is
-`maestro.db` under the platform's app-data dir (`MAESTRO_DB_PATH` overrides it). Agent turns are stored
-as structured blocks, so history renders identically after a restore.
+`maestro.db` under the platform's app-data dir (`MAESTRO_DB_PATH` overrides it). Agent turns are stored as
+structured blocks, so history renders identically after a restore. The UI shares one design system
+(`src/shared/ui`) between the desktop and Maestro Web, including the liquid-glass surfaces.
 
-## Notes
+</details>
 
-- Isolation is development-grade, not a security boundary — agents run with your local permissions
-  (or the SSH user's, for remote projects).
+<details>
+<summary><b>Notes</b></summary>
+
+<br />
+
+- Isolation is development-grade, not a security boundary; agents run with your local permissions (or the
+  SSH user's, for remote projects).
 - Dictation is macOS-only; the mic button is hidden elsewhere.
-- Packaged builds send two anonymous counts (an install id — no account, prompts, paths, or PII) to
+- Packaged builds send two anonymous counts (an install id, with no account, prompts, paths, or PII) to
   gauge usage. It's off in dev and off unless a PostHog key is set at build time, so forks emit nothing.
 
-## License
+</details>
 
-Copyright © 2026 Maestro contributors. Licensed under the
-[Business Source License 1.1](LICENSE): read, run, self-host, modify, and redistribute freely — you
-just can't offer Maestro to third parties as a competing hosted or embedded service. Four years after
-each version ships, it converts to Apache 2.0.
+<br />
+
+<div align="center">
+
+**[Download Maestro](https://maestro-build.com)** &nbsp;·&nbsp; [Open Maestro Web](https://app.maestro-build.com)
+
+<sub>Copyright © 2026 Maestro contributors. [Business Source License 1.1](LICENSE): read, run, self-host, modify, and redistribute freely; you just can't offer Maestro to third parties as a competing hosted or embedded service. Four years after each version ships, it converts to Apache 2.0.</sub>
+
+</div>

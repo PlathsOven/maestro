@@ -2,6 +2,7 @@ import net from 'node:net';
 import { broadcast } from '../bus';
 import { Workspaces } from '../db';
 import { hostForWorkspace } from '../hosts';
+import { backgroundFactor } from './activity';
 import type { ExecHost } from '../hosts/types';
 
 // Probe a workspace's dev-server port so the Preview tab can pulse whenever
@@ -71,7 +72,10 @@ async function tick(workspaceId: string): Promise<void> {
     current.listening = listening;
     broadcast('port:state', { workspaceId, listening });
   }
-  current.timer = setTimeout(() => void tick(workspaceId), host.id === 'local' ? LOCAL_MS : REMOTE_MS);
+  // Nobody is watching a pulse they can't see: back off ×4 while the window is
+  // in the background (perf-cpu-ram §4.6).
+  const every = (host.id === 'local' ? LOCAL_MS : REMOTE_MS) * backgroundFactor();
+  current.timer = setTimeout(() => void tick(workspaceId), every);
 }
 
 /** Listening ⇔ a TCP connect to 127.0.0.1:port succeeds within 1s. */

@@ -1,0 +1,841 @@
+/*
+ * Colour themes — the palette families listed in src/shared/themes.ts, each with
+ * a light and a dark variant. Imported right after theme.css by both apps
+ * (src/renderer/styles.css, web/app/globals.css).
+ *
+ * How it layers: theme.css defines Classic on `:root` / `.dark`. A family is
+ * `data-theme="…"` on <html>; its light block is `[data-theme='x']:not(.dark)`
+ * and its dark block `[data-theme='x'].dark`, so it only overrides the tokens it
+ * names and everything else (shadows, radii, the glass geometry) stays Classic.
+ * The selectors are not tied to :root, so any element can wear a theme — the
+ * Settings picker renders each card's preview that way.
+ *
+ * A family only sets the BASE tokens. The translucent ones (glass fills, focus
+ * ring, diff rows, …) are derived from them below with color-mix, so a new theme
+ * is ~25 hex values per variant. Base tokens must stay 6-digit hex: Monaco reads
+ * them (lib/monaco.ts) and only takes hex.
+ *
+ * Classic keeps its hand-tuned literal values in theme.css and is excluded from
+ * the derivations, so it looks exactly as it always has.
+ */
+
+/* ---- Derived tokens (every family except Classic) ------------------------ */
+/* `:where()` keeps these at the specificity of a plain family block, so a
+   family can still override a derived token with `[data-theme='x']` /
+   `[data-theme='x'].dark` (later in the file wins the tie). */
+[data-theme]:where(:not([data-theme='classic'])) {
+  --canvas-glass: color-mix(in srgb, var(--canvas) 80%, transparent);
+  --accent-soft: color-mix(in srgb, var(--text) 6%, transparent);
+  --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 20%, transparent);
+  --ink: var(--text);
+  --on-ink: var(--canvas);
+  --st-review: var(--ok);
+  --st-unread: var(--ok);
+  --st-merged-soft: color-mix(in srgb, var(--st-merged) 15%, transparent);
+  --diff-add: color-mix(in srgb, var(--ok) 11%, transparent);
+  --diff-del: color-mix(in srgb, var(--err) 10%, transparent);
+  --diff-add-strong: color-mix(in srgb, var(--ok) 28%, transparent);
+  --diff-del-strong: color-mix(in srgb, var(--err) 26%, transparent);
+  --term-bg: var(--canvas);
+  --glass-bg: color-mix(in srgb, var(--raised) 62%, transparent);
+  --glass-panel-bg: color-mix(in srgb, var(--raised) 82%, transparent);
+}
+[data-theme]:where(:not([data-theme='classic'])).dark {
+  --accent-soft: color-mix(in srgb, var(--text) 8%, transparent);
+  --accent-tint: color-mix(in srgb, var(--accent) 17%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 24%, transparent);
+  --glass-bg: color-mix(in srgb, var(--raised) 60%, transparent);
+  --glass-panel-bg: color-mix(in srgb, var(--raised) 84%, transparent);
+}
+
+/* Liquid-glass fills: Classic's are neutral white / graphite, which would grey
+   out a tinted palette — tint them with the theme's own surface instead. */
+[data-theme]:not([data-theme='classic']) .lg-strong::after {
+  background: color-mix(in srgb, var(--raised) 62%, transparent);
+}
+[data-theme]:not([data-theme='classic']) .lg-panel::after {
+  background: color-mix(in srgb, var(--raised) 88%, transparent);
+}
+[data-theme]:not([data-theme='classic']).dark .lg-light::after {
+  background: color-mix(in srgb, var(--raised) 22%, transparent);
+}
+[data-theme]:not([data-theme='classic']).dark .lg-panel::after {
+  background: color-mix(in srgb, var(--raised) 84%, transparent);
+}
+[data-theme]:not([data-theme='classic']).dark .tab-lit,
+[data-theme]:not([data-theme='classic']).dark .seg-thumb.lg-strong::after {
+  background: color-mix(in srgb, var(--text) 13%, transparent);
+}
+
+/* ---- Catppuccin — Latte / Mocha ------------------------------------------- */
+[data-theme='catppuccin']:not(.dark) {
+  --bg: #e6e9ef;
+  --surface: #eceef3;
+  --raised: #f7f8fa;
+  --canvas: #eff1f5;
+  --user-msg: #e4e7ee;
+  --border: #d6dae3;
+  --text: #4c4f69;
+  --muted: #6c6f85;
+  --faint: #9ca0b0;
+  --accent: #8839ef;
+  --st-idle: #acb0be;
+  --st-running: #1e66f5;
+  --st-attention: #df8e1d;
+  --st-merged: #8839ef;
+  --ok: #40a02b;
+  --err: #d20f39;
+  --warn: #df8e1d;
+  --wash-a: rgba(30, 102, 245, 0.18);
+  --wash-b: rgba(234, 118, 203, 0.2);
+  --wash-c: rgba(254, 100, 11, 0.12);
+}
+[data-theme='catppuccin'].dark {
+  --bg: #11111b;
+  --surface: #262637;
+  --raised: #2a2b3d;
+  --canvas: #1e1e2e;
+  --user-msg: #313244;
+  --border: #313244;
+  --text: #cdd6f4;
+  --muted: #a6adc8;
+  --faint: #6c7086;
+  --accent: #cba6f7;
+  --st-idle: #585b70;
+  --st-running: #89b4fa;
+  --st-attention: #f9e2af;
+  --st-merged: #cba6f7;
+  --ok: #a6e3a1;
+  --err: #f38ba8;
+  --warn: #fab387;
+  --wash-a: rgba(137, 180, 250, 0.14);
+  --wash-b: rgba(245, 194, 231, 0.1);
+  --wash-c: rgba(250, 179, 135, 0.08);
+}
+
+/* ---- Nord — Snow Storm / Polar Night -------------------------------------- */
+[data-theme='nord']:not(.dark) {
+  --bg: #e5e9f0;
+  --surface: #eceff4;
+  --raised: #ffffff;
+  --canvas: #f6f8fb;
+  --user-msg: #e8ecf2;
+  --border: #d8dee9;
+  --text: #2e3440;
+  --muted: #4c566a;
+  --faint: #8a93a5;
+  --accent: #5e81ac;
+  --st-idle: #aab3c3;
+  --st-running: #3f8fb0;
+  --st-attention: #c99433;
+  --st-merged: #a2789c;
+  --ok: #6f9a55;
+  --err: #bf616a;
+  --warn: #c99433;
+  --wash-a: rgba(94, 129, 172, 0.22);
+  --wash-b: rgba(136, 192, 208, 0.2);
+  --wash-c: rgba(180, 142, 173, 0.12);
+}
+[data-theme='nord'].dark {
+  --bg: #242933;
+  --surface: #353c4a;
+  --raised: #3b4252;
+  --canvas: #2e3440;
+  --user-msg: #3b4252;
+  --border: #434c5e;
+  --text: #eceff4;
+  --muted: #b5bdcb;
+  --faint: #6f7a8e;
+  --accent: #88c0d0;
+  --st-idle: #4c566a;
+  --st-running: #81a1c1;
+  --st-attention: #ebcb8b;
+  --st-merged: #b48ead;
+  --ok: #a3be8c;
+  --err: #bf616a;
+  --warn: #d08770;
+  --wash-a: rgba(94, 129, 172, 0.18);
+  --wash-b: rgba(136, 192, 208, 0.08);
+  --wash-c: rgba(180, 142, 173, 0.08);
+}
+
+/* ---- Solarized — Light / Dark --------------------------------------------- */
+[data-theme='solarized']:not(.dark) {
+  --bg: #eee8d5;
+  --surface: #f5efdc;
+  --raised: #fffbef;
+  --canvas: #fdf6e3;
+  --user-msg: #f3ecd8;
+  --border: #e2dbc3;
+  --text: #073642;
+  --muted: #586e75;
+  --faint: #93a1a1;
+  --accent: #268bd2;
+  --st-idle: #adb5ad;
+  --st-running: #2aa198;
+  --st-attention: #b58900;
+  --st-merged: #6c71c4;
+  --ok: #859900;
+  --err: #dc322f;
+  --warn: #cb4b16;
+  --wash-a: rgba(38, 139, 210, 0.16);
+  --wash-b: rgba(211, 54, 130, 0.1);
+  --wash-c: rgba(181, 137, 0, 0.14);
+}
+[data-theme='solarized'].dark {
+  --bg: #00212b;
+  --surface: #04313d;
+  --raised: #073642;
+  --canvas: #002b36;
+  --user-msg: #073642;
+  --border: #0d3f4c;
+  --text: #e3ddcb;
+  --muted: #93a1a1;
+  --faint: #5c747b;
+  --accent: #3d9be0;
+  --st-idle: #3e5a62;
+  --st-running: #2aa198;
+  --st-attention: #b58900;
+  --st-merged: #8589d6;
+  --ok: #859900;
+  --err: #dc322f;
+  --warn: #cb4b16;
+  --wash-a: rgba(38, 139, 210, 0.16);
+  --wash-b: rgba(211, 54, 130, 0.08);
+  --wash-c: rgba(181, 137, 0, 0.08);
+}
+
+/* ---- Gruvbox — Light / Dark ----------------------------------------------- */
+[data-theme='gruvbox']:not(.dark) {
+  --bg: #f2e5bc;
+  --surface: #f6ecc3;
+  --raised: #fdf8e1;
+  --canvas: #fbf1c7;
+  --user-msg: #f2e5bc;
+  --border: #e3d4a8;
+  --text: #3c3836;
+  --muted: #7c6f64;
+  --faint: #a89984;
+  --accent: #af3a03;
+  --st-idle: #bdae93;
+  --st-running: #076678;
+  --st-attention: #b57614;
+  --st-merged: #8f3f71;
+  --ok: #79740e;
+  --err: #9d0006;
+  --warn: #b57614;
+  --wash-a: rgba(215, 153, 33, 0.18);
+  --wash-b: rgba(214, 93, 14, 0.12);
+  --wash-c: rgba(104, 157, 106, 0.14);
+}
+[data-theme='gruvbox'].dark {
+  --bg: #1d2021;
+  --surface: #32302f;
+  --raised: #3c3836;
+  --canvas: #282828;
+  --user-msg: #3c3836;
+  --border: #45403d;
+  --text: #ebdbb2;
+  --muted: #a89984;
+  --faint: #7c6f64;
+  --accent: #fe8019;
+  --st-idle: #665c54;
+  --st-running: #83a598;
+  --st-attention: #fabd2f;
+  --st-merged: #d3869b;
+  --ok: #b8bb26;
+  --err: #fb4934;
+  --warn: #fabd2f;
+  --wash-a: rgba(250, 189, 47, 0.1);
+  --wash-b: rgba(254, 128, 25, 0.08);
+  --wash-c: rgba(142, 192, 124, 0.07);
+}
+
+/* ---- Rosé Pine — Dawn / Main ---------------------------------------------- */
+[data-theme='rose-pine']:not(.dark) {
+  --bg: #f2e9e1;
+  --surface: #f4ede8;
+  --raised: #fffaf3;
+  --canvas: #faf4ed;
+  --user-msg: #f2e9e1;
+  --border: #dfdad9;
+  --text: #575279;
+  --muted: #797593;
+  --faint: #9893a5;
+  --accent: #907aa9;
+  --st-idle: #cecacd;
+  --st-running: #56949f;
+  --st-attention: #ea9d34;
+  --st-merged: #907aa9;
+  --ok: #286983;
+  --err: #b4637a;
+  --warn: #ea9d34;
+  --wash-a: rgba(215, 130, 126, 0.2);
+  --wash-b: rgba(144, 122, 169, 0.16);
+  --wash-c: rgba(234, 157, 52, 0.14);
+}
+[data-theme='rose-pine'].dark {
+  --bg: #12101b;
+  --surface: #1f1d2e;
+  --raised: #26233a;
+  --canvas: #191724;
+  --user-msg: #26233a;
+  --border: #2a273f;
+  --text: #e0def4;
+  --muted: #908caa;
+  --faint: #6e6a86;
+  --accent: #c4a7e7;
+  --st-idle: #524f67;
+  --st-running: #9ccfd8;
+  --st-attention: #f6c177;
+  --st-merged: #c4a7e7;
+  --ok: #3e8fb0;
+  --err: #eb6f92;
+  --warn: #f6c177;
+  --wash-a: rgba(196, 167, 231, 0.12);
+  --wash-b: rgba(235, 188, 186, 0.1);
+  --wash-c: rgba(246, 193, 119, 0.06);
+}
+
+/* ---- Tokyo Night — Day / Night -------------------------------------------- */
+[data-theme='tokyo-night']:not(.dark) {
+  --bg: #dfe1e8;
+  --surface: #e9ebf0;
+  --raised: #f8f9fb;
+  --canvas: #f2f3f7;
+  --user-msg: #e5e7ed;
+  --border: #d3d6e0;
+  --text: #3760bf;
+  --muted: #6172b0;
+  --faint: #8990b3;
+  --accent: #2e7de9;
+  --st-idle: #a8aecb;
+  --st-running: #007197;
+  --st-attention: #8c6c3e;
+  --st-merged: #9854f1;
+  --ok: #587539;
+  --err: #f52a65;
+  --warn: #b15c00;
+  --wash-a: rgba(46, 125, 233, 0.2);
+  --wash-b: rgba(152, 84, 241, 0.14);
+  --wash-c: rgba(0, 113, 151, 0.12);
+}
+[data-theme='tokyo-night'].dark {
+  --bg: #16161e;
+  --surface: #1f2231;
+  --raised: #24283b;
+  --canvas: #1a1b26;
+  --user-msg: #24283b;
+  --border: #292e42;
+  --text: #c0caf5;
+  --muted: #9aa5ce;
+  --faint: #565f89;
+  --accent: #7aa2f7;
+  --st-idle: #414868;
+  --st-running: #7dcfff;
+  --st-attention: #e0af68;
+  --st-merged: #bb9af7;
+  --ok: #9ece6a;
+  --err: #f7768e;
+  --warn: #ff9e64;
+  --wash-a: rgba(122, 162, 247, 0.16);
+  --wash-b: rgba(187, 154, 247, 0.12);
+  --wash-c: rgba(125, 207, 255, 0.06);
+}
+
+/* ---- Everforest — Light / Dark (medium) ----------------------------------- */
+[data-theme='everforest']:not(.dark) {
+  --bg: #efebd4;
+  --surface: #f4f0d9;
+  --raised: #fffbef;
+  --canvas: #fdf6e3;
+  --user-msg: #f4f0d9;
+  --border: #e0dcc7;
+  --text: #5c6a72;
+  --muted: #829181;
+  --faint: #a6b0a0;
+  --accent: #6b8a1a;
+  --st-idle: #bec5b2;
+  --st-running: #3a94c5;
+  --st-attention: #dfa000;
+  --st-merged: #df69ba;
+  --ok: #35a77c;
+  --err: #f85552;
+  --warn: #f57d26;
+  --wash-a: rgba(141, 161, 1, 0.16);
+  --wash-b: rgba(53, 167, 124, 0.14);
+  --wash-c: rgba(223, 160, 0, 0.12);
+}
+[data-theme='everforest'].dark {
+  --bg: #232a2e;
+  --surface: #333c41;
+  --raised: #343f44;
+  --canvas: #2d353b;
+  --user-msg: #3d484d;
+  --border: #3d484d;
+  --text: #d3c6aa;
+  --muted: #9da9a0;
+  --faint: #7a8478;
+  --accent: #a7c080;
+  --st-idle: #4f585e;
+  --st-running: #7fbbb3;
+  --st-attention: #dbbc7f;
+  --st-merged: #d699b6;
+  --ok: #83c092;
+  --err: #e67e80;
+  --warn: #e69875;
+  --wash-a: rgba(167, 192, 128, 0.12);
+  --wash-b: rgba(127, 187, 179, 0.1);
+  --wash-c: rgba(219, 188, 127, 0.06);
+}
+
+/* =========================================================================
+ * Experimental families. These go past a palette swap — type, shape, texture,
+ * glow — so each one pairs its tokens with a few scoped rules. Page-level
+ * effects (fonts, overlays, textured chrome) key on `:root[data-theme=…]` so
+ * they never leak into the Settings preview cards; shape rules (corners,
+ * borders) key on `[data-theme=…]` so the cards preview them.
+ * ========================================================================= */
+
+/* ---- Synthwave — vaporwave pastels / neon on a midnight grid -------------- */
+[data-theme='synthwave']:not(.dark) {
+  --bg: #fbe3f4;
+  --surface: #fbeaf6;
+  --raised: #ffffff;
+  --canvas: #fff4fb;
+  --user-msg: #f5ddf1;
+  --border: #efc6e6;
+  --text: #2d1459;
+  --muted: #6c4a9c;
+  --faint: #a88cc9;
+  --accent: #d6189f;
+  --st-idle: #d3b8e0;
+  --st-running: #0896a6;
+  --st-attention: #c98a00;
+  --st-merged: #7b3fe4;
+  --ok: #11906b;
+  --err: #e01e4f;
+  --warn: #d9640b;
+  --ink: #d6189f;
+  --on-ink: #ffffff;
+  --wash-a: rgba(5, 217, 232, 0.34);
+  --wash-b: rgba(255, 54, 201, 0.32);
+  --wash-c: rgba(255, 211, 25, 0.26);
+}
+[data-theme='synthwave'].dark {
+  --bg: #0d0221;
+  --surface: #1c0b44;
+  --raised: #22104f;
+  --canvas: #150734;
+  --user-msg: #2a1360;
+  --border: #3a1d78;
+  --text: #f5e9ff;
+  --muted: #c3a6f0;
+  --faint: #7a5bb0;
+  --accent: #ff36c9;
+  --st-idle: #4a2f85;
+  --st-running: #05d9e8;
+  --st-attention: #ffd319;
+  --st-merged: #b967ff;
+  --ok: #3cf9a8;
+  --err: #ff4a4a;
+  --warn: #ff8f1f;
+  --ink: #ff36c9;
+  --on-ink: #ffffff;
+  --wash-a: rgba(5, 217, 232, 0.2);
+  --wash-b: rgba(255, 54, 201, 0.26);
+  --wash-c: rgba(255, 143, 31, 0.24);
+}
+[data-theme='synthwave'] .btn-accent {
+  background: linear-gradient(100deg, #ff36c9, #7b5cff 55%, #05d9e8);
+  color: #ffffff;
+}
+[data-theme='synthwave'].dark .btn-accent {
+  box-shadow: 0 0 14px rgba(255, 54, 201, 0.55), 0 0 32px -6px rgba(5, 217, 232, 0.5);
+}
+:root[data-theme='synthwave'].dark .text-accent,
+:root[data-theme='synthwave'].dark .md a,
+:root[data-theme='synthwave'].dark .md h1,
+:root[data-theme='synthwave'].dark .md h2 {
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+/* The sunset horizon: a sun glow sinking into a receding neon grid. */
+:root[data-theme='synthwave'] .wash {
+  background:
+    radial-gradient(45% 40% at 15% 0%, var(--wash-a), transparent 70%),
+    radial-gradient(50% 45% at 100% 55%, var(--wash-b), transparent 70%),
+    radial-gradient(50% 26% at 50% 100%, var(--wash-c), transparent 70%),
+    linear-gradient(to top, transparent 0 4%, var(--bg) 36%, transparent 36%),
+    repeating-linear-gradient(to top, color-mix(in srgb, var(--accent) 30%, transparent) 0 1px, transparent 1px 26px) 0 100% / 100% 36% no-repeat,
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--st-running) 26%, transparent) 0 1px, transparent 1px 56px) 0 100% / 100% 36% no-repeat,
+    var(--bg);
+}
+
+/* ---- Phosphor — greenbar printer paper / a green CRT ----------------------- */
+[data-theme='phosphor']:not(.dark) {
+  --bg: #e4ecdc;
+  --surface: #eef4e8;
+  --raised: #fbfdf8;
+  --canvas: #f7fbf2;
+  --user-msg: #e3eed8;
+  --border: #c9d8bc;
+  --text: #1b301b;
+  --muted: #4a6a45;
+  --faint: #8aa382;
+  --accent: #2e7d32;
+  --st-idle: #aebfa6;
+  --st-running: #1b6f8f;
+  --st-attention: #a86b00;
+  --st-merged: #6a4c93;
+  --ok: #2e7d32;
+  --err: #b3261e;
+  --warn: #a86b00;
+  --wash-a: rgba(46, 125, 50, 0.1);
+  --wash-b: rgba(46, 125, 50, 0.06);
+  --wash-c: rgba(168, 107, 0, 0.06);
+}
+[data-theme='phosphor'].dark {
+  --bg: #010501;
+  --surface: #061406;
+  --raised: #081a09;
+  --canvas: #030d04;
+  --user-msg: #0a220c;
+  --border: #0f3a14;
+  --text: #4dff7a;
+  --muted: #2fbf55;
+  --faint: #1a7a33;
+  --accent: #b6ff5c;
+  --st-idle: #1a5a26;
+  --st-running: #5cf2ff;
+  --st-attention: #ffb000;
+  --st-merged: #c792ff;
+  --ok: #4dff7a;
+  --err: #ff5555;
+  --warn: #ffb000;
+  --wash-a: rgba(77, 255, 122, 0.08);
+  --wash-b: rgba(77, 255, 122, 0.05);
+  --wash-c: rgba(182, 255, 92, 0.04);
+}
+:root[data-theme='phosphor'] body,
+:root[data-theme='phosphor'] .font-sans {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: -0.01em;
+}
+/* CRT: glowing text under scanlines and a soft vignette. */
+:root[data-theme='phosphor'].dark body {
+  text-shadow: 0 0 5px color-mix(in srgb, var(--text) 45%, transparent);
+}
+:root[data-theme='phosphor'].dark body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 90% at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.45));
+}
+/* Greenbar: the stage is continuous-feed paper, in pale green bands. */
+:root[data-theme='phosphor']:not(.dark) .stage {
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--canvas) 85%, transparent) 0 44px,
+    color-mix(in srgb, #cfe6c2 70%, transparent) 44px 88px
+  );
+}
+
+/* ---- Brutalist — hard edges, hard shadows, no glass ------------------------ */
+[data-theme='brutalist']:not(.dark) {
+  --bg: #ffd93d;
+  --surface: #f4f1e8;
+  --raised: #ffffff;
+  --canvas: #fffdf5;
+  --user-msg: #c7f0ff;
+  --border: #000000;
+  --text: #000000;
+  --muted: #333333;
+  --faint: #6b6b6b;
+  --accent: #ff4d00;
+  --st-idle: #9a9a9a;
+  --st-running: #0057ff;
+  --st-attention: #ff9f00;
+  --st-merged: #8a2be2;
+  --ok: #00a86b;
+  --err: #e60023;
+  --warn: #ff9f00;
+}
+[data-theme='brutalist'].dark {
+  --bg: #000000;
+  --surface: #161616;
+  --raised: #1c1c1c;
+  --canvas: #0d0d0d;
+  --user-msg: #2b2b00;
+  --border: #f2f2f2;
+  --text: #f2f2f2;
+  --muted: #c4c4c4;
+  --faint: #8a8a8a;
+  --accent: #d4ff00;
+  --st-idle: #5c5c5c;
+  --st-running: #00c2ff;
+  --st-attention: #ffb800;
+  --st-merged: #c77dff;
+  --ok: #00e08a;
+  --err: #ff3355;
+  --warn: #ffb800;
+}
+[data-theme='brutalist'],
+[data-theme='brutalist'].dark {
+  --shadow: 3px 3px 0 var(--border);
+  --stage-shadow: 0 0 0 2px var(--border), 6px 6px 0 var(--border);
+  --glass-bg: var(--raised);
+  --glass-panel-bg: var(--raised);
+  --canvas-glass: var(--canvas);
+  --glass-blur: 0px;
+  --glass-rim: 0 0 0 0 transparent;
+  --glass-shadow: 0 0 0 2px var(--border), 4px 4px 0 var(--border);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+[data-theme='brutalist'] *,
+[data-theme='brutalist'] *::before,
+[data-theme='brutalist'] *::after {
+  border-radius: 0 !important;
+}
+[data-theme='brutalist'] .stage,
+[data-theme='brutalist'] .glass,
+[data-theme='brutalist'] .lg-backdrop,
+[data-theme='brutalist'] .glass-scrim,
+[data-theme='brutalist'] .scroll-edge-top::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+[data-theme='brutalist'] .lg,
+[data-theme='brutalist'] .lg.lg-float,
+[data-theme='brutalist'] .lg.seg-thumb {
+  box-shadow: 0 0 0 2px var(--border), 3px 3px 0 var(--border);
+}
+[data-theme='brutalist'] .lg::after,
+[data-theme='brutalist'] .lg.lg-live::after {
+  background: var(--raised) !important;
+  box-shadow: none;
+}
+[data-theme='brutalist'] .lg-clear::after {
+  background: transparent !important;
+}
+[data-theme='brutalist'] .tab-lit,
+[data-theme='brutalist'] .lg.seg-thumb::after {
+  background: var(--accent) !important;
+  color: #000000;
+  box-shadow: 0 0 0 2px var(--border);
+}
+/* Text on the accent selection is always black — the acid / orange fill is
+   bright in both variants, and the labels would otherwise keep their themed
+   (white in dark) colour. */
+[data-theme='brutalist'] .tab-lit,
+[data-theme='brutalist'] .tab-lit *,
+[data-theme='brutalist'] .seg button[aria-pressed='true'] {
+  color: #000000 !important;
+}
+[data-theme='brutalist'] .btn {
+  border-width: 2px;
+  border-color: var(--border);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: 2px 2px 0 var(--border);
+}
+[data-theme='brutalist'] .btn:where(:hover:not(:disabled)) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border);
+}
+[data-theme='brutalist'] .btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+[data-theme='brutalist'] .btn-accent {
+  background: var(--accent);
+  color: #000000;
+  border-color: var(--border);
+}
+[data-theme='brutalist'] .input {
+  border-width: 2px;
+}
+:root[data-theme='brutalist'] body,
+:root[data-theme='brutalist'] .font-sans {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  letter-spacing: 0;
+}
+:root[data-theme='brutalist'] .wash,
+:root[data-theme='brutalist'] .wash-hero {
+  background: var(--bg);
+}
+
+/* ---- Blueprint — pencil on graph paper / a cyanotype drafting grid --------- */
+[data-theme='blueprint']:not(.dark) {
+  --bg: #e6edf7;
+  --surface: #eef3fa;
+  --raised: #ffffff;
+  --canvas: #f7faff;
+  --user-msg: #e3ebf7;
+  --border: #c3d3ea;
+  --text: #0b2e6b;
+  --muted: #3f5f95;
+  --faint: #8aa2c8;
+  --accent: #d9480f;
+  --st-idle: #a9bbd8;
+  --st-running: #1c7ed6;
+  --st-attention: #e67700;
+  --st-merged: #7048e8;
+  --ok: #2b8a3e;
+  --err: #c92a2a;
+  --warn: #e67700;
+  --wash-a: rgba(28, 126, 214, 0.1);
+  --wash-b: rgba(28, 126, 214, 0.06);
+  --wash-c: rgba(217, 72, 15, 0.05);
+}
+[data-theme='blueprint'].dark {
+  --bg: #082a5e;
+  --surface: #12458f;
+  --raised: #154c9c;
+  --canvas: #0d3a7d;
+  --user-msg: #15509f;
+  --border: #3a6fbf;
+  --text: #eef5ff;
+  --muted: #afc8ee;
+  --faint: #7597cc;
+  --accent: #ffd24a;
+  --st-idle: #4b78bd;
+  --st-running: #7fdbff;
+  --st-attention: #ffd24a;
+  --st-merged: #d6b4ff;
+  --ok: #7ee2a8;
+  --err: #ff8a80;
+  --warn: #ffb74d;
+  --wash-a: rgba(127, 219, 255, 0.08);
+  --wash-b: rgba(255, 255, 255, 0.04);
+  --wash-c: rgba(255, 210, 74, 0.04);
+}
+/* The drafting grid: fine 12px lines with a heavier line every 60px. */
+[data-theme='blueprint'] {
+  --grid-fine: color-mix(in srgb, var(--st-running) 11%, transparent);
+  --grid-major: color-mix(in srgb, var(--st-running) 22%, transparent);
+}
+[data-theme='blueprint'].dark {
+  --grid-fine: rgba(255, 255, 255, 0.06);
+  --grid-major: rgba(255, 255, 255, 0.13);
+}
+:root[data-theme='blueprint'] .wash,
+:root[data-theme='blueprint'] .wash-hero,
+:root[data-theme='blueprint'] .stage {
+  background-image:
+    linear-gradient(var(--grid-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(var(--grid-fine) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-fine) 1px, transparent 1px);
+  background-size: 60px 60px, 60px 60px, 12px 12px, 12px 12px;
+}
+:root[data-theme='blueprint'] .wash,
+:root[data-theme='blueprint'] .wash-hero {
+  background-color: var(--bg);
+}
+:root[data-theme='blueprint'] .stage {
+  background-color: var(--canvas-glass);
+}
+[data-theme='blueprint'] .card,
+[data-theme='blueprint'] .md pre,
+[data-theme='blueprint'] .md blockquote {
+  border-style: dashed;
+}
+:root[data-theme='blueprint'] .label,
+:root[data-theme='blueprint'] h1,
+:root[data-theme='blueprint'] h2,
+:root[data-theme='blueprint'] h3 {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Bubblegum — pink, round, unreasonably cheerful ------------------------ */
+[data-theme='bubblegum']:not(.dark) {
+  --bg: #ffe3f1;
+  --surface: #ffeef7;
+  --raised: #ffffff;
+  --canvas: #fff6fb;
+  --user-msg: #ffe0f0;
+  --border: #ffc8e3;
+  --text: #5a1846;
+  --muted: #a0487f;
+  --faint: #d58db5;
+  --accent: #ff3fa4;
+  --st-idle: #f2b8d6;
+  --st-running: #3fb8ff;
+  --st-attention: #ffb13f;
+  --st-merged: #a55cff;
+  --ok: #1fbf86;
+  --err: #ff4f6a;
+  --warn: #ff9f1c;
+  --ink: #ff3fa4;
+  --on-ink: #ffffff;
+  --wash-a: rgba(63, 184, 255, 0.28);
+  --wash-b: rgba(255, 63, 164, 0.3);
+  --wash-c: rgba(255, 214, 10, 0.3);
+}
+[data-theme='bubblegum'].dark {
+  --bg: #1c0a1a;
+  --surface: #331330;
+  --raised: #3b1737;
+  --canvas: #2a0f27;
+  --user-msg: #45193f;
+  --border: #4e2046;
+  --text: #ffe4f3;
+  --muted: #e39cc6;
+  --faint: #9c5a86;
+  --accent: #ff6ec7;
+  --st-idle: #6e3563;
+  --st-running: #6fd3ff;
+  --st-attention: #ffc75f;
+  --st-merged: #c38cff;
+  --ok: #5cf2b5;
+  --err: #ff6b81;
+  --warn: #ffb35c;
+  --ink: #ff6ec7;
+  --on-ink: #2a0f27;
+  --wash-a: rgba(111, 211, 255, 0.14);
+  --wash-b: rgba(255, 110, 199, 0.2);
+  --wash-c: rgba(255, 199, 95, 0.12);
+}
+:root[data-theme='bubblegum'] body,
+:root[data-theme='bubblegum'] .font-sans {
+  font-family: ui-rounded, 'SF Pro Rounded', 'Nunito', 'Inter', system-ui, sans-serif;
+}
+[data-theme='bubblegum'] .rounded-card,
+[data-theme='bubblegum'] .card {
+  border-radius: 22px;
+}
+[data-theme='bubblegum'] .rounded-ctl,
+[data-theme='bubblegum'] .input {
+  border-radius: 16px;
+}
+[data-theme='bubblegum'] .stage {
+  border-radius: 26px;
+}
+[data-theme='bubblegum'] .glass {
+  border-radius: 22px;
+}
+[data-theme='bubblegum'] .btn {
+  transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), background 140ms ease;
+}
+[data-theme='bubblegum'] .btn:where(:hover:not(:disabled)) {
+  transform: scale(1.05);
+}
+[data-theme='bubblegum'] .btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+[data-theme='bubblegum'] .btn-accent {
+  box-shadow: 0 4px 0 color-mix(in srgb, var(--accent) 55%, #000), 0 8px 18px -6px var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-theme='bubblegum'] .btn,
+  [data-theme='brutalist'] .btn {
+    transform: none !important;
+  }
+}

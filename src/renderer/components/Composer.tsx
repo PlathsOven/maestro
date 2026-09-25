@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { ArrowRight, ArrowUp, Asterisk, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Loader2, Mic, NotebookPen, Pencil, Plus, Search, Sparkles, Square, Terminal as TerminalIcon, Waypoints, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Mic, NotebookPen, Pencil, Plus, Search, Sparkles, Square, Terminal as TerminalIcon, Waypoints, X } from 'lucide-react';
+import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { invoke, on, tryInvoke } from '../lib/api';
 import { EMPTY_ARR, useApp } from '../store/app';
 import { probeDictationSupport, useDictation } from '../lib/dictation';
@@ -8,6 +9,7 @@ import { AttachmentChip } from './ChatPanel';
 import { EffortBars, EffortOptions, PickerOption, Spinner, readFilesAsBase64, useDismissFromParent, useFileDrop } from './common';
 import { formatElapsed, RunTimer } from './RunTimer';
 import { ContextRing } from '../../shared/ui/composer/ContextRing';
+import { UsageBars, usageColor } from '../../shared/ui/composer/UsageRing';
 import RolesMenu from './RolesMenu';
 import { contextWindowForModel, effortLevelsFor, useHarnessModels } from '../lib/harnessModels';
 import {
@@ -31,6 +33,7 @@ import {
 import { limitResetTarget } from '../../shared/limits';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
+import { GLASS_FIELD, LiquidGlass } from '../../shared/ui/LiquidGlass';
 
 export default function Composer({
   workspace,
@@ -284,6 +287,9 @@ export default function Composer({
     if (!ta) return;
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 220) + 'px';
+    // Only scroll once capped: a fractional line-height rounds scrollHeight down a
+    // pixel, which would otherwise flash a scrollbar on every wrapped line.
+    ta.style.overflowY = ta.scrollHeight > 220 ? 'auto' : 'hidden';
   }, [text]);
 
   // ⌘L focus (from menu/shortcut) + focus when switching chats. In split view
@@ -588,21 +594,24 @@ export default function Composer({
   };
 
   return (
-    <div className="relative shrink-0 px-4 pb-4 pt-1" {...dropProps}>
-      <div className="mx-auto max-w-3xl">
+    // Floats over the transcript (ChatPanel docks it at the bottom and pads the
+    // scroller by its height), so messages scroll under the glass. The gutter is
+    // click-through; the column itself takes events.
+    <div className="pointer-events-none relative shrink-0 px-4 pb-4 pt-1" {...dropProps}>
+      <div className="pointer-events-auto mx-auto max-w-3xl">
         {chatMeta?.externalLive && (
-          <div className="mb-2 rounded-card border border-warn/40 bg-warn/10 px-3 py-2.5 text-xs text-warn">
+          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs text-warn backdrop-blur-xl">
             This chat is open in {chatMeta.externalLive.app === 'codex' ? 'Codex' : 'Claude Code'}
             {chatMeta.externalLive.pid ? ` (pid ${chatMeta.externalLive.pid})` : ''}. Close it there or wait for it to
             finish to continue here.
           </div>
         )}
         {remoteCurrent && workspace.harness !== 'shell' && (!remoteCurrent.installed || !remoteCurrent.authed) && (
-          <div className="mb-2 rounded-card border border-warn/40 bg-warn/10 px-3 py-2.5 text-xs">
+          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs backdrop-blur-xl">
             {curSetup?.phase === 'installing' ? (
               <>
                 <div className="mb-1 flex items-center gap-1.5 font-medium text-warn">
-                  <Loader2 size={12} className="shrink-0 animate-spin" /> Installing {remoteCurrent.bin} on the server…
+                  <Spinner size={12} className="!text-current" /> Installing {remoteCurrent.bin} on the server…
                 </div>
                 <div className="text-muted">
                   Maestro is running the installer over SSH — usually under a minute. This updates by itself.
@@ -611,7 +620,7 @@ export default function Composer({
             ) : curSetup?.phase === 'login' ? (
               <>
                 <div className="mb-1 flex items-center gap-1.5 font-medium text-warn">
-                  <Loader2 size={12} className="shrink-0 animate-spin" /> One step left — sign in to {remoteCurrent.bin}
+                  <Spinner size={12} className="!text-current" /> One step left — sign in to {remoteCurrent.bin}
                 </div>
                 <div className="text-muted">
                   Its sign-in is running in the terminal below (a device-code flow — follow the prompts). This banner
@@ -630,15 +639,15 @@ export default function Composer({
               <>
                 <div className="mb-1 font-medium text-warn">Couldn’t install {remoteCurrent.bin} on this server</div>
                 <div className="whitespace-pre-wrap font-mono text-2xs text-muted">{curSetup.error}</div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                   <button
-                    className="btn btn-accent h-6 text-2xs"
+                    className="btn btn-accent h-7 text-xs"
                     onClick={() => void useApp.getState().remoteSetupInstall(workspace.id, workspace.harness)}
                   >
                     Try again
                   </button>
                   <button
-                    className="btn h-6 gap-1 text-2xs"
+                    className="btn h-7 gap-1 text-xs"
                     title={`Runs: ${remoteCurrent.setupHint}`}
                     onClick={() =>
                       useApp.getState().remoteSetupLogin(workspace.id, workspace.harness, remoteCurrent.setupHint)
@@ -662,10 +671,10 @@ export default function Composer({
                     ? 'One click: Maestro installs it on the server, then walks you through its sign-in.'
                     : 'One click starts its sign-in in the terminal (already on the server).'}
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                   {!remoteCurrent.installed ? (
                     <button
-                      className="btn btn-accent h-6 gap-1 text-2xs"
+                      className="btn btn-accent h-7 gap-1 text-xs"
                       title={`Runs on the server: ${remoteCurrent.installHint}`}
                       onClick={() => void useApp.getState().remoteSetupInstall(workspace.id, workspace.harness)}
                     >
@@ -673,7 +682,7 @@ export default function Composer({
                     </button>
                   ) : (
                     <button
-                      className="btn btn-accent h-6 gap-1 text-2xs"
+                      className="btn btn-accent h-7 gap-1 text-xs"
                       title={`Runs: ${remoteCurrent.loginHint}`}
                       onClick={() =>
                         useApp.getState().remoteSetupLogin(workspace.id, workspace.harness, remoteCurrent.loginCommand)
@@ -689,9 +698,9 @@ export default function Composer({
         )}
         {bgTasks.length > 0 && <BackgroundTaskStrip workspaceId={workspace.id} agentId={agentId} tasks={bgTasks} />}
         {scheduled.length > 0 && (
-          <div className="mb-2 overflow-hidden rounded-card border bg-surface">
-            <div className="flex items-center gap-1.5 border-b px-3 py-1.5 text-xs text-muted">
-              <Clock size={12} />
+          <div data-motion="collapse" className={PENDING_CARD}>
+            <div className={PENDING_HEAD}>
+              <Clock size={12} className="text-faint" />
               Scheduled
             </div>
             {scheduled.map((m) => (
@@ -700,39 +709,39 @@ export default function Composer({
           </div>
         )}
         {queued.length > 0 && (
-          <div className="mb-2 overflow-hidden rounded-card border bg-surface">
-            <div className="border-b px-3 py-1.5 text-xs text-muted">Queued</div>
+          <div data-motion="collapse" className={PENDING_CARD}>
+            <div className={PENDING_HEAD}>Queued</div>
             {queued.map((q) => (
               <QueuedItem key={q.id} workspaceId={workspace.id} agentId={agentId} item={q} />
             ))}
           </div>
         )}
-        <div
-          className={clsx(
-            'relative rounded-card border bg-surface transition-colors focus-within:border-accent/60',
-            dragDepth > 0 && 'border-accent border-dashed'
-          )}
+        <LiquidGlass
+          radius={22}
+          {...GLASS_FIELD}
+          tint="light"
+          className={clsx('lg-field', dragDepth > 0 && 'outline-dashed outline-2 outline-offset-2 outline-accent')}
         >
           {dragDepth > 0 && (
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-card bg-accent-soft/70 text-[13px] font-medium text-accent">
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[22px] bg-accent-tint text-[13px] font-medium text-accent">
               Drop images or files to attach
             </div>
           )}
 
           {slash && slashMatches.length > 0 && (
-            <div ref={slashListRef} className="glass absolute bottom-full left-0 right-0 z-30 mb-1 max-h-72 overflow-y-auto py-1">
+            <div ref={slashListRef} data-motion="pop-up" className="glass absolute bottom-full left-0 right-0 z-30 mb-2 max-h-72 overflow-y-auto p-1">
               {slashMatches.map((m, i) => (
                 <button
                   key={m.s.path}
                   className={clsx(
-                    'flex w-full items-baseline gap-2 px-3 py-1.5 text-left',
+                    'flex w-full items-baseline gap-2 rounded-lg px-2.5 py-1.5 text-left',
                     i === slashIdx ? 'bg-accent-soft' : ''
                   )}
                   onMouseEnter={() => setSlashIdx(i)}
                   onClick={() => insertSkill(m.s)}
                 >
                   <span className="shrink-0 font-mono text-xs text-faint">/</span>
-                  <span className="shrink-0 text-[13px] font-semibold">
+                  <span className="shrink-0 text-[13px] font-medium">
                     <Marked text={m.s.name} hits={m.nameHits} dim="text-faint" />
                   </span>
                   <span className="min-w-0 truncate text-xs text-muted">
@@ -745,18 +754,18 @@ export default function Composer({
           )}
 
           {mention && mentionMatches.length > 0 && (
-            <div className="glass absolute bottom-full left-2 z-30 mb-1 w-96 overflow-hidden py-1">
+            <div data-motion="pop-up" className="glass absolute bottom-full left-2 z-30 mb-2 w-96 overflow-hidden p-1">
               {mentionMatches.map((m, i) => (
                 <button
                   key={m.f}
                   className={clsx(
-                    'flex w-full items-center gap-2 px-2.5 py-1 text-left font-mono text-xs',
+                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left font-mono text-xs',
                     i === mentionIdx ? 'bg-accent-soft text-fg' : 'text-muted'
                   )}
                   onMouseEnter={() => setMentionIdx(i)}
                   onClick={() => insertMention(m.f)}
                 >
-                  <Search size={11} className="shrink-0" />
+                  <Search size={11} className="shrink-0 text-faint" />
                   <span className="truncate">
                     <Marked text={m.f} hits={m.hits} />
                   </span>
@@ -766,7 +775,7 @@ export default function Composer({
           )}
 
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+            <div data-motion="collapse" className="flex flex-wrap gap-1.5 px-4 pt-3">
               {attachments.map((a, i) => (
                 <AttachmentChip
                   key={i}
@@ -779,11 +788,11 @@ export default function Composer({
           )}
 
           {!focused && !text && (
-            <span className="pointer-events-none absolute right-3.5 top-3 text-xs text-faint">⌘L to focus</span>
+            <span className="pointer-events-none absolute right-4 top-3.5 text-xs text-faint">⌘L to focus</span>
           )}
           <textarea
             ref={taRef}
-            className="w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[13px] leading-relaxed outline-none placeholder:text-faint"
+            className="w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[13px] leading-relaxed outline-none placeholder:text-faint"
             rows={2}
             placeholder={
               workspace.status === 'setting-up'
@@ -802,18 +811,19 @@ export default function Composer({
             onBlur={() => setFocused(false)}
           />
 
-          <div className="flex items-center gap-1.5 px-2.5 pb-2.5 pt-1">
+          <div className="flex items-center gap-1 px-2.5 pb-2.5 pt-1">
             {/* model chip — popover opens upward, never clipped */}
             <div className="relative">
               <button
                 className={clsx(
-                  'btn btn-ghost h-6 gap-1 px-1.5 text-xs text-muted transition-opacity hover:text-fg',
+                  CHIP,
+                  modelMenu && 'bg-accent-soft text-fg',
                   blockSend && 'opacity-40'
                 )}
                 title={blockSend ? sendBlockReason! : 'Choose model'}
                 onClick={() => setModelMenu((v) => !v)}
               >
-                <Asterisk size={13} className="text-accent" />
+                <HarnessLogo harness={workspace.harness} size={13} />
                 {modelLabel}
               </button>
               {modelMenu && (
@@ -823,7 +833,7 @@ export default function Composer({
                   onClose={() => setModelMenu(false)}
                   footer={
                     <button
-                      className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-xs text-muted hover:bg-accent-soft hover:text-fg"
+                      className={MENU_FOOT_ROW}
                       title="Set up or log into agent harnesses"
                       onClick={() => {
                         useApp.getState().setModal({ kind: 'settings', tab: 'harnesses' });
@@ -843,9 +853,9 @@ export default function Composer({
                     const setupSt = projectHostId ? remoteSetup[`${workspace.id}:${h.id}`] : undefined;
                     return (
                       <div key={h.id}>
-                        {gi > 0 && <div className="mx-2 my-1 border-t" />}
-                        <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-2xs font-semibold uppercase tracking-wide text-faint">
-                          <Bot size={11} className="shrink-0" />
+                        {gi > 0 && <div className="mx-2.5 my-1 border-t" />}
+                        <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1.5 text-xs font-medium text-faint">
+                          <HarnessLogo harness={h.id} size={12} />
                           <span className="truncate">{h.displayName}</span>
                           {projectHostId ? (
                             // Remote (SSH): a ready harness needs NO badge — its
@@ -854,15 +864,15 @@ export default function Composer({
                             // probe is in flight, else a one-click set-up / sign-in.
                             remoteLoading ? (
                               <span className="ml-auto flex items-center gap-1 font-normal normal-case text-faint">
-                                <Loader2 size={11} className="animate-spin" /> checking…
+                                <Spinner size={11} className="!text-current" /> checking…
                               </span>
                             ) : setupSt?.phase === 'installing' ? (
                               <span className="ml-auto flex items-center gap-1 font-normal normal-case text-faint">
-                                <Loader2 size={11} className="animate-spin" /> installing…
+                                <Spinner size={11} className="!text-current" /> installing…
                               </span>
                             ) : setupSt?.phase === 'login' ? (
                               <span className="ml-auto flex items-center gap-1 font-normal normal-case text-faint">
-                                <Loader2 size={11} className="animate-spin" /> finish sign-in in the terminal
+                                <Spinner size={11} className="!text-current" /> finish sign-in in the terminal
                               </span>
                             ) : !remoteStatus?.installed ? (
                               // Managed one-click install; the badge flips to
@@ -942,7 +952,8 @@ export default function Composer({
               <div className="relative">
                 <button
                   className={clsx(
-                    'btn btn-ghost h-6 gap-1.5 px-1.5 text-xs text-muted transition-opacity hover:text-fg',
+                    CHIP,
+                    effortMenu && 'bg-accent-soft text-fg',
                     blockSend && 'opacity-40'
                   )}
                   title={blockSend ? sendBlockReason! : 'Choose reasoning effort'}
@@ -976,8 +987,10 @@ export default function Composer({
               <div className="relative">
                 <button
                   className={clsx(
-                    'btn btn-ghost h-6 hover:text-fg',
-                    rolesCount ? 'gap-1 px-1.5 text-xs text-accent' : 'w-6 !px-0 text-faint opacity-60 hover:opacity-100'
+                    'btn btn-ghost h-7 hover:text-fg',
+                    rolesCount
+                      ? 'gap-1.5 bg-accent-soft px-2.5 text-xs text-fg'
+                      : clsx('w-7 !px-0 text-faint hover:opacity-100', rolesMenu ? 'bg-accent-soft opacity-100' : 'opacity-60')
                   )}
                   title="Orchestrator & specialist sub-agents — delegate planning, critique, building, and verification"
                   onClick={() => setRolesMenu((v) => !v)}
@@ -997,8 +1010,8 @@ export default function Composer({
             {planTip && (
               <button
                 className={clsx(
-                  'btn btn-ghost h-6 hover:text-fg',
-                  planOn ? 'gap-1 px-1.5 text-xs text-accent' : 'w-6 !px-0 text-faint opacity-60 hover:opacity-100'
+                  'btn btn-ghost h-7 hover:text-fg',
+                  planOn ? 'gap-1.5 bg-accent-soft px-2.5 text-xs text-fg' : 'w-7 !px-0 text-faint opacity-60 hover:opacity-100'
                 )}
                 title={
                   globalPlan && !chatMeta?.planMode
@@ -1020,8 +1033,8 @@ export default function Composer({
             {canDictate && (
               <button
                 className={clsx(
-                  'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-                  dictation.listening ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg'
+                  'flex h-7 w-7 items-center justify-center rounded-full transition-colors',
+                  dictation.listening ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
                 )}
                 title={dictation.listening ? 'Stop dictation' : 'Dictate — speak your prompt'}
                 onClick={onMicClick}
@@ -1031,8 +1044,8 @@ export default function Composer({
             )}
             <button
               className={clsx(
-                'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-                settings.refinePrompt ? 'text-accent' : 'text-faint hover:text-fg'
+                'flex h-7 w-7 items-center justify-center rounded-full transition-colors',
+                settings.refinePrompt ? 'bg-accent-soft text-fg' : 'text-faint hover:bg-accent-soft hover:text-fg'
               )}
               title={`Refine my prompt before sending — clearer, keeps every detail (${settings.refinePrompt ? 'on' : 'off'})`}
               onClick={() => void useApp.getState().saveSettings({ refinePrompt: !settings.refinePrompt })}
@@ -1046,7 +1059,7 @@ export default function Composer({
 
             {agentRunning && (
               <button
-                className="flex h-7 w-7 items-center justify-center rounded-lg border border-err/50 text-err transition-colors hover:bg-err/10"
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-err/40 text-err transition-colors hover:bg-err/10"
                 title="Stop agent (also clears the queue)"
                 onClick={() => useApp.getState().stopAgent(workspace.id, agentId)}
               >
@@ -1060,9 +1073,9 @@ export default function Composer({
                 agent runs and on remote hosts that aren't set up yet (scheduling
                 is a statement about the future). */}
             <div className="relative">
-              <div className="inline-flex h-7 items-stretch overflow-hidden rounded-lg bg-accent text-white transition-all">
+              <div className="inline-flex h-7 items-stretch overflow-hidden rounded-full bg-ink text-on-ink shadow-sm transition-all">
                 <button
-                  className="flex w-7 items-center justify-center transition-colors hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent"
+                  className="flex w-7 items-center justify-center pl-0.5 transition-colors hover:bg-on-ink/10 disabled:opacity-40 disabled:hover:bg-transparent"
                   title={
                     blockSend
                       ? sendBlockReason!
@@ -1076,14 +1089,14 @@ export default function Composer({
                   onClick={() => void send()}
                 >
                   {refining || (remoteChecking && !agentRunning) ? (
-                    <Spinner className="!text-white" />
+                    <Spinner className="!text-on-ink" />
                   ) : (
                     <ArrowUp size={14} strokeWidth={2.4} />
                   )}
                 </button>
-                <span aria-hidden className="my-1.5 w-px bg-white/30" />
+                <span aria-hidden className="my-1.5 w-px bg-on-ink/25" />
                 <button
-                  className="flex w-5 items-center justify-center transition-colors hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent"
+                  className="flex w-6 items-center justify-center pr-0.5 transition-colors hover:bg-on-ink/10 disabled:opacity-40 disabled:hover:bg-transparent"
                   title="Schedule for later"
                   aria-label="Schedule for later"
                   aria-haspopup="menu"
@@ -1104,7 +1117,7 @@ export default function Composer({
               )}
             </div>
           </div>
-        </div>
+        </LiquidGlass>
       </div>
     </div>
   );
@@ -1186,13 +1199,13 @@ function UpMenu({
     <div
       ref={ref}
       className={clsx(
-        'glass absolute bottom-full z-40 mb-1.5 overflow-hidden',
+        'glass absolute bottom-full z-40 mb-2 overflow-hidden',
         right ? 'right-0' : 'left-0',
         wide ? 'w-64' : 'w-44'
       )}
     >
       <div className={clsx('overflow-y-auto py-1', tall ? 'max-h-80' : 'max-h-72')}>{children}</div>
-      {footer}
+      {footer && <div className="border-t p-1">{footer}</div>}
     </div>
   );
 }
@@ -1211,12 +1224,6 @@ const fmtDelta = (ts: number): string => {
   if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
-};
-
-const fmtReset = (iso?: string): string => {
-  if (!iso) return '';
-  const d = fmtDelta(new Date(iso).getTime());
-  return d ? `resets in ${d}` : 'resets soon';
 };
 
 /** Wall-clock label for a scheduled instant: "6:00 PM", "Tomorrow 9:00 AM",
@@ -1294,11 +1301,11 @@ function SchedulePopover({
           names every window so a tie reads as "both", not as a mystery delay. */}
       {limit && (
         <button
-          className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-accent-soft"
+          className={clsx(MENU_ROW, 'flex-col items-start gap-0.5 py-2')}
           onClick={() => onPick(limit.at, 'limit-reset')}
         >
           <span className="flex w-full items-center gap-1.5 text-[13px]">
-            <Clock size={12} className="shrink-0 text-accent" />
+            <Clock size={12} className="shrink-0 text-muted" />
             After limits reset
             <span className="ml-auto font-mono text-2xs" style={{ color: usageColor(limit.windows[0], 'var(--muted)') }}>
               {Math.round(limit.windows[0].pct)}%
@@ -1316,33 +1323,33 @@ function SchedulePopover({
       {usage && !limit && (
         <button
           disabled
-          className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left opacity-50"
+          className="mx-1 flex w-[calc(100%-0.5rem)] flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left opacity-50"
         >
           <span className="flex w-full items-center gap-1.5 text-[13px]">
-            <Clock size={12} className="shrink-0 text-accent" />
+            <Clock size={12} className="shrink-0 text-muted" />
             After limits reset
           </span>
           <span className="pl-[18px] text-2xs text-faint">No window is counting down</span>
         </button>
       )}
-      {(limit || (usage && !limit)) && chips.length > 0 && <div className="mx-2 my-1 border-t" />}
+      {(limit || (usage && !limit)) && chips.length > 0 && <div className="mx-2.5 my-1 border-t" />}
       {chips.map((c) => (
         <button
           key={c.label}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-accent-soft"
+          className={clsx(MENU_ROW, 'items-center gap-2 text-[13px]')}
           onClick={() => onPick(c.at, 'at')}
         >
           {c.label}
           <span className="ml-auto text-2xs text-faint">{fmtClock(c.at)}</span>
         </button>
       ))}
-      <div className="mx-2 my-1 border-t" />
-      <div className="px-3 py-2">
-        <div className="mb-1 text-2xs uppercase tracking-wide text-faint">Pick a time</div>
+      <div className="mx-2.5 my-1 border-t" />
+      <div className="px-3.5 pb-2.5 pt-1.5">
+        <div className="mb-1.5 text-xs text-faint">Pick a time</div>
         <div className="flex items-center gap-1.5">
           <input
             type="datetime-local"
-            className="min-w-0 flex-1 rounded border bg-bg px-1.5 py-1 text-xs outline-none focus:border-accent/60"
+            className="h-7 min-w-0 flex-1 rounded-lg border bg-raised px-2 text-xs outline-none transition-colors focus:border-faint"
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             onKeyDown={(e) => {
@@ -1353,7 +1360,7 @@ function SchedulePopover({
             }}
           />
           <button
-            className="shrink-0 rounded bg-accent px-2 py-1 text-xs text-white transition-opacity hover:opacity-90"
+            className="btn btn-accent h-7 shrink-0 px-3"
             onClick={pickCustom}
           >
             Set
@@ -1373,7 +1380,23 @@ function SchedulePopover({
 }
 
 /** Trailing action on a pending row — revealed on hover, like the queue's. */
-const ROW_ACTION = 'shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity group-hover:opacity-100';
+const ROW_ACTION =
+  'shrink-0 rounded-full p-1 text-faint opacity-0 transition-[opacity,background-color,color] hover:bg-accent-soft group-hover:opacity-100';
+
+/** The floating cards above the composer (scheduled · queued · background
+ *  tasks): a frosted rounded card, since the transcript scrolls beneath them. */
+const PENDING_CARD =
+  'mb-2 overflow-hidden rounded-card border bg-raised/85 pb-1 shadow-[var(--shadow)] backdrop-blur-xl';
+const PENDING_HEAD = 'flex items-center gap-1.5 px-3.5 pb-1 pt-2.5 text-xs font-medium text-muted';
+
+/** Composer toolbar chip: a borderless 28px pill with a neutral hover. */
+const CHIP = 'btn btn-ghost h-7 gap-1.5 px-2.5 text-xs text-muted transition-opacity hover:text-fg';
+
+/** An inset rounded row in a composer popover (matches MenuItem/PickerOption). */
+const MENU_ROW = 'mx-1 flex w-[calc(100%-0.5rem)] rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent-soft';
+/** A trailing link row in a popover footer ("Manage harnesses"). */
+const MENU_FOOT_ROW =
+  'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-muted transition-colors hover:bg-accent-soft hover:text-fg';
 
 /**
  * One pending message above the composer — queued behind a running turn, or
@@ -1426,10 +1449,10 @@ function PendingRow({
 
   if (editing) {
     return (
-      <div className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0">
+      <div data-motion="row" className="mx-1 flex items-center gap-2 rounded-lg px-1.5 py-1">
         <textarea
           ref={taRef}
-          className="min-w-0 flex-1 resize-none rounded border bg-bg px-2 py-1 text-[13px] leading-relaxed outline-none focus:border-accent/60"
+          className="min-w-0 flex-1 resize-none rounded-lg border bg-raised px-2.5 py-1.5 text-[13px] leading-relaxed outline-none transition-colors focus:border-faint"
           rows={Math.min(6, Math.max(1, draft.split('\n').length))}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -1445,7 +1468,7 @@ function PendingRow({
           onBlur={commit}
         />
         <button
-          className="shrink-0 rounded p-0.5 text-faint transition-colors hover:text-ok"
+          className="shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-ok"
           title="Save (Enter)"
           onMouseDown={(e) => e.preventDefault()}
           onClick={commit}
@@ -1457,7 +1480,7 @@ function PendingRow({
   }
 
   return (
-    <div className="group flex items-center gap-2 border-b px-3 py-2 last:border-b-0">
+    <div data-motion="row" className="group mx-1 flex items-center gap-1 rounded-lg py-1.5 pl-2.5 pr-1.5 transition-colors hover:bg-accent-soft">
       <button className="min-w-0 flex-1 cursor-text text-left" title="Edit message" onClick={startEdit}>
         <span className="block truncate text-[13px]">{text}</span>
         {subtitle && <span className="mt-0.5 block truncate text-2xs text-faint">{subtitle}</span>}
@@ -1524,14 +1547,6 @@ function ScheduledItem({
   );
 }
 
-/** Provider severity → color; falls back to percent thresholds. The provider
- *  knows things thresholds don't (e.g. a window flagged critical before 95%). */
-function usageColor(w: { pct: number; severity?: string }, normal: string): string {
-  if (w.severity === 'critical') return 'var(--err)';
-  if (w.severity && /warn|elevat|high/i.test(w.severity)) return 'var(--warn)';
-  return w.pct > 95 ? 'var(--err)' : w.pct > 80 ? 'var(--warn)' : normal;
-}
-
 /**
  * Every login for this harness, each with its subscription usage + sign-in
  * state, plus the active id and the rotation flag. Refreshes on mount, at each
@@ -1543,13 +1558,18 @@ function usageColor(w: { pct: number; severity?: string }, normal: string): stri
  * The donut/popover and the send-later menu both read the active login here —
  * one fetcher, several consumers.
  */
+const lastLogins = new Map<Workspace['harness'], HarnessLogins>();
 function useHarnessLogins(harness: Workspace['harness'], agentRunning: boolean) {
-  const [logins, setLogins] = useState<HarnessLogins | null>(null);
+  // Seeded from the last answer so a remount (workspace switch) doesn't blank the ring.
+  const [logins, setLogins] = useState<HarnessLogins | null>(() => lastLogins.get(harness) ?? null);
   const aliveRef = useRef(true);
   const load = useCallback(
     (force?: boolean) => {
       void tryInvoke('harness:logins', { harness, force }).then(({ data }) => {
-        if (aliveRef.current) setLogins(data ?? null);
+        // A failed call keeps what we had.
+        if (!data) return;
+        lastLogins.set(harness, data);
+        if (aliveRef.current) setLogins(data);
       });
     },
     [harness]
@@ -1577,35 +1597,6 @@ function useHarnessLogins(harness: Workspace['harness'], agentRunning: boolean) 
 function fmtLimitReset(ms?: number): string {
   if (!ms || ms <= Date.now()) return '';
   return `resets ${new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-}
-
-/** The per-window bars for one login's usage — the body shared by the popover
- *  (identical to the old hover card's rows). */
-function UsageBars({ usage }: { usage: SubUsage | null }) {
-  if (!usage || usage.windows.length === 0)
-    return <span className="block text-2xs text-faint">No usage data</span>;
-  return (
-    <span className="block space-y-2">
-      {usage.windows.map((w) => {
-        const sub = [w.resetsAt ? fmtReset(w.resetsAt) : '', w.note ?? ''].filter(Boolean).join(' · ');
-        return (
-          <span key={w.id} className="block">
-            <span className="flex justify-between text-2xs text-muted">
-              <span>{w.label}</span>
-              <span className="font-mono">{Math.round(w.pct)}%</span>
-            </span>
-            <span className="mt-0.5 block h-1.5 overflow-hidden rounded-full bg-border">
-              <span
-                className="block h-full rounded-full"
-                style={{ width: `${Math.min(100, w.pct)}%`, background: usageColor(w, 'var(--accent)') }}
-              />
-            </span>
-            {sub && <span className="mt-0.5 block text-2xs text-faint">{sub}</span>}
-          </span>
-        );
-      })}
-    </span>
-  );
 }
 
 /**
@@ -1649,11 +1640,11 @@ function UsageRing({
   const c = 2 * Math.PI * r;
   return (
     <span
-      className="relative flex h-7 w-6 items-center justify-center"
+      className="relative flex h-7 w-7 items-center justify-center"
       onMouseEnter={enter}
       onMouseLeave={leave}
     >
-      <span className="flex h-7 w-6 items-center justify-center text-muted" aria-label="Plan usage">
+      <span className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-accent-soft" aria-label="Plan usage">
         <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
           <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
           <circle
@@ -1743,7 +1734,7 @@ function UsageMenu({
       : [viewed.email, viewed.plan?.toUpperCase()].filter(Boolean).join(' · ');
 
   const arrow =
-    'flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-accent-soft hover:text-fg';
+    'flex h-6 w-6 items-center justify-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg';
 
   return (
     <UpMenu
@@ -1751,9 +1742,9 @@ function UsageMenu({
       right
       onClose={onClose}
       footer={
-        <div className="border-t">
+        <div>
           {!isActive && (
-            <div className="px-3 pt-2">
+            <div className="px-1.5 pb-1 pt-1">
               <button
                 className="btn btn-accent h-7 w-full text-xs"
                 disabled={!viewed.signedIn}
@@ -1768,7 +1759,7 @@ function UsageMenu({
             </div>
           )}
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted hover:bg-accent-soft hover:text-fg"
+            className={MENU_FOOT_ROW}
             title="Add, sign into, or remove logins"
             onClick={() => {
               useApp.getState().setModal({ kind: 'settings', tab: 'harnesses' });
@@ -1788,8 +1779,8 @@ function UsageMenu({
               <ChevronLeft size={14} />
             </button>
           )}
-          <span className="min-w-0 flex-1 truncate text-xs font-semibold">{viewed.label}</span>
-          {isActive && <span className="rounded-ctl bg-accent-soft px-1.5 py-0.5 text-2xs font-medium text-accent">Current</span>}
+          <span className="min-w-0 flex-1 truncate text-xs font-medium">{viewed.label}</span>
+          {isActive && <span className="rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-fg">Current</span>}
           {many && <span className="text-2xs text-faint">{idx + 1}/{list.length}</span>}
           {many && (
             <button className={arrow} title="Next login (→)" onClick={() => move(1)}>
@@ -1876,12 +1867,12 @@ function BackgroundTaskStrip({
   if (waiting.length === 0) return null;
   const anyFinished = waiting.some((t) => t.status !== 'running');
   return (
-    <div className="mb-2 overflow-hidden rounded-card border bg-surface">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted">
+    <div className={PENDING_CARD}>
+      <div className={clsx(PENDING_HEAD, 'pr-2')}>
         <span className="flex-1">Background tasks</span>
         {anyFinished && (
           <button
-            className="shrink-0 rounded p-0.5 text-faint transition-colors hover:text-fg"
+            className="-my-1 shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-fg"
             title="Dismiss finished tasks"
             onClick={() => useApp.getState().clearBackgroundTasks(workspaceId, agentId)}
           >
@@ -1895,7 +1886,7 @@ function BackgroundTaskStrip({
             ? 'Running — the CLI ends it when this turn does'
             : 'Terminated when the turn ended — the agent is told on your next message';
         return (
-          <div key={t.id} className="flex items-start gap-2 border-b px-3 py-2 last:border-b-0">
+          <div key={t.id} className="flex items-start gap-2 px-3.5 py-2">
             <span
               className={clsx(
                 'mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full',

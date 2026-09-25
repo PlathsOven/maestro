@@ -100,23 +100,25 @@ export default function ImageLightbox() {
   if (!lightbox || !current) return null;
 
   return (
-    <div className="fade-in fixed inset-0 z-[100] flex flex-col bg-black/85 backdrop-blur-sm">
+    // no-drag: Electron hit-tests the title-bar drag strips beneath regardless of
+    // z-order, so without it clicks on the top bar's buttons start a window drag.
+    <div data-motion="fade" className="no-drag fixed inset-0 z-[100] flex flex-col bg-black/85 backdrop-blur-md">
       {/* Top bar: counter · caption · zoom controls · close. */}
-      <div className="flex shrink-0 items-center gap-3 px-3 py-2 text-2xs text-white/70">
+      <div className="flex shrink-0 items-center gap-3 px-4 py-3 text-xs text-white/70">
         {images.length > 1 && (
-          <span className="tabular-nums">
+          <span className="rounded-full bg-white/10 px-2.5 py-1 text-2xs tabular-nums">
             {index + 1} / {images.length}
           </span>
         )}
         <span className="min-w-0 flex-1 truncate text-center" title={current.alt || current.path}>
           {current.alt || current.path.split('/').pop()}
         </span>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="wco-safe flex shrink-0 items-center gap-0.5 rounded-full bg-white/10 p-1 ring-1 ring-inset ring-white/10 backdrop-blur-xl">
           <LightboxButton title="Zoom out" onClick={() => zoomBy(1 / IMG_ZOOM_STEP)} disabled={scale <= IMG_ZOOM_MIN}>
             <ZoomOut size={15} />
           </LightboxButton>
           <button
-            className="h-7 min-w-[3rem] rounded px-2 text-2xs tabular-nums text-white/80 hover:bg-white/10"
+            className="h-7 min-w-[3rem] rounded-full px-2 text-2xs tabular-nums text-white/80 hover:bg-white/10"
             title={isFit ? 'Actual size (100%)' : 'Fit to window'}
             onClick={toggleFit}
           >
@@ -150,7 +152,7 @@ export default function ImageLightbox() {
               onPointerDown={onImgPointerDown}
               style={imgStyle}
               className={clsx(
-                'select-none rounded shadow-2xl',
+                'select-none rounded-lg shadow-2xl',
                 !dims && 'max-h-full max-w-full object-contain',
                 canPan ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'
               )}
@@ -192,7 +194,7 @@ function LightboxButton({
 }) {
   return (
     <button
-      className="flex h-7 w-7 items-center justify-center rounded text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+      className="flex h-7 w-7 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
       title={title}
       onClick={onClick}
       disabled={disabled}
@@ -216,7 +218,7 @@ function LightboxArrow({
   return (
     <button
       className={clsx(
-        'absolute top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 backdrop-blur transition-colors hover:bg-white/20 hover:text-white',
+        'absolute top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 ring-1 ring-inset ring-white/10 backdrop-blur-xl transition-colors hover:bg-white/20 hover:text-white',
         side === 'left' ? 'left-4' : 'right-4'
       )}
       title={title}

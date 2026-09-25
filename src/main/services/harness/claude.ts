@@ -38,8 +38,8 @@ export function secureStorageService(dir?: string): string {
  * `dir` scopes it to one login's isolated store (fact 1/2); undefined reads the
  * CLI's default store. Read-only — we never refresh the token ourselves: refresh
  * tokens rotate, so refreshing here would revoke the CLI's copy and sign the
- * user out. The CLI refreshes on every run, so a stale token just means "no ring
- * until next turn".
+ * user out. The CLI refreshes on every run, so a stale token just means "last
+ * usage reading until next turn".
  */
 export async function readOAuthCreds(
   dir?: string
@@ -311,28 +311,25 @@ export const claudeAdapter: HarnessAdapter = {
   fetchProfile: (loginDir?: string) => fetchClaudeProfile(loginDir),
 
   // Subscription usage via the endpoint backing the CLI's /usage screen. It is
-  // unofficial (no public equivalent exists), hence the defensive parsing and
-  // the nulls instead of errors: no ring beats a broken composer. `loginDir`
-  // scopes the credential read to one login (undefined = default).
+  // unofficial (no public equivalent exists), hence the defensive parsing. It
+  // 429s after roughly one call (the CLI polls it too), and the token expires
+  // between turns — both throw, so getSubUsage keeps the last reading rather
+  // than hiding the ring. `loginDir` scopes the credential read to one login
+  // (undefined = default).
   async fetchUsage(loginDir?: string): Promise<SubUsage | null> {
     const creds = await readOAuthCreds(loginDir);
     if (!creds) return null;
-    if (creds.expiresAt && creds.expiresAt < Date.now()) return null;
-    let j: any;
-    try {
-      const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
-        headers: {
-          Authorization: `Bearer ${creds.accessToken}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-          'Content-Type': 'application/json',
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) return null;
-      j = await res.json();
-    } catch {
-      return null;
-    }
+    if (creds.expiresAt && creds.expiresAt < Date.now()) throw new Error('token expired');
+    const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        Authorization: `Bearer ${creds.accessToken}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`usage HTTP ${res.status}`);
+    const j: any = await res.json();
     let windows = windowsFromLimits(j);
     if (!windows.length) windows = windowsFromTopLevel(j);
     // The extra-usage (overflow credits) bucket lives only at the top level.

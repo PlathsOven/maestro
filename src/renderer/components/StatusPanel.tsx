@@ -60,7 +60,7 @@ export default function StatusPanel({ workspace }: { workspace: Workspace }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-4">
         <Segmented<Scope>
           value={scope}
           options={[
@@ -71,7 +71,7 @@ export default function StatusPanel({ workspace }: { workspace: Workspace }) {
           onChange={(v) => useApp.getState().setStatusScope(workspace.id, v)}
         />
         <button
-          className="btn btn-ghost h-6 px-1.5"
+          className="btn btn-ghost h-7 w-7 px-0"
           title="Regenerate status"
           disabled={slot?.generating || skip}
           onClick={() => void useApp.getState().generateStatus(req)}
@@ -79,13 +79,13 @@ export default function StatusPanel({ workspace }: { workspace: Workspace }) {
           {slot?.generating ? <Spinner /> : <RefreshCw size={12} className="text-muted" />}
         </button>
       </div>
-      <div className="shrink-0 truncate px-4 pb-1 pt-1.5 text-2xs text-faint">
+      <div className="shrink-0 truncate px-5 pb-2 pt-2.5 text-xs text-faint">
         {scope === 'session' && `Chat: ${chatTitle}`}
         {scope === 'workspace' && (caps.git ? `Branch: ${workspace.branch}` : `Folder: ${workspace.name}`)}
         {scope === 'project' && 'All active workspaces in this project'}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3 pt-1">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4 pt-1">
         {settingUp ? (
           <EmptyHint
             icon={SPARKLES_ICON}
@@ -124,22 +124,22 @@ export default function StatusPanel({ workspace }: { workspace: Workspace }) {
           <StatusSkeleton />
         ) : (
           <>
-            <div className="card space-y-3 p-3.5">
-              <div className="text-[13px] font-semibold leading-snug">{report.headline}</div>
+            <div className="card space-y-4 p-4">
+              <div className="text-[13.5px] font-semibold leading-snug tracking-tight">{report.headline}</div>
               <Section icon={<Activity size={11} />} label="Working on" text={report.working} />
               <Section icon={<History size={11} />} label="Last activity" text={report.lastActivity} />
               <Section icon={<Crosshair size={11} />} label="Goal" text={report.goal} />
             </div>
 
             {report.next.length > 0 && (
-              <div className="card overflow-hidden">
-                <div className="border-b px-3 py-1.5 text-2xs font-semibold uppercase tracking-wide text-muted">
+              <div className="card space-y-0.5 p-1.5">
+                <div className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted">
                   Next up
                 </div>
                 {report.next.map((n, i) => (
                   <button
                     key={i}
-                    className="group flex w-full items-start gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-accent-soft/50"
+                    className="group flex w-full items-start gap-2.5 rounded-ctl px-2.5 py-2 text-left text-xs leading-relaxed transition-colors hover:bg-accent-soft"
                     title="Put this in the composer"
                     onClick={() => {
                       const s = useApp.getState();
@@ -148,14 +148,14 @@ export default function StatusPanel({ workspace }: { workspace: Workspace }) {
                       s.focusComposer();
                     }}
                   >
-                    <ArrowRight size={12} className="mt-px shrink-0 text-faint transition-colors group-hover:text-accent" />
+                    <ArrowRight size={12} className="mt-[3px] shrink-0 text-faint transition-colors group-hover:text-fg" />
                     <span className="min-w-0 flex-1">{n}</span>
                   </button>
                 ))}
               </div>
             )}
 
-            <div className="flex items-center gap-1.5 px-1 text-2xs text-faint">
+            <div className="flex items-center gap-1.5 px-2 text-2xs text-faint">
               {slot?.generating ? (
                 <>
                   <Spinner className="!h-3 !w-3" /> Updating…
@@ -186,16 +186,16 @@ function Section({ icon, label, text }: { icon: React.ReactNode; label: string; 
   if (items.length === 0) return null;
   return (
     <div>
-      <div className="mb-0.5 flex items-center gap-1 text-2xs font-semibold uppercase tracking-wide text-faint">
-        {icon} {label}
+      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted">
+        <span className="text-faint">{icon}</span> {label}
       </div>
       {items.length === 1 ? (
         <div className="text-xs leading-relaxed text-fg/90">{items[0]}</div>
       ) : (
-        <ul className="space-y-0.5 text-xs leading-relaxed text-fg/90">
+        <ul className="space-y-1 text-xs leading-relaxed text-fg/90">
           {items.map((it, i) => (
-            <li key={i} className="flex gap-1.5">
-              <span className="select-none text-faint">•</span>
+            <li key={i} className="flex gap-2">
+              <span className="mt-[7px] h-1 w-1 shrink-0 select-none rounded-full bg-faint/70" aria-hidden />
               <span className="min-w-0 flex-1">{it}</span>
             </li>
           ))}
@@ -207,13 +207,13 @@ function Section({ icon, label, text }: { icon: React.ReactNode; label: string; 
 
 function StatusSkeleton() {
   return (
-    <div className="card animate-pulse space-y-3 p-3.5">
-      <div className="h-3.5 w-3/4 rounded bg-border/70" />
+    <div className="card animate-pulse space-y-4 p-4">
+      <div className="h-3.5 w-3/4 rounded-full bg-border/70" />
       {[1, 2, 3].map((i) => (
         <div key={i} className="space-y-1.5">
-          <div className="h-2 w-20 rounded bg-border/50" />
-          <div className="h-2.5 w-full rounded bg-border/60" />
-          <div className="h-2.5 w-5/6 rounded bg-border/60" />
+          <div className="h-2 w-20 rounded-full bg-border/50" />
+          <div className="h-2.5 w-full rounded-full bg-border/60" />
+          <div className="h-2.5 w-5/6 rounded-full bg-border/60" />
         </div>
       ))}
       <div className="flex items-center gap-1.5 pt-1 text-2xs text-faint">

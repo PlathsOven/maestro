@@ -26,6 +26,23 @@ import { DEFAULT_EFFORT, DEFAULT_COMPLETION_SOUND } from '../shared/types';
 
 let db: Database.Database;
 
+/**
+ * Prepared-statement memo (perf-cpu-ram §4.4). Every accessor below goes through
+ * `stmt()` instead of `db.prepare()`: re-preparing re-parses and re-plans the SQL
+ * on every call, which the hot paths (settings reads, the relay publish
+ * fingerprints, the message accessors) do thousands of times a minute. Statements
+ * belong to one `Database`, so `initDb` clears the map when it opens a new one.
+ */
+const statements = new Map<string, Database.Statement>();
+function stmt(sql: string): Database.Statement {
+  let s = statements.get(sql);
+  if (!s) {
+    s = db.prepare(sql);
+    statements.set(sql, s);
+  }
+  return s;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -65,6 +82,10 @@ CREATE TABLE IF NOT EXISTS messages (
   ts INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_ws ON messages(workspaceId, ts);
+-- Per-chat reads (the relay publish fingerprints, the incremental backfill, the
+-- status digests) all filter by agentId; without this every one of them scans the
+-- whole workspace (perf-cpu-ram §4.2).
+CREATE INDEX IF NOT EXISTS idx_messages_ws_agent ON messages(workspaceId, agentId, ts);
 CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
   workspaceId TEXT NOT NULL,
@@ -139,6 +160,7 @@ CREATE TABLE IF NOT EXISTS queued_messages (
   turnId TEXT NOT NULL,
   text TEXT NOT NULL,
   attachmentsJson TEXT NOT NULL DEFAULT '[]',
+  origin TEXT,
   seq INTEGER NOT NULL,
   createdAt INTEGER NOT NULL
 );
@@ -159,6 +181,11 @@ CREATE TABLE IF NOT EXISTS hosts (
 export function initDb(dbPath: string) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
+  // Every cache below is keyed to the database we just replaced.
+  statements.clear();
+  globalRow = null;
+  chatsCache.clear();
+  sessionsCache.clear();
   db.pragma('journal_mode = WAL');
   // Run scripts went project-scoped → workspace-scoped before ever shipping;
   // rebuild any old-shape table (SCHEMA below recreates it empty).
@@ -197,6 +224,12 @@ export function initDb(dbPath: string) {
     // baked into the scheduled job file, which is how the follower recognises the
     // fired turn.
     'ALTER TABLE scheduled_messages ADD COLUMN remoteTurnId TEXT',
+    // Web queue parity (§7.4): carry the relay-minted origin so a web-queued
+    // message keeps its id/origin when it drains, and so the queue mirrors to web.
+    'ALTER TABLE queued_messages ADD COLUMN origin TEXT',
+    // Archive disk reclaim: the archived worktree's files were offloaded
+    // (docs/specs/archive-disk-reclaim.md). Written only via setFilesFreed.
+    'ALTER TABLE workspaces ADD COLUMN filesFreed INTEGER NOT NULL DEFAULT 0',
   ]) {
     try {
       db.exec(stmt);
@@ -257,6 +290,7 @@ function rowToWorkspace(r: any): Workspace {
     status: r.status as WorkspaceStatus,
     port: r.port,
     archived: !!r.archived,
+    filesFreed: !!r.filesFreed,
     createdAt: r.createdAt,
     lastUserMessageAt: r.lastUserMessageAt ?? null,
     prNumber: r.prNumber ?? null,
@@ -304,35 +338,55 @@ function safeJson<T>(s: string, fallback: T): T {
   }
 }
 
+/**
+ * Per-workspace memo of a JSON blob column, keyed by the raw string (perf-cpu-ram
+ * §4.4). `getChats`/`getSessions` are read on nearly every code path — the
+ * publish fingerprints, the harness-sync watch map, every send — and an unchanged
+ * blob re-parsed each time is pure waste. The SELECT still runs (it's the
+ * cache's validity check and an indexed primary-key lookup); only `JSON.parse`
+ * is skipped. Readers share the parsed object, so writers spread before mutating.
+ */
+type BlobCache<T> = Map<string, { raw: string; parsed: T }>;
+const chatsCache: BlobCache<Record<string, ChatMeta>> = new Map();
+const sessionsCache: BlobCache<Record<string, string>> = new Map();
+
+function parseBlob<T extends object>(cache: BlobCache<T>, id: string, raw: string): T {
+  const hit = cache.get(id);
+  if (hit && hit.raw === raw) return hit.parsed;
+  const parsed = safeJson(raw, {} as T);
+  cache.set(id, { raw, parsed });
+  return parsed;
+}
+
 // ---------- projects ----------
 
 export const Projects = {
   list(): Project[] {
-    return db.prepare('SELECT * FROM projects ORDER BY createdAt ASC').all().map(rowToProject);
+    return stmt('SELECT * FROM projects ORDER BY createdAt ASC').all().map(rowToProject);
   },
   get(id: string): Project | null {
-    const r = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM projects WHERE id=?').get(id);
     return r ? rowToProject(r) : null;
   },
   byPath(repoPath: string, hostId: string | null = null): Project | null {
     const r = hostId
-      ? db.prepare('SELECT * FROM projects WHERE repoPath=? AND hostId=?').get(repoPath, hostId)
-      : db.prepare('SELECT * FROM projects WHERE repoPath=? AND hostId IS NULL').get(repoPath);
+      ? stmt('SELECT * FROM projects WHERE repoPath=? AND hostId=?').get(repoPath, hostId)
+      : stmt('SELECT * FROM projects WHERE repoPath=? AND hostId IS NULL').get(repoPath);
     return r ? rowToProject(r) : null;
   },
   insert(p: Project) {
-    db.prepare(
+    stmt(
       'INSERT INTO projects (id,name,repoPath,baseBranch,kind,hostId,cloudHostId,createdAt) VALUES (@id,@name,@repoPath,@baseBranch,@kind,@hostId,@cloudHostId,@createdAt)'
     ).run({ ...p, baseBranch: p.baseBranch ?? '', hostId: p.hostId ?? null, cloudHostId: p.cloudHostId ?? null });
   },
   update(p: Project) {
-    db.prepare(
+    stmt(
       'UPDATE projects SET name=@name, repoPath=@repoPath, baseBranch=@baseBranch, kind=@kind, hostId=@hostId, cloudHostId=@cloudHostId WHERE id=@id'
     ).run({ ...p, baseBranch: p.baseBranch ?? '', hostId: p.hostId ?? null, cloudHostId: p.cloudHostId ?? null });
   },
   remove(id: string) {
-    db.prepare('DELETE FROM projects WHERE id=?').run(id);
-    db.prepare('DELETE FROM status_reports WHERE key=?').run(`project:${id}`);
+    stmt('DELETE FROM projects WHERE id=?').run(id);
+    stmt('DELETE FROM status_reports WHERE key=?').run(`project:${id}`);
   },
 };
 
@@ -340,25 +394,22 @@ export const Projects = {
 
 export const Workspaces = {
   list(): Workspace[] {
-    return db.prepare('SELECT * FROM workspaces ORDER BY createdAt ASC').all().map(rowToWorkspace);
+    return stmt('SELECT * FROM workspaces ORDER BY createdAt ASC').all().map(rowToWorkspace);
   },
   forProject(projectId: string): Workspace[] {
-    return db
-      .prepare('SELECT * FROM workspaces WHERE projectId=? ORDER BY createdAt ASC')
+    return stmt('SELECT * FROM workspaces WHERE projectId=? ORDER BY createdAt ASC')
       .all(projectId)
       .map(rowToWorkspace);
   },
   get(id: string): Workspace | null {
-    const r = db.prepare('SELECT * FROM workspaces WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM workspaces WHERE id=?').get(id);
     return r ? rowToWorkspace(r) : null;
   },
   /** Dedup lookup for adopt-in-place import (§6.2): a directory is imported at
    *  most once as a workspace. Scoped to a project so unrelated repos that ever
    *  shared a path can't collide. */
   byWorktreePath(projectId: string, worktreePath: string): Workspace | null {
-    const r = db
-      .prepare('SELECT * FROM workspaces WHERE projectId=? AND worktreePath=?')
-      .get(projectId, worktreePath);
+    const r = stmt('SELECT * FROM workspaces WHERE projectId=? AND worktreePath=?').get(projectId, worktreePath);
     return r ? rowToWorkspace(r) : null;
   },
   /** Non-archived workspace whose worktree resolves to `worktreePath` (symlinks
@@ -381,73 +432,80 @@ export const Workspaces = {
     return null;
   },
   insert(w: Workspace) {
-    db.prepare(
+    stmt(
       `INSERT INTO workspaces (id,projectId,name,hostId,branch,wsKind,title,subtitle,worktreePath,harness,status,port,archived,createdAt,lastUserMessageAt,prNumber,prUrl,prState,setupError)
        VALUES (@id,@projectId,@name,@hostId,@branch,@wsKind,@title,@subtitle,@worktreePath,@harness,@status,@port,@archived,@createdAt,@lastUserMessageAt,@prNumber,@prUrl,@prState,@setupError)`
     ).run({ ...w, hostId: w.hostId ?? null, archived: w.archived ? 1 : 0 });
   },
   update(w: Workspace) {
-    db.prepare(
+    stmt(
       `UPDATE workspaces SET name=@name, hostId=@hostId, branch=@branch, wsKind=@wsKind, title=@title, subtitle=@subtitle, worktreePath=@worktreePath, harness=@harness, status=@status,
        port=@port, archived=@archived, lastUserMessageAt=@lastUserMessageAt, prNumber=@prNumber, prUrl=@prUrl, prState=@prState, setupError=@setupError
        WHERE id=@id`
     ).run({ ...w, hostId: w.hostId ?? null, archived: w.archived ? 1 : 0 });
   },
   remove(id: string) {
-    db.prepare('DELETE FROM workspaces WHERE id=?').run(id);
-    db.prepare('DELETE FROM messages WHERE workspaceId=?').run(id);
-    db.prepare('DELETE FROM comments WHERE workspaceId=?').run(id);
-    db.prepare('DELETE FROM todos WHERE workspaceId=?').run(id);
-    db.prepare('DELETE FROM run_scripts WHERE workspaceId=?').run(id);
-    db.prepare('DELETE FROM subagent_runs WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM workspaces WHERE id=?').run(id);
+    stmt('DELETE FROM messages WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM comments WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM todos WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM run_scripts WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM subagent_runs WHERE workspaceId=?').run(id);
     // Pending scheduled sends die with their workspace. The scheduler needs no
     // notification: a timer aimed at a now-deleted row fires, finds nothing
     // due, and re-arms to the true next item.
-    db.prepare('DELETE FROM scheduled_messages WHERE workspaceId=?').run(id);
-    db.prepare('DELETE FROM queued_messages WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM scheduled_messages WHERE workspaceId=?').run(id);
+    stmt('DELETE FROM queued_messages WHERE workspaceId=?').run(id);
     // session:<wsId>:<agentId> and workspace:<wsId> digests
-    db.prepare('DELETE FROM status_reports WHERE key LIKE ? OR key=?').run(`session:${id}:%`, `workspace:${id}`);
+    stmt('DELETE FROM status_reports WHERE key LIKE ? OR key=?').run(`session:${id}:%`, `workspace:${id}`);
+    chatsCache.delete(id);
+    sessionsCache.delete(id);
   },
   /** Set (or clear) a workspace's per-conversation cloud host (spec §6.6). */
   setCloudHost(id: string, hostId: string | null) {
-    db.prepare('UPDATE workspaces SET hostId=? WHERE id=?').run(hostId, id);
+    stmt('UPDATE workspaces SET hostId=? WHERE id=?').run(hostId, id);
   },
   getSessions(id: string): Record<string, string> {
-    const r = db.prepare('SELECT sessionsJson FROM workspaces WHERE id=?').get(id) as any;
-    return r ? safeJson(r.sessionsJson, {}) : {};
+    const r = stmt('SELECT sessionsJson FROM workspaces WHERE id=?').get(id) as any;
+    return parseBlob(sessionsCache, id, r ? (r.sessionsJson as string) : '{}');
   },
   getChats(id: string): Record<string, ChatMeta> {
-    const r = db.prepare('SELECT chatsJson FROM workspaces WHERE id=?').get(id) as any;
-    return r ? safeJson(r.chatsJson, {}) : {};
+    const r = stmt('SELECT chatsJson FROM workspaces WHERE id=?').get(id) as any;
+    return parseBlob(chatsCache, id, r ? (r.chatsJson as string) : '{}');
   },
   patchChat(id: string, agentId: number, patch: Partial<ChatMeta>) {
-    const chats = Workspaces.getChats(id);
-    const meta = { ...chats[String(agentId)], ...patch };
-    chats[String(agentId)] = meta;
-    db.prepare('UPDATE workspaces SET chatsJson=? WHERE id=?').run(JSON.stringify(chats), id);
+    // Spread rather than mutate: getChats hands back the cached parse, which is
+    // shared with every other reader (perf-cpu-ram §4.4).
+    const meta = { ...Workspaces.getChats(id)[String(agentId)], ...patch };
+    const chats = { ...Workspaces.getChats(id), [String(agentId)]: meta };
+    stmt('UPDATE workspaces SET chatsJson=? WHERE id=?').run(JSON.stringify(chats), id);
     // Keep every window's session-status indicators live without refetching.
     broadcast('chat:meta:updated', { workspaceId: id, agentId, meta });
   },
   removeChat(id: string, agentId: number) {
-    const chats = Workspaces.getChats(id);
+    const chats = { ...Workspaces.getChats(id) };
     delete chats[String(agentId)];
-    db.prepare('UPDATE workspaces SET chatsJson=? WHERE id=?').run(JSON.stringify(chats), id);
+    stmt('UPDATE workspaces SET chatsJson=? WHERE id=?').run(JSON.stringify(chats), id);
   },
   setSession(id: string, agentId: number, sessionId: string) {
-    const sessions = Workspaces.getSessions(id);
-    sessions[String(agentId)] = sessionId;
-    db.prepare('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
+    const sessions = { ...Workspaces.getSessions(id), [String(agentId)]: sessionId };
+    stmt('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
   },
   removeSession(id: string, agentId: number) {
-    const sessions = Workspaces.getSessions(id);
+    const sessions = { ...Workspaces.getSessions(id) };
     delete sessions[String(agentId)];
-    db.prepare('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
+    stmt('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
   },
   clearSessions(id: string) {
-    db.prepare('UPDATE workspaces SET sessionsJson=? WHERE id=?').run('{}', id);
+    stmt('UPDATE workspaces SET sessionsJson=? WHERE id=?').run('{}', id);
+  },
+  /** Its own setter, never part of update(): offload runs in the background, and a
+   *  stale row object written back by anyone else must not flip it. */
+  setFilesFreed(id: string, freed: boolean) {
+    stmt('UPDATE workspaces SET filesFreed=? WHERE id=?').run(freed ? 1 : 0, id);
   },
   usedPorts(): number[] {
-    return (db.prepare('SELECT port FROM workspaces').all() as any[]).map((r) => r.port);
+    return (stmt('SELECT port FROM workspaces').all() as any[]).map((r) => r.port);
   },
 };
 
@@ -471,13 +529,12 @@ export function mustProject(id: string | undefined): Project {
 
 export const Messages = {
   list(workspaceId: string): ChatMessage[] {
-    return db
-      .prepare('SELECT * FROM messages WHERE workspaceId=? ORDER BY ts ASC')
+    return stmt('SELECT * FROM messages WHERE workspaceId=? ORDER BY ts ASC')
       .all(workspaceId)
       .map(rowToMessage);
   },
   insert(m: ChatMessage) {
-    db.prepare(
+    stmt(
       `INSERT INTO messages (id,workspaceId,agentId,role,content,attachmentsJson,metaJson,ts)
        VALUES (@id,@workspaceId,@agentId,@role,@content,@attachmentsJson,@metaJson,@ts)`
     ).run({
@@ -492,36 +549,67 @@ export const Messages = {
     });
   },
   removeForAgent(workspaceId: string, agentId: number) {
-    db.prepare('DELETE FROM messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
+    stmt('DELETE FROM messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
   },
   get(id: string): ChatMessage | null {
-    const r = db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM messages WHERE id=?').get(id);
     return r ? rowToMessage(r) : null;
   },
   exists(id: string): boolean {
-    return !!db.prepare('SELECT 1 FROM messages WHERE id=?').get(id);
+    return !!stmt('SELECT 1 FROM messages WHERE id=?').get(id);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM messages WHERE id=?').run(id);
+    stmt('DELETE FROM messages WHERE id=?').run(id);
   },
   /** Replace a message's meta blob (e.g. clear the cloud `queued` flag once its
    *  turn starts on the box). */
   setMeta(id: string, meta: ChatMessage['meta']) {
-    db.prepare('UPDATE messages SET metaJson=? WHERE id=?').run(meta ? JSON.stringify(meta) : null, id);
+    stmt('UPDATE messages SET metaJson=? WHERE id=?').run(meta ? JSON.stringify(meta) : null, id);
   },
   /** The earliest user message's text for a chat, or null — the source the title
    *  backfill and every display fallback derive a provisional title from (§7). */
   firstUserText(workspaceId: string, agentId: number): string | null {
-    const r = db
-      .prepare("SELECT content FROM messages WHERE workspaceId=? AND agentId=? AND role='user' ORDER BY ts ASC LIMIT 1")
+    const r = stmt("SELECT content FROM messages WHERE workspaceId=? AND agentId=? AND role='user' ORDER BY ts ASC LIMIT 1")
       .get(workspaceId, agentId) as { content: string } | undefined;
     return r?.content ?? null;
   },
   countForAgent(workspaceId: string, agentId: number): number {
-    const r = db
-      .prepare('SELECT COUNT(*) c FROM messages WHERE workspaceId=? AND agentId=? AND role=?')
+    const r = stmt('SELECT COUNT(*) c FROM messages WHERE workspaceId=? AND agentId=? AND role=?')
       .get(workspaceId, agentId, 'user') as any;
     return r.c;
+  },
+  /** One chat's messages, oldest first. `sinceTs` (inclusive) trims it to the
+   *  tail an incremental relay backfill sends, so the publish path never
+   *  materializes a transcript it isn't going to ship (perf-cpu-ram §4.2). */
+  listForAgent(workspaceId: string, agentId: number, opts: { sinceTs?: number } = {}): ChatMessage[] {
+    const rows =
+      opts.sinceTs == null
+        ? stmt('SELECT * FROM messages WHERE workspaceId=? AND agentId=? ORDER BY ts ASC').all(workspaceId, agentId)
+        : stmt('SELECT * FROM messages WHERE workspaceId=? AND agentId=? AND ts>=? ORDER BY ts ASC')
+            .all(workspaceId, agentId, opts.sinceTs);
+    return rows.map(rowToMessage);
+  },
+  /** One chat's row count, newest timestamp and agent-turn count in a single
+   *  indexed aggregate — everything the relay publish fingerprint and the
+   *  incremental backfill need, without reading a byte of `content`
+   *  (perf-cpu-ram §4.2). Counts EVERY role, unlike `countForAgent`. */
+  stats(workspaceId: string, agentId: number): { count: number; maxTs: number; agentCount: number } {
+    const r = stmt(
+      `SELECT COUNT(*) c, COALESCE(MAX(ts),0) t, COALESCE(SUM(role='agent'),0) a
+       FROM messages WHERE workspaceId=? AND agentId=?`
+    ).get(workspaceId, agentId) as any;
+    return { count: r.c, maxTs: r.t, agentCount: r.a };
+  },
+  /** The most recent user or agent message before `ts`. An incremental backfill
+   *  reads it to recover the pairing walk's state at its window boundary: a USER
+   *  message there is a prompt still waiting for its turn (so the slice re-sends
+   *  it), an AGENT message means the prompt before it was already answered — see
+   *  `backfillSlice`. System lines are skipped, exactly as the walk skips them. */
+  lastExchangeBefore(workspaceId: string, agentId: number, ts: number): ChatMessage | null {
+    const r = stmt(
+      "SELECT * FROM messages WHERE workspaceId=? AND agentId=? AND role IN ('user','agent') AND ts<? ORDER BY ts DESC LIMIT 1"
+    ).get(workspaceId, agentId, ts);
+    return r ? rowToMessage(r) : null;
   },
 };
 
@@ -548,40 +636,38 @@ function rowToScheduled(r: any): ScheduledMessage {
  */
 export const Scheduled = {
   insert(m: ScheduledMessage) {
-    db.prepare(
+    stmt(
       `INSERT INTO scheduled_messages (id,workspaceId,agentId,text,attachmentsJson,kind,deliverAt,createdAt,remoteTurnId)
        VALUES (@id,@workspaceId,@agentId,@text,@attachmentsJson,@kind,@deliverAt,@createdAt,@remoteTurnId)`
     ).run({ ...m, attachmentsJson: JSON.stringify(m.attachments ?? []), remoteTurnId: m.remoteTurnId ?? null });
   },
   get(id: string): ScheduledMessage | null {
-    const r = db.prepare('SELECT * FROM scheduled_messages WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM scheduled_messages WHERE id=?').get(id);
     return r ? rowToScheduled(r) : null;
   },
   /** The row whose box job carries this turnId — how the follower matches a
    *  fired remote turn back to its scheduled row (§4). */
   byRemoteTurnId(turnId: string): ScheduledMessage | null {
-    const r = db.prepare('SELECT * FROM scheduled_messages WHERE remoteTurnId=?').get(turnId);
+    const r = stmt('SELECT * FROM scheduled_messages WHERE remoteTurnId=?').get(turnId);
     return r ? rowToScheduled(r) : null;
   },
   setText(id: string, text: string) {
-    db.prepare('UPDATE scheduled_messages SET text=? WHERE id=?').run(text, id);
+    stmt('UPDATE scheduled_messages SET text=? WHERE id=?').run(text, id);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM scheduled_messages WHERE id=?').run(id);
+    stmt('DELETE FROM scheduled_messages WHERE id=?').run(id);
   },
   forWorkspace(workspaceId: string): ScheduledMessage[] {
-    return db
-      .prepare('SELECT * FROM scheduled_messages WHERE workspaceId=? ORDER BY deliverAt ASC, createdAt ASC')
+    return stmt('SELECT * FROM scheduled_messages WHERE workspaceId=? ORDER BY deliverAt ASC, createdAt ASC')
       .all(workspaceId)
       .map(rowToScheduled);
   },
   removeForAgent(workspaceId: string, agentId: number) {
-    db.prepare('DELETE FROM scheduled_messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
+    stmt('DELETE FROM scheduled_messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
   },
   /** Everything at or past its time, oldest first — the delivery order. */
   due(nowMs: number): ScheduledMessage[] {
-    return db
-      .prepare('SELECT * FROM scheduled_messages WHERE deliverAt<=? ORDER BY deliverAt ASC, createdAt ASC')
+    return stmt('SELECT * FROM scheduled_messages WHERE deliverAt<=? ORDER BY deliverAt ASC, createdAt ASC')
       .all(nowMs)
       .map(rowToScheduled);
   },
@@ -589,19 +675,16 @@ export const Scheduled = {
    *  rows are excluded — the box delivers those, and re-arming at 0 would spin
    *  (§4.4). A future remote row still counts: the timer wakes its follower then. */
   nextAt(nowMs: number): number | null {
-    const r = db
-      .prepare('SELECT MIN(deliverAt) m FROM scheduled_messages WHERE remoteTurnId IS NULL OR deliverAt > ?')
+    const r = stmt('SELECT MIN(deliverAt) m FROM scheduled_messages WHERE remoteTurnId IS NULL OR deliverAt > ?')
       .get(nowMs) as any;
     return r?.m ?? null;
   },
   /** Earliest remote deliverAt for a chat strictly after `afterMs`, or null —
    *  lets the follower decide whether to keep polling a napping drain (§4.3). */
   nextRemoteAt(workspaceId: string, agentId: number, afterMs: number): number | null {
-    const r = db
-      .prepare(
-        'SELECT MIN(deliverAt) m FROM scheduled_messages WHERE workspaceId=? AND agentId=? AND remoteTurnId IS NOT NULL AND deliverAt>?'
-      )
-      .get(workspaceId, agentId, afterMs) as any;
+    const r = stmt(
+      'SELECT MIN(deliverAt) m FROM scheduled_messages WHERE workspaceId=? AND agentId=? AND remoteTurnId IS NOT NULL AND deliverAt>?'
+    ).get(workspaceId, agentId, afterMs) as any;
     return r?.m ?? null;
   },
 };
@@ -616,6 +699,7 @@ function rowToQueued(r: any): QueuedMessage {
     turnId: r.turnId,
     text: r.text,
     attachments: safeJson(r.attachmentsJson, []),
+    origin: r.origin ?? undefined,
     seq: r.seq,
     createdAt: r.createdAt,
   };
@@ -629,32 +713,29 @@ function rowToQueued(r: any): QueuedMessage {
  */
 export const Queued = {
   insert(m: QueuedMessage) {
-    db.prepare(
-      `INSERT INTO queued_messages (id,workspaceId,agentId,turnId,text,attachmentsJson,seq,createdAt)
-       VALUES (@id,@workspaceId,@agentId,@turnId,@text,@attachmentsJson,@seq,@createdAt)`
-    ).run({ ...m, attachmentsJson: JSON.stringify(m.attachments ?? []) });
+    stmt(
+      `INSERT INTO queued_messages (id,workspaceId,agentId,turnId,text,attachmentsJson,origin,seq,createdAt)
+       VALUES (@id,@workspaceId,@agentId,@turnId,@text,@attachmentsJson,@origin,@seq,@createdAt)`
+    ).run({ ...m, origin: m.origin ?? null, attachmentsJson: JSON.stringify(m.attachments ?? []) });
   },
   get(id: string): QueuedMessage | null {
-    const r = db.prepare('SELECT * FROM queued_messages WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM queued_messages WHERE id=?').get(id);
     return r ? rowToQueued(r) : null;
   },
   forChat(workspaceId: string, agentId: number): QueuedMessage[] {
-    return db
-      .prepare('SELECT * FROM queued_messages WHERE workspaceId=? AND agentId=? ORDER BY seq ASC')
+    return stmt('SELECT * FROM queued_messages WHERE workspaceId=? AND agentId=? ORDER BY seq ASC')
       .all(workspaceId, agentId)
       .map(rowToQueued);
   },
   /** The oldest waiting message for a chat (FIFO drain), or null. */
   oldest(workspaceId: string, agentId: number): QueuedMessage | null {
-    const r = db
-      .prepare('SELECT * FROM queued_messages WHERE workspaceId=? AND agentId=? ORDER BY seq ASC LIMIT 1')
+    const r = stmt('SELECT * FROM queued_messages WHERE workspaceId=? AND agentId=? ORDER BY seq ASC LIMIT 1')
       .get(workspaceId, agentId);
     return r ? rowToQueued(r) : null;
   },
   /** Next monotonic seq for a chat — the job-file ordinal on the box. */
   nextSeq(workspaceId: string, agentId: number): number {
-    const r = db
-      .prepare('SELECT COALESCE(MAX(seq),0) m FROM queued_messages WHERE workspaceId=? AND agentId=?')
+    const r = stmt('SELECT COALESCE(MAX(seq),0) m FROM queued_messages WHERE workspaceId=? AND agentId=?')
       .get(workspaceId, agentId) as any;
     return (r?.m ?? 0) + 1;
   },
@@ -662,25 +743,23 @@ export const Queued = {
    *  drains next (steer) — a seq below the current minimum. Local-only; cloud
    *  never enqueues here, so its box-side `seq` ordinals are untouched. */
   promote(workspaceId: string, agentId: number, id: string) {
-    const r = db
-      .prepare('SELECT COALESCE(MIN(seq),0) m FROM queued_messages WHERE workspaceId=? AND agentId=?')
+    const r = stmt('SELECT COALESCE(MIN(seq),0) m FROM queued_messages WHERE workspaceId=? AND agentId=?')
       .get(workspaceId, agentId) as any;
-    db.prepare('UPDATE queued_messages SET seq=? WHERE id=?').run((r?.m ?? 0) - 1, id);
+    stmt('UPDATE queued_messages SET seq=? WHERE id=?').run((r?.m ?? 0) - 1, id);
   },
   setText(id: string, text: string) {
-    db.prepare('UPDATE queued_messages SET text=? WHERE id=?').run(text, id);
+    stmt('UPDATE queued_messages SET text=? WHERE id=?').run(text, id);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM queued_messages WHERE id=?').run(id);
+    stmt('DELETE FROM queued_messages WHERE id=?').run(id);
   },
   removeForChat(workspaceId: string, agentId: number) {
-    db.prepare('DELETE FROM queued_messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
+    stmt('DELETE FROM queued_messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
   },
   /** Chats (across all workspaces) that have at least one waiting message — the
    *  boot drain checks these. */
   pendingChats(): { workspaceId: string; agentId: number }[] {
-    return db
-      .prepare('SELECT DISTINCT workspaceId, agentId FROM queued_messages')
+    return stmt('SELECT DISTINCT workspaceId, agentId FROM queued_messages')
       .all()
       .map((r: any) => ({ workspaceId: r.workspaceId, agentId: r.agentId }));
   },
@@ -710,7 +789,7 @@ function rowToSubagentRun(r: any): SubagentRun {
 
 export const Subagents = {
   insert(s: SubagentRun) {
-    db.prepare(
+    stmt(
       `INSERT INTO subagent_runs (id,workspaceId,parentAgentId,parentMessageId,role,harness,model,effort,prompt,blocksJson,status,error,costUsd,durationMs,ts)
        VALUES (@id,@workspaceId,@parentAgentId,@parentMessageId,@role,@harness,@model,@effort,@prompt,@blocksJson,@status,@error,@costUsd,@durationMs,@ts)`
     ).run({
@@ -722,7 +801,7 @@ export const Subagents = {
     });
   },
   update(s: SubagentRun) {
-    db.prepare(
+    stmt(
       `UPDATE subagent_runs SET blocksJson=@blocksJson, status=@status, error=@error, costUsd=@costUsd, durationMs=@durationMs WHERE id=@id`
     ).run({
       id: s.id,
@@ -734,25 +813,22 @@ export const Subagents = {
     });
   },
   listForParent(workspaceId: string, parentMessageId: string): SubagentRun[] {
-    return db
-      .prepare('SELECT * FROM subagent_runs WHERE workspaceId=? AND parentMessageId=? ORDER BY ts ASC')
+    return stmt('SELECT * FROM subagent_runs WHERE workspaceId=? AND parentMessageId=? ORDER BY ts ASC')
       .all(workspaceId, parentMessageId)
       .map(rowToSubagentRun);
   },
   countForParent(workspaceId: string, parentMessageId: string): number {
-    const r = db
-      .prepare('SELECT COUNT(*) c FROM subagent_runs WHERE workspaceId=? AND parentMessageId=?')
+    const r = stmt('SELECT COUNT(*) c FROM subagent_runs WHERE workspaceId=? AND parentMessageId=?')
       .get(workspaceId, parentMessageId) as any;
     return r.c;
   },
   costForParent(workspaceId: string, parentMessageId: string): number {
-    const r = db
-      .prepare('SELECT COALESCE(SUM(costUsd),0) s FROM subagent_runs WHERE workspaceId=? AND parentMessageId=?')
+    const r = stmt('SELECT COALESCE(SUM(costUsd),0) s FROM subagent_runs WHERE workspaceId=? AND parentMessageId=?')
       .get(workspaceId, parentMessageId) as any;
     return r.s ?? 0;
   },
   removeForAgent(workspaceId: string, agentId: number) {
-    db.prepare('DELETE FROM subagent_runs WHERE workspaceId=? AND parentAgentId=?').run(workspaceId, agentId);
+    stmt('DELETE FROM subagent_runs WHERE workspaceId=? AND parentAgentId=?').run(workspaceId, agentId);
   },
 };
 
@@ -760,21 +836,20 @@ export const Subagents = {
 
 export const Comments = {
   list(workspaceId: string): DiffComment[] {
-    return db
-      .prepare('SELECT * FROM comments WHERE workspaceId=? ORDER BY createdAt ASC')
+    return stmt('SELECT * FROM comments WHERE workspaceId=? ORDER BY createdAt ASC')
       .all(workspaceId)
       .map(rowToComment);
   },
   insert(c: DiffComment) {
-    db.prepare(
+    stmt(
       'INSERT INTO comments (id,workspaceId,file,line,side,body,resolved,createdAt) VALUES (@id,@workspaceId,@file,@line,@side,@body,@resolved,@createdAt)'
     ).run({ ...c, resolved: c.resolved ? 1 : 0 });
   },
   setResolved(id: string, resolved: boolean) {
-    db.prepare('UPDATE comments SET resolved=? WHERE id=?').run(resolved ? 1 : 0, id);
+    stmt('UPDATE comments SET resolved=? WHERE id=?').run(resolved ? 1 : 0, id);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM comments WHERE id=?').run(id);
+    stmt('DELETE FROM comments WHERE id=?').run(id);
   },
 };
 
@@ -782,21 +857,20 @@ export const Comments = {
 
 export const Todos = {
   list(workspaceId: string): Todo[] {
-    return db
-      .prepare('SELECT * FROM todos WHERE workspaceId=? ORDER BY createdAt ASC')
+    return stmt('SELECT * FROM todos WHERE workspaceId=? ORDER BY createdAt ASC')
       .all(workspaceId)
       .map(rowToTodo);
   },
   insert(t: Todo) {
-    db.prepare('INSERT INTO todos (id,workspaceId,text,done,createdAt) VALUES (@id,@workspaceId,@text,@done,@createdAt)').run(
+    stmt('INSERT INTO todos (id,workspaceId,text,done,createdAt) VALUES (@id,@workspaceId,@text,@done,@createdAt)').run(
       { ...t, done: t.done ? 1 : 0 }
     );
   },
   setDone(id: string, done: boolean) {
-    db.prepare('UPDATE todos SET done=? WHERE id=?').run(done ? 1 : 0, id);
+    stmt('UPDATE todos SET done=? WHERE id=?').run(done ? 1 : 0, id);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM todos WHERE id=?').run(id);
+    stmt('DELETE FROM todos WHERE id=?').run(id);
   },
 };
 
@@ -817,26 +891,25 @@ function rowToRunScript(r: any): RunScript {
 
 export const RunScripts = {
   forWorkspace(workspaceId: string): RunScript[] {
-    return db
-      .prepare('SELECT * FROM run_scripts WHERE workspaceId=? ORDER BY createdAt ASC')
+    return stmt('SELECT * FROM run_scripts WHERE workspaceId=? ORDER BY createdAt ASC')
       .all(workspaceId)
       .map(rowToRunScript);
   },
   get(id: string): RunScript | null {
-    const r = db.prepare('SELECT * FROM run_scripts WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM run_scripts WHERE id=?').get(id);
     return r ? rowToRunScript(r) : null;
   },
   insert(s: RunScript) {
-    db.prepare(
+    stmt(
       `INSERT INTO run_scripts (id,workspaceId,name,kind,doc,source,createdAt,updatedAt)
        VALUES (@id,@workspaceId,@name,@kind,@doc,@source,@createdAt,@updatedAt)`
     ).run(s);
   },
   update(s: RunScript) {
-    db.prepare('UPDATE run_scripts SET name=@name, kind=@kind, doc=@doc, updatedAt=@updatedAt WHERE id=@id').run(s);
+    stmt('UPDATE run_scripts SET name=@name, kind=@kind, doc=@doc, updatedAt=@updatedAt WHERE id=@id').run(s);
   },
   remove(id: string) {
-    db.prepare('DELETE FROM run_scripts WHERE id=?').run(id);
+    stmt('DELETE FROM run_scripts WHERE id=?').run(id);
   },
 };
 
@@ -844,13 +917,13 @@ export const RunScripts = {
 
 export const StatusReports = {
   get(key: string): { report: StatusReport; fingerprint: string } | null {
-    const r = db.prepare('SELECT dataJson, fingerprint FROM status_reports WHERE key=?').get(key) as any;
+    const r = stmt('SELECT dataJson, fingerprint FROM status_reports WHERE key=?').get(key) as any;
     if (!r) return null;
     const report = safeJson<StatusReport | null>(r.dataJson, null);
     return report ? { report, fingerprint: r.fingerprint } : null;
   },
   set(key: string, report: StatusReport, fingerprint: string) {
-    db.prepare(
+    stmt(
       `INSERT INTO status_reports (key,dataJson,fingerprint,generatedAt) VALUES (?,?,?,?)
        ON CONFLICT(key) DO UPDATE SET dataJson=excluded.dataJson, fingerprint=excluded.fingerprint, generatedAt=excluded.generatedAt`
     ).run(key, JSON.stringify(report), fingerprint, report.generatedAt);
@@ -879,14 +952,14 @@ function rowToHost(r: any): SshHostConfig {
 
 export const Hosts = {
   list(): SshHostConfig[] {
-    return db.prepare('SELECT * FROM hosts ORDER BY label ASC').all().map(rowToHost);
+    return stmt('SELECT * FROM hosts ORDER BY label ASC').all().map(rowToHost);
   },
   get(id: string): SshHostConfig | null {
-    const r = db.prepare('SELECT * FROM hosts WHERE id=?').get(id);
+    const r = stmt('SELECT * FROM hosts WHERE id=?').get(id);
     return r ? rowToHost(r) : null;
   },
   upsert(h: SshHostConfig) {
-    db.prepare(
+    stmt(
       `INSERT INTO hosts (id,label,host,port,user,auth,keyPath,hostKeyFingerprint,jumpFingerprints,managed,portBase,kind,k8sJson)
        VALUES (@id,@label,@host,@port,@user,@auth,@keyPath,@hostKeyFingerprint,@jumpFingerprints,@managed,@portBase,@kind,@k8sJson)
        ON CONFLICT(id) DO UPDATE SET label=excluded.label, host=excluded.host, port=excluded.port,
@@ -910,7 +983,7 @@ export const Hosts = {
     });
   },
   remove(id: string) {
-    db.prepare('DELETE FROM hosts WHERE id=?').run(id);
+    stmt('DELETE FROM hosts WHERE id=?').run(id);
   },
 };
 
@@ -921,6 +994,7 @@ export const Hosts = {
 // prompts anyway; anything short of bypass just makes commands fail.)
 const DEFAULT_SETTINGS: GlobalSettings = {
   theme: 'system',
+  colorTheme: 'classic',
   defaultHarness: 'claude-code',
   ideCommand: 'code',
   permissionMode: 'bypassPermissions',
@@ -938,28 +1012,50 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   autoDetectRunScripts: true,
 };
 
+/**
+ * Write-through cache of the `global` settings row (perf-cpu-ram §4.4). There are
+ * ~43 `Settings.global()` call sites and the relay publish guards hit several of
+ * them per streamed token, each one re-parsing a multi-KB blob. Main is the only
+ * writer, so every mutation below refreshes this in the same breath — the cache
+ * cannot go stale (which is also what keeps `scripts/account-e2e.ts`'s
+ * `setRaw('account.wsfp.…', 'stale')` trick honest).
+ */
+let globalRow: { raw: string | null; parsed: Partial<GlobalSettings> } | null = null;
+
+function readGlobalRow(): { raw: string | null; parsed: Partial<GlobalSettings> } {
+  if (!globalRow) {
+    const r = stmt('SELECT value FROM settings WHERE key=?').get('global') as any;
+    const raw: string | null = r ? r.value : null;
+    globalRow = { raw, parsed: raw ? safeJson<Partial<GlobalSettings>>(raw, {}) : {} };
+  }
+  return globalRow;
+}
+
 export const Settings = {
   raw(key: string): string | null {
-    const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any;
+    if (key === 'global') return readGlobalRow().raw;
+    const r = stmt('SELECT value FROM settings WHERE key=?').get(key) as any;
     return r ? r.value : null;
   },
   setRaw(key: string, value: string) {
-    db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(
+    stmt('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(
       key,
       value
     );
+    if (key === 'global') globalRow = { raw: value, parsed: safeJson<Partial<GlobalSettings>>(value, {}) };
   },
   /** Delete every raw setting whose key starts with `prefix` (LIKE wildcards in the
    *  prefix are escaped, so `_`/`%` match literally). Used to drop whole families
    *  of per-id keys, e.g. the relay publish fingerprints on a fresh web link. */
   clearPrefix(prefix: string) {
     const escaped = prefix.replace(/[\\%_]/g, '\\$&');
-    db.prepare("DELETE FROM settings WHERE key LIKE ? ESCAPE '\\'").run(`${escaped}%`);
+    stmt("DELETE FROM settings WHERE key LIKE ? ESCAPE '\\'").run(`${escaped}%`);
+    if ('global'.startsWith(prefix)) globalRow = null;
   },
   global(): GlobalSettings {
-    const raw = Settings.raw('global');
-    if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...safeJson(raw, {}) };
+    // A fresh top-level object every call (callers spread patches onto it); the
+    // nested values are shared with the cache, so nothing may mutate them in place.
+    return { ...DEFAULT_SETTINGS, ...readGlobalRow().parsed };
   },
   setGlobal(patch: Partial<GlobalSettings>): GlobalSettings {
     const next = { ...Settings.global(), ...patch };

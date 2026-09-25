@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { EffortBars, EffortOptions } from '../primitives';
 import { Sheet } from '../Modal';
 import { useUiHost } from '../host';
@@ -15,12 +16,17 @@ export function EffortChip({
   value,
   models,
   onChange,
+  defaultValue,
+  onSetDefault,
 }: {
   harness: HarnessId;
   model: string;
   value: string;
   models?: EffectiveModels;
   onChange: (effortId: string) => void;
+  /** The default effort for new chats; with `onSetDefault`, the star pins it. */
+  defaultValue?: string;
+  onSetDefault?: (effortId: string) => void;
 }) {
   const { isTouch } = useUiHost();
   const [open, setOpen] = useState(false);
@@ -42,9 +48,10 @@ export function EffortChip({
     <EffortOptions
       levels={levels}
       currentId={value}
-      defaultId=""
-      onPick={(id) => {
+      defaultId={onSetDefault ? defaultValue ?? '' : ''}
+      onPick={(id, makeDefault) => {
         setOpen(false);
+        if (makeDefault) onSetDefault?.(id);
         onChange(id);
       }}
     />
@@ -52,7 +59,7 @@ export function EffortChip({
 
   return (
     <div ref={ref} className="relative">
-      <button className="btn btn-ghost h-6 gap-1 px-1.5 text-xs" onClick={() => setOpen(true)}>
+      <button className={clsx('btn btn-ghost h-7 gap-1.5 px-2.5 text-xs text-muted hover:text-fg', open && 'bg-accent-soft text-fg')} onClick={() => setOpen(true)}>
         <EffortBars level={(current?.bars ?? 3) as 1 | 2 | 3 | 4 | 5} />
         {current?.label}
       </button>
@@ -61,7 +68,7 @@ export function EffortChip({
           {body}
         </Sheet>
       ) : (
-        open && <div className="glass absolute bottom-full left-0 z-40 mb-1 w-56 overflow-y-auto py-1">{body}</div>
+        open && <div data-motion="pop-up" className="glass absolute bottom-full left-0 z-40 mb-2 w-56 overflow-y-auto py-1">{body}</div>
       )}
     </div>
   );

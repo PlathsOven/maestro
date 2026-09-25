@@ -1,5 +1,6 @@
 // Shared domain model + IPC contract between main and renderer.
 import type { ShortcutOverrides } from './shortcuts';
+import { normalizeColorTheme, type ColorThemeId, type ThemeMode } from './themes';
 
 /** A user-reportable error (§10): where it surfaced and when. */
 export interface ErrorRef {
@@ -184,6 +185,9 @@ export interface Workspace {
   status: WorkspaceStatus;
   port: number; // injected as WORKSPACE_PORT
   archived: boolean;
+  /** Archived and its worktree offloaded to save disk (docs/specs/archive-disk-reclaim.md):
+   *  nothing on disk until restored. */
+  filesFreed?: boolean;
   createdAt: number;
   lastUserMessageAt: number | null;
   prNumber: number | null;
@@ -253,6 +257,9 @@ export type FileReadResult =
 /** Lifecycle of a notebook's Jupyter kernel (in-app cell execution). */
 export type KernelStatus = 'none' | 'starting' | 'idle' | 'busy' | 'restarting' | 'dead';
 
+/** Where a user message was authored — see ChatMessage.meta.origin. */
+export type MessageOrigin = 'web' | 'desktop' | 'claude-code' | 'codex' | 'agent';
+
 export interface ChatMessage {
   id: string;
   workspaceId: string;
@@ -275,13 +282,21 @@ export interface ChatMessage {
     /** Where a message was authored. 'web' shows a "from Maestro Web" chip on the
      *  message row; 'claude-code'/'codex' mark a turn mirrored from a harness the
      *  user typed into outside Maestro (harness-chat-sync §4.3); absent/desktop =
-     *  this app. */
-    origin?: 'web' | 'desktop' | 'claude-code' | 'codex';
+     *  this app; 'agent' = sent by another Maestro agent via `maestro-message`. */
+    origin?: MessageOrigin;
+    /** User messages: display labels of the model + effort the turn was sent
+     *  with (e.g. "Opus 4.7" / "High"), shown in the message's meta line. */
+    modelLabel?: string;
+    effortLabel?: string;
     /** This system message reports a failure Maestro can repair itself — the
      *  chat renders the one-click fix instead of a dead-end error. `loginId` is
      *  the login the failed turn ran under, so the repair re-authenticates that
      *  exact login (multi-login harnesses) rather than the current active one. */
     fix?: { kind: 'harness-auth'; harness: HarnessId; loginId?: string };
+    /** A note Maestro posted while the chat's turn was still running (the memory
+     *  guard stopping a runaway process). Every other agent/system message marks
+     *  the end of a run; this one must leave the live turn alone. */
+    midTurn?: boolean;
   };
 }
 
@@ -311,7 +326,11 @@ export interface RepoSettings {
 }
 
 export interface GlobalSettings {
-  theme: 'dark' | 'light' | 'system';
+  /** Light / dark variant: follow the OS, or pin one. */
+  theme: ThemeMode;
+  /** Palette family (src/shared/themes.ts) — each has a light and dark variant.
+   *  Absent on installs that predate themes, which read as Classic. */
+  colorTheme: ColorThemeId;
   defaultHarness: HarnessId;
   ideCommand: string; // e.g. "cursor" | "code"
   permissionMode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
@@ -364,6 +383,15 @@ export interface GlobalSettings {
    *  the active one dies on a usage limit. Managed from Settings → Harnesses;
    *  a no-op with a single login. Absent = on. */
   loginRotation?: boolean;
+  /** Stop a process an agent turn started when it is about to exhaust the
+   *  machine's memory (docs/specs/memory-guard.md). Absent = on. */
+  memoryGuard?: boolean;
+  /** Offload an archived workspace's worktree to reclaim disk; restore brings it
+   *  back (docs/specs/archive-disk-reclaim.md). Absent = on. */
+  freeArchivedFiles?: boolean;
+  /** Seed a new worktree's node_modules with a copy-on-write clone from a sibling
+   *  with the identical lockfile. Absent = on. */
+  reuseDependencies?: boolean;
   /** Harness chat sync (docs/specs/harness-chat-sync.md §6.1). `enabled` governs
    *  discovery of new sessions and auto-creation of chats — off until the first
    *  import, then set by the panel's checkbox. `dismissedRoots` are sidebar-hint
@@ -407,8 +435,39 @@ export interface AccountStatus {
   user?: { login?: string; name?: string; avatarUrl?: string };
   /** Per saved SSH host: is a relay box linked, and is its sync loop healthy. */
   boxes: Record<string, { boxId: string; state: 'running' | 'installed' | 'missing' | 'unknown'; cron?: boolean }>;
+  /** Every linked desktop for this account, fetched from the relay (its source of
+   *  truth), so Settings → Account lists them all and can unlink any independently.
+   *  `current` marks this desktop. Empty when unlinked or the relay is unreachable
+   *  (`deviceName` still names this desktop). `lastSeenAt` is ms since the epoch. */
+  devices: { id: string; name: string | null; platform: string | null; lastSeenAt: number | null; current: boolean }[];
   /** Project ids the user deselected from web sync. Empty = every project syncs. */
   projectOptOut: string[];
+  /** The device channel's cadence (web-relay-event-bus §4.4): 'live' while
+   *  something is watching this account from the web, 'idle' when nothing is,
+   *  'legacy' against a relay that predates the flag. */
+  mode: 'live' | 'idle' | 'legacy';
+}
+
+/** The subset of desktop `GlobalSettings` mirrored to Maestro Web so the web's
+ *  new-conversation defaults (the harness, model, and effort chips on the new-
+ *  workspace form + composer) and its theme match this desktop — including right
+ *  after the initial link. The desktop publishes them; a pick made on the web
+ *  comes back as a web-origin `settings-updated` (account.ts applyWebSettings). */
+export interface SyncedSettings {
+  defaultHarness: HarnessId;
+  defaultModels: Partial<Record<HarnessId, string>>;
+  defaultEffort: string;
+  /** Subscription usage per harness, for the web's usage ring (web-neon-usage-diet
+   *  §3.2). A per-user field rather than a per-conversation column: an unrounded
+   *  `pct` on ~293 conversation rows re-published the whole fleet every five
+   *  minutes. `pct` is a whole percent here. Absent on a desktop that predates the
+   *  change; `null` for a harness with no subscription notion. */
+  usage?: Partial<Record<HarnessId, SubUsage | null>>;
+  /** The appearance (theme family + light/dark mode), so Maestro Web wears the
+   *  same theme as the desktop. Two-way like the defaults: a pick on the web
+   *  comes back to the desktop. Absent from a desktop that predates themes. */
+  theme?: ThemeMode;
+  colorTheme?: ColorThemeId;
 }
 
 /** Default completion-sound id for new installs (the full library lives in the
@@ -714,6 +773,9 @@ export interface SubUsageWindow {
 export interface SubUsage {
   plan?: string; // e.g. 'max' | 'pro'
   windows: SubUsageWindow[];
+  /** Set (epoch ms of the reading) only when a failed live read re-served the
+   *  last good reading, so the UI can say how old it is. */
+  asOf?: number;
 }
 
 /**
@@ -762,6 +824,9 @@ export interface QueuedMessage {
   turnId: string;
   text: string;
   attachments: Attachment[];
+  /** Who queued it — carried through so a web-originated queued message keeps its
+   *  relay id/origin when it drains (web-desktop-parity §7.4). Undefined ⇒ desktop. */
+  origin?: MessageOrigin;
   /** Monotonic per chat; the box drains job files in this order. */
   seq: number;
   createdAt: number;
@@ -840,6 +905,7 @@ export const HARNESS_MODELS: Record<HarnessId, ModelOption[]> = {
   'claude-code': [
     { id: 'claude-fable-5-1', label: 'Fable 5.1' },
     { id: 'claude-fable-5', label: 'Fable 5' },
+    { id: 'claude-opus-5-5', label: 'Opus 5.5' },
     { id: 'claude-opus-5', label: 'Opus 5' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8' },
     { id: 'claude-sonnet-5', label: 'Sonnet 5' },
@@ -884,9 +950,9 @@ const DEFAULT_MODELS: Record<HarnessId, string> = {
  * 'light' is the weakest (e.g. Haiku — mechanical extraction work), 'status' a
  * mid summarizer (smart enough to summarize, cheap enough to run often — e.g.
  * Sonnet). 'status' is the third-strongest by default; on Claude Code — whose
- * list stacks the Fables + Opus 5 + Opus 4.8 above Sonnet — it's the
- * second-weakest, so digests stay on the cheaper Sonnet tier rather than a
- * Fable/Opus one. Short lists clamp to their weakest entry.
+ * list stacks the Fables + Opus 5.5 + Opus 5 + Opus 4.8 above Sonnet — it's
+ * the second-weakest, so digests stay on the cheaper Sonnet tier rather than
+ * a Fable/Opus one. Short lists clamp to their weakest entry.
  */
 export type ModelTier = 'status' | 'light';
 
@@ -984,6 +1050,21 @@ export function resolveDefaultEffort(defaultEffort?: string): string {
   return defaultEffort || DEFAULT_EFFORT;
 }
 
+/** Extract the web-mirrored settings subset from `GlobalSettings` (settings-sync).
+ *  `defaultEffort` is normalized through `resolveDefaultEffort` so the web never
+ *  receives an empty string; `defaultModels` defaults to an empty map. */
+export function pickSyncedSettings(
+  s: Pick<GlobalSettings, 'defaultHarness' | 'defaultModels' | 'defaultEffort' | 'theme' | 'colorTheme'>
+): SyncedSettings {
+  return {
+    defaultHarness: s.defaultHarness,
+    defaultModels: s.defaultModels ?? {},
+    defaultEffort: resolveDefaultEffort(s.defaultEffort),
+    theme: s.theme ?? 'system',
+    colorTheme: normalizeColorTheme(s.colorTheme),
+  };
+}
+
 /**
  * Claude effort maps to an extended-thinking budget, which Haiku has no notion of
  * — so the effort control is meaningless there. Empty model = harness default,
@@ -1040,6 +1121,7 @@ export const CONTEXT_WINDOW = 200_000;
 export const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-fable-5-1': 1_000_000,
   'claude-fable-5': 1_000_000,
+  'claude-opus-5-5': 1_000_000,
   'claude-opus-5': 1_000_000,
   'claude-opus-4-8': 1_000_000,
   'claude-sonnet-5': 1_000_000,
@@ -1472,6 +1554,42 @@ export function previewPreamble(port: number): string {
   ].join('\n');
 }
 
+/** Env vars Maestro injects into every (non-shell) agent run and the
+ *  `maestro-message` CLI reads back — the agent-messaging handshake. Shared so
+ *  both sides agree (mirrors ASK_ENV / PREVIEW_ENV). */
+export const MESSAGE_ENV = {
+  url: 'MAESTRO_MESSAGE_URL',
+  token: 'MAESTRO_MESSAGE_TOKEN',
+  workspaceId: 'MAESTRO_MESSAGE_WORKSPACE',
+  agentId: 'MAESTRO_MESSAGE_AGENT',
+} as const;
+
+/** System-prompt block telling the agent it can message agents in other chats —
+ *  other workspaces, or the user's other linked machines — via `maestro-message`
+ *  (docs/specs/agent-messaging.md). The same text for every chat, so it never
+ *  disturbs the prompt cache. */
+export function messagingPreamble(): string {
+  return [
+    '## Messaging other agents',
+    "Agents in the user's other Maestro chats — other workspaces, and workspaces on the user's other linked",
+    'machines — can be messaged with the `maestro-message` CLI (Bash/shell tool):',
+    '',
+    '```',
+    'maestro-message list                 # every reachable chat: its address, title, machine, busy/idle',
+    "maestro-message send <address> <<'MSG'",
+    'A self-contained message — the other agent has none of your context.',
+    'MSG',
+    '```',
+    '',
+    'Delivery is fire-and-forget: the message starts a turn in the target chat (or queues behind its current one)',
+    'and the command returns at once. Any reply arrives later as a new message in this chat — never within this',
+    'turn — so do not wait for one. Messages from other agents reach you as user messages that end with a',
+    '"[Sent by the agent in …. Reply with: maestro-message send …]" line — use that exact command to answer. Only',
+    'message another agent when the user asked you to or the task clearly needs it, and do not reply just to',
+    'acknowledge.',
+  ].join('\n');
+}
+
 /** System-prompt block telling the agent that chat renders worktree images
  *  inline, so it can show one instead of naming a path. Unlike the ask/preview
  *  preambles this needs no bridge — the renderer reads the file itself — so it
@@ -1730,6 +1848,17 @@ interface AppInitData {
   chatsMeta: Record<string, Record<string, ChatMeta>>;
   /** Currently running agentIds per workspace (survives renderer reloads). */
   runningAgents: Record<string, number[]>;
+}
+
+/** A running turn's blocks so far, in the block accumulator's own shape
+ *  (shared/harness/blocks `BlockStream`) — the renderer's live-turn state is the
+ *  same four fields, so a snapshot drops straight in. */
+export interface LiveTurnSnapshot {
+  finalBlocks: AgentBlock[];
+  deltaBlocks: AgentBlock[];
+  accumType: 'text' | 'thinking' | null;
+  accumText: string;
+  startedAt: number;
 }
 
 /** channel -> [request, response] */
@@ -2158,6 +2287,10 @@ export interface IpcInvokeMap {
   'chat:tasks:clear': [{ workspaceId: string; agentId: number }, void];
   'chat:stop': [{ workspaceId: string; agentId: number }, void];
   'chat:running': [{ workspaceId: string }, number[]]; // agentIds currently running
+  /** The in-progress turn of every running chat in a workspace, keyed by agentId —
+   *  what a renderer that (re)loaded mid-turn needs to show the turn so far
+   *  instead of an empty "running" chat (docs/specs/memory-guard.md §4.2). */
+  'chat:live': [{ workspaceId: string }, Record<string, LiveTurnSnapshot>];
   'chat:meta': [{ workspaceId: string }, Record<string, ChatMeta>];
   'chat:meta:set': [
     { workspaceId: string; agentId: number; patch: Partial<ChatMeta> },
@@ -2209,6 +2342,9 @@ export interface IpcInvokeMap {
     { workspaceId: string; path: string; text: string; expectedMtimeMs: number | null; force?: boolean },
     { ok: true; mtimeMs: number } | { ok: false; conflict: true; mtimeMs: number }
   ];
+  // Files tab "+": create an empty file (or folder, `dir`) at a worktree-relative
+  // path, making missing parents. Local-only; refuses to overwrite.
+  'fs:create': [{ workspaceId: string; path: string; dir: boolean }, void];
 
   // In-app Jupyter kernel execution for open `.ipynb` tabs. `capabilities`
   // discovers a Python with jupyter_client + ipykernel (worktree venv first,
@@ -2290,6 +2426,7 @@ export interface IpcInvokeMap {
 
   'github:auth': [void, GhAuth];
   'github:repoList': [void, RecentRepo[]];
+  'github:repoSearch': [{ query: string }, RecentRepo[]];
   'github:signInStart': [
     void,
     { userCode: string; verificationUri: string; interval: number; expiresIn: number }
@@ -2347,6 +2484,10 @@ export interface IpcInvokeMap {
   'account:linkCancel': [void, void];
   /** Sign this desktop out (revokes the local token; box tokens survive). */
   'account:signOut': [void, void];
+  /** Unlink ANOTHER linked desktop by its relay device id (Settings → Account).
+   *  Revokes that device on the relay so it drops to signed-out; this desktop is
+   *  untouched. To unlink THIS desktop, use `account:signOut`. */
+  'account:deviceUnlink': [{ deviceId: string }, { ok: boolean; error?: string }];
   /** Link a saved SSH host as a relay box: mint a box token, upload + launch
    *  maestro-sync, optionally install the reboot crontab. */
   'account:boxLink': [{ hostId: string; label?: string; cron?: boolean }, { ok: boolean; error?: string }];
@@ -2397,7 +2538,23 @@ export interface IpcEventMap {
   'gh:auth': { phase: 'success' | 'error'; auth?: GhAuth; message?: string };
   /** Maestro Web link progress (mirrors gh:auth's shape): the desktop shows the
    *  code, polls the relay, and pushes here on approval / error / sign-out. */
+  /** Global settings changed outside the renderer — e.g. a default model/effort
+   *  picked on Maestro Web and applied here (settings-sync). Carries the full
+   *  settings so the store just replaces its copy. */
+  'settings:updated': GlobalSettings;
   'account:auth': { phase: 'pending' | 'success' | 'error' | 'signedout'; status?: AccountStatus; message?: string; reason?: 'revoked' };
+  /** The Maestro Web relay's circuit breaker opened or closed (§B2 of
+   *  docs/specs/web-relay-egress-quota.md). `reason` is the sanitized category
+   *  from the relay's /api/health — Settings → Account shows it so a relay
+   *  outage stops looking like "my workspaces silently stopped syncing". */
+  'account:relay-status': {
+    ok: boolean;
+    reason?: string | null;
+    retryIn?: number;
+    mode?: 'live' | 'idle' | 'legacy';
+    /** The relay's event bus, when it isn't the real one ('memory' / 'error'). */
+    bus?: string;
+  };
   /** Authoritative PR status after any main-side refresh (turn end, background
    *  poll, merge) — the store mirrors it so Merge/Resolve/Merged stay live. */
   'pr:status': { workspaceId: string; pr: PrStatus | null };

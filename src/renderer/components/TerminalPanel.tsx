@@ -4,11 +4,22 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Clipboard, Copy } from 'lucide-react';
 import { invoke, on } from '../lib/api';
+import { useApp } from '../store/app';
+import { subscribeTheme } from '../../shared/themes';
 import { useDismiss } from './common';
 import { MenuItem } from './Sidebar';
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/** The selection fill: Classic keeps its tuned violet; other theme families
+ *  tint it with their own accent (a 6-digit hex token + alpha byte). */
+function selectionFill(dark: boolean): string {
+  const accent = cssVar('--accent');
+  if (document.documentElement.dataset.theme === 'classic' || !/^#[0-9a-f]{6}$/i.test(accent))
+    return dark ? 'rgba(130,113,232,0.30)' : 'rgba(83,68,176,0.25)';
+  return accent + (dark ? '4d' : '40');
 }
 
 function terminalTheme() {
@@ -18,7 +29,7 @@ function terminalTheme() {
     foreground: cssVar('--text'),
     cursor: cssVar('--accent'),
     cursorAccent: cssVar('--term-bg'),
-    selectionBackground: dark ? 'rgba(130,113,232,0.30)' : 'rgba(83,68,176,0.25)',
+    selectionBackground: selectionFill(dark),
     black: dark ? '#3a3835' : '#5a5753',
     red: '#e06a5e',
     green: '#5fb885',
@@ -51,11 +62,16 @@ export interface PtyViewProps {
   /** treat an attach-only pty as a live terminal (blinking cursor, focus on
    *  reveal) — used by run scripts, whose pty main spawns but the user drives */
   interactive?: boolean;
+  /** dock terminals: take focus only when the store's `dockFocusRequest` names
+   *  this key (the user asked to see it), not on every reveal — the dock mounts
+   *  its terminal whenever a workspace is selected, and mustn't pull focus out
+   *  of the composer when it does. Unset: focus on every reveal. */
+  focusKey?: string;
   emptyHint?: string;
 }
 
 /** xterm view bound to a main-process pty — interactive terminal or script output. */
-export default function PtyView({ workspaceId, ptyId, ensure, active, interactive = false, emptyHint }: PtyViewProps) {
+export default function PtyView({ workspaceId, ptyId, ensure, active, interactive = false, focusKey, emptyHint }: PtyViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -157,8 +173,7 @@ export default function PtyView({ workspaceId, ptyId, ensure, active, interactiv
     });
     ro.observe(el);
 
-    const observer = new MutationObserver(() => term.options && (term.options.theme = terminalTheme()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    const offTheme = subscribeTheme(() => term.options && (term.options.theme = terminalTheme()));
 
     return () => {
       disposed = true;
@@ -167,7 +182,7 @@ export default function PtyView({ workspaceId, ptyId, ensure, active, interactiv
       onInput.dispose();
       el.removeEventListener('contextmenu', onContextMenu);
       ro.disconnect();
-      observer.disconnect();
+      offTheme();
       term.dispose();
       termRef.current = null;
     };
@@ -182,13 +197,23 @@ export default function PtyView({ workspaceId, ptyId, ensure, active, interactiv
           const t = termRef.current;
           if (t) {
             void invoke('pty:resize', { id: ptyId, cols: t.cols, rows: t.rows });
-            if (ensure || interactive) t.focus();
           }
         } catch {}
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+
+  // Live terminals take the keyboard when revealed — for a dock terminal, only
+  // when the user asked for this one (its focus request, consumed here).
+  const requested = useApp((s) => focusKey !== undefined && s.dockFocusRequest === focusKey);
+  const wantsFocus = active && (focusKey === undefined || requested);
+  useEffect(() => {
+    if (!wantsFocus) return;
+    if (focusKey !== undefined) useApp.getState().consumeDockFocus(focusKey);
+    if (ensure || interactive) requestAnimationFrame(() => termRef.current?.focus());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsFocus]);
 
   return (
     <div className="h-full" style={{ background: 'var(--term-bg)' }}>
@@ -231,7 +256,8 @@ function TerminalMenu({
         top: Math.min(y, window.innerHeight - 88),
         zIndex: 60,
       }}
-      className="glass w-40 overflow-hidden py-1"
+      data-motion="pop"
+      className="glass w-40 origin-top-left overflow-hidden py-1.5"
     >
       {selection && (
         <MenuItem

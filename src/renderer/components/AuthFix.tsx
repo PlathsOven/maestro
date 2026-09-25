@@ -93,7 +93,7 @@ export default function AuthFix({
         <CheckCircle2 size={13} className="shrink-0 text-ok" />
         <span className="min-w-0 flex-1 text-2xs text-muted">{result.message}</span>
         {retry && (
-          <button className="btn btn-accent h-6 shrink-0 gap-1 px-2 text-2xs" onClick={retry}>
+          <button className="btn btn-accent shrink-0 gap-1" onClick={retry}>
             <RefreshCw size={11} /> Send again
           </button>
         )}
@@ -104,11 +104,11 @@ export default function AuthFix({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button className="btn btn-accent h-6 shrink-0 gap-1 px-2 text-2xs" disabled={busy} onClick={() => void repair()}>
+        <button className="btn btn-accent shrink-0 gap-1" disabled={busy} onClick={() => void repair()}>
           {busy ? <Spinner className="h-3 w-3" /> : <Wrench size={11} />} Fix sign-in
         </button>
         {result && !ptyId && (
-          <button className="btn h-6 shrink-0 gap-1 px-2 text-2xs" onClick={() => void startLogin()}>
+          <button className="btn shrink-0 gap-1" onClick={() => void startLogin()}>
             <KeyRound size={11} /> Sign in
           </button>
         )}
@@ -120,11 +120,11 @@ export default function AuthFix({
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2">
             <span className="text-2xs text-muted">Finish signing in below — a browser window may open.</span>
-            <button className="btn btn-ghost h-6 px-2 text-2xs" onClick={() => void finishLogin()}>
+            <button className="btn" onClick={() => void finishLogin()}>
               Done
             </button>
           </div>
-          <div className="h-64 overflow-hidden rounded-card border">
+          <div className="h-64 overflow-hidden rounded-card border border-border/70">
             <PtyView workspaceId="" ptyId={ptyId} ensure={false} interactive active />
           </div>
         </div>

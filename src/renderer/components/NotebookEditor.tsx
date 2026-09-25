@@ -297,7 +297,7 @@ function KernelToolbar({
   const unavailable = caps?.available === false;
   const meta = STATUS_META[status];
   return (
-    <div className="sticky top-0 z-20 flex items-center gap-2 border-b bg-bg/90 px-4 py-1.5 backdrop-blur">
+    <div className="sticky top-0 z-20 flex items-center gap-2 border-b bg-bg/85 px-4 py-2 backdrop-blur">
       {unavailable ? (
         <span className="flex items-center gap-1.5 text-2xs text-muted" title={caps?.reason}>
           <Zap size={12} className="text-faint" />
@@ -318,7 +318,7 @@ function KernelToolbar({
       )}
       <div className="flex-1" />
       <button
-        className="flex items-center gap-1 rounded-ctl px-1.5 py-0.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
+        className="flex h-6 items-center gap-1 rounded-full px-2.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
         title="Run every cell, top to bottom"
         disabled={unavailable}
         onClick={onRunAll}
@@ -327,7 +327,7 @@ function KernelToolbar({
         Run all
       </button>
       <button
-        className="flex items-center gap-1 rounded-ctl px-1.5 py-0.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
+        className="flex h-6 items-center gap-1 rounded-full px-2.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
         title="Interrupt the kernel (stop the running cell)"
         disabled={!busy}
         onClick={onInterrupt}
@@ -336,7 +336,7 @@ function KernelToolbar({
         Interrupt
       </button>
       <button
-        className="flex items-center gap-1 rounded-ctl px-1.5 py-0.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
+        className="flex h-6 items-center gap-1 rounded-full px-2.5 text-2xs font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-40"
         title="Restart the kernel (clears all variables)"
         disabled={unavailable}
         onClick={onRestart}
@@ -399,7 +399,7 @@ function CellRow({
           ) : (
             <>
               <button
-                className="hidden h-5 w-5 items-center justify-center rounded text-muted transition-colors hover:bg-accent-soft hover:text-accent group-hover:flex disabled:opacity-40"
+                className="hidden h-6 w-6 items-center justify-center rounded-full bg-ink text-on-ink transition-opacity hover:opacity-90 group-hover:flex disabled:opacity-40"
                 title={canRun ? 'Run cell  (⌘↵ · ⇧↵ next · ⌥↵ insert)' : 'No kernel available'}
                 disabled={!canRun}
                 onClick={() => onRun('stay')}
@@ -413,7 +413,7 @@ function CellRow({
 
       <div className="min-w-0 flex-1">
         {/* hover toolbar */}
-        <div className="pointer-events-none absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded-ctl border bg-raised p-0.5 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+        <div className="glass pointer-events-none absolute right-1 top-1 z-10 flex items-center gap-0.5 !rounded-full p-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
           <CellBtn title={`Type: ${cell.cell_type} — click to change`} onClick={onCycleType}>
             <span className="px-0.5 text-2xs font-medium uppercase">{cell.cell_type.slice(0, 2)}</span>
           </CellBtn>
@@ -450,14 +450,14 @@ function CellRow({
           />
         ) : isMarkdown ? (
           <div
-            className="md min-h-[1.5rem] cursor-text rounded px-1 py-0.5 hover:bg-accent-soft/30"
+            className="md min-h-[1.5rem] cursor-text rounded-lg px-1.5 py-0.5 hover:bg-accent-soft/60"
             onDoubleClick={onEdit}
             // Rendered via the same marked+DOMPurify path (+ `.md` styling) as chat markdown.
             dangerouslySetInnerHTML={{ __html: renderMarkdown(text || '*empty markdown cell*') }}
           />
         ) : (
           <pre
-            className="cursor-text overflow-x-auto rounded border bg-surface px-2.5 py-1.5 font-mono text-xs leading-relaxed"
+            className="cursor-text overflow-x-auto rounded-ctl border bg-surface px-3 py-2 font-mono text-xs leading-relaxed"
             onClick={onEdit}
             dangerouslySetInnerHTML={{ __html: highlightLine(text, isCode ? lang : null) || '<span class="text-faint">empty cell</span>' }}
           />
@@ -489,7 +489,7 @@ function CellBtn({
 }) {
   return (
     <button
-      className="flex h-5 items-center justify-center rounded px-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-30"
+      className="flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-30"
       title={title}
       disabled={disabled}
       onClick={onClick}
@@ -506,13 +506,13 @@ function AddDivider({ onAdd }: { onAdd: (type: 'code' | 'markdown') => void }) {
       <div className="absolute inset-x-10 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover/divider:bg-border" />
       <div className="z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover/divider:opacity-100">
         <button
-          className="flex items-center gap-1 rounded-ctl border bg-raised px-1.5 py-0.5 text-2xs text-muted shadow-sm hover:text-fg"
+          className="flex items-center gap-1 rounded-full border bg-raised px-2 py-0.5 text-2xs text-muted shadow-sm hover:text-fg"
           onClick={() => onAdd('code')}
         >
           <Plus size={10} /> Code
         </button>
         <button
-          className="flex items-center gap-1 rounded-ctl border bg-raised px-1.5 py-0.5 text-2xs text-muted shadow-sm hover:text-fg"
+          className="flex items-center gap-1 rounded-full border bg-raised px-2 py-0.5 text-2xs text-muted shadow-sm hover:text-fg"
           onClick={() => onAdd('markdown')}
         >
           <Plus size={10} /> Markdown
@@ -596,7 +596,7 @@ function CellEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <div ref={elRef} className="overflow-hidden rounded border" />;
+  return <div ref={elRef} className="overflow-hidden rounded-ctl border" />;
 }
 
 // ---------------- outputs (read-only, spec §8.3) ----------------

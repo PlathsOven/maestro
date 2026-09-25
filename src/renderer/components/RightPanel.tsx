@@ -6,13 +6,12 @@ import {
   Braces,
   ChevronDown,
   ChevronRight,
-  Code2,
   Copy,
   ExternalLink,
-  Eye,
   FastForward,
   File,
   FileCode,
+  FilePlus,
   FileImage,
   FileTerminal,
   FileText,
@@ -23,7 +22,6 @@ import {
   GitMerge,
   GitPullRequest,
   History,
-  ListChecks,
   MessageSquare,
   PanelRightClose,
   PanelRightOpen,
@@ -37,17 +35,20 @@ import {
 import { MenuDivider, MenuItem } from './Sidebar';
 import { useDismiss } from './common';
 import { invoke, tryInvoke } from '../lib/api';
-import { timeAgo, basename, fmtStat } from '../lib/format';
+import { timeAgo, fmtStat } from '../lib/format';
 import { mergeabilityUnknown, mergeFailureMessage } from '../lib/resolveConflicts';
 import { DEFAULT_TERM_IDS, EMPTY_ARR, useApp, useCaps, useShowPr, LAYOUT_LIMITS, DEFAULT_LAYOUT } from '../store/app';
-import { TodoSection } from './ChecksPanel';
-import ChecksPanel from './ChecksPanel';
-import { Resizer, Spinner } from './common';
+import { TodoSection } from './TodoSection';
+import { CountBadge, Resizer, Segmented, Spinner } from './common';
+import { VSCodeMark } from '../../shared/ui/brandIcons';
+import { StainedDot, StainedGlass } from '../../shared/ui/StainedGlass';
+import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import RunPanel from './RunPanel';
 import SkillsPanel from './SkillsPanel';
 import StatusPanel from './StatusPanel';
+import ChangedFileTree from './ChangedFileTree';
 import PtyView from './TerminalPanel';
-import type { ContextFile, DiffFile, FsEntry, PrStatus, Workspace } from '../../shared/types';
+import type { ContextFile, FsEntry, PrStatus, Workspace } from '../../shared/types';
 
 export default function RightPanel({ workspace }: { workspace: Workspace }) {
   const rightTab = useApp((s) => s.rightTab[workspace.id] ?? 'status');
@@ -60,21 +61,24 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
   const showPr = useShowPr(workspace.projectId);
   // Diff/Changes surfaces: real git, or a folder project's shadow checkpoints.
   const showDiff = caps.git || caps.checkpoints;
-  const debRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The header (PR strip + tabs) floats over the tab content; the scroller is
+  // padded by its live height so nothing starts hidden beneath it.
+  const [headRef, headH] = useMeasured((el) => el.offsetHeight, 88);
+  // Chromium mis-composites glass inside a scroll container (a bright box the
+  // size of the scroller), so the tab row only scrolls when it overflows.
+  const [tabsRef, tabsOverflow] = useMeasured((el) => el.scrollWidth > el.clientWidth + 1, false);
 
   useEffect(() => {
     // No diff source (plain remote folder) — skip the probes entirely.
+    // No debounce here: main already throttles file-change bursts, and the
+    // store coalesces overlapping probes per workspace.
     if (!showDiff) return;
-    clearTimeout(debRef.current);
-    debRef.current = setTimeout(() => {
-      void useApp.getState().refreshGit(workspace.id);
-      // keep the top-strip diff stat (and the Create PR enabled state) in sync
-      useApp.getState().refreshDiffStat(workspace.id);
-      if ((useApp.getState().rightTab[workspace.id] ?? 'status') === 'changes') {
-        void useApp.getState().refreshDiff(workspace.id);
-      }
-    }, 500);
-    return () => clearTimeout(debRef.current);
+    void useApp.getState().refreshGit(workspace.id);
+    // keep the top-strip diff stat (and the Create PR enabled state) in sync
+    useApp.getState().refreshDiffStat(workspace.id);
+    if ((useApp.getState().rightTab[workspace.id] ?? 'status') === 'changes') {
+      void useApp.getState().refreshDiff(workspace.id);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsVersion, workspace.id, rightTab, showDiff]);
 
@@ -87,7 +91,10 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
   if (collapsed) return <CollapsedRightPanel workspace={workspace} />;
 
   return (
-    <aside className="relative flex shrink-0 flex-col border-l bg-canvas" style={{ width: rightW }}>
+    // `width` is the preferred width; `shrink`+`min-w-0` let the panel give it up
+    // when the window is too narrow for sidebar + chat + panel, so its right edge
+    // (PR actions) stays on-screen instead of spilling past the window.
+    <aside data-morph="right-panel" className="relative flex min-w-0 shrink flex-col border-l" style={{ width: rightW }}>
       <Resizer
         axis="x"
         invert
@@ -99,80 +106,82 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
         onCommit={() => useApp.getState().commitLayout()}
         className="-left-1"
       />
-      {/* top strip: the PR lifecycle action (Create PR → Merge → Continue/Archive),
-          right-aligned in the otherwise-empty title-bar row and washed with the PR
-          state color so it's unmissable once a PR exists. */}
-      <div
-        className={clsx(
-          'drag-region flex h-11 shrink-0 items-center justify-end gap-2 overflow-hidden px-3',
-          headerPrTone(pr)
-        )}
-      >
-        {/* .wco-safe keeps these clear of the Windows window-control overlay,
-            which is painted over this exact corner of the window. */}
-        <div className="no-drag wco-safe flex min-w-0 items-center gap-2">
-          {/* PR lifecycle needs a github origin + gh auth; below that it's just
-              Archive (the folder/remoteless projects that lost dead PR chrome). */}
-          {showPr ? <PrActions workspace={workspace} /> : <ArchiveAction workspace={workspace} />}
+      {/* Floating glass header over the tab content: the PR lifecycle action
+          (Create PR → Merge → Continue/Archive) in the title-bar row, washed with
+          the PR state color once a PR exists, then the tabs. */}
+      <div ref={headRef} className="scroll-edge-top absolute inset-x-0 top-0 z-20">
+        <div className="drag-region flex h-11 shrink-0 items-center justify-end gap-2 overflow-hidden px-2.5">
+          {/* .wco-safe keeps these clear of the Windows window-control overlay,
+              which is painted over this exact corner of the window. The PR-state
+              wash is a soft capsule around the actions, not a full-width band. */}
+          <LiquidGlass
+            radius={999}
+            {...GLASS_CONTROL}
+            tint="clear"
+            className={clsx(
+              'lg-float no-drag wco-safe flex min-w-0 items-center gap-1.5 p-[3px] transition-colors',
+              headerPrTone(pr) && ['pl-1.5', headerPrTone(pr)]
+            )}
+          >
+            {/* PR lifecycle needs a github origin + gh auth; below that it's just
+                Archive (the folder/remoteless projects that lost dead PR chrome). */}
+            {showPr ? <PrActions workspace={workspace} /> : <ArchiveAction workspace={workspace} />}
+          </LiquidGlass>
+        </div>
+
+        {/* tabs: Status | Files | [Changes] | Skills */}
+        <div className="flex shrink-0 items-center gap-1.5 px-3 pb-2.5">
+          <button
+            className="shrink-0 rounded-full p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+            title="Collapse panel"
+            onClick={() => void useApp.getState().saveSettings({ rightPanelCollapsed: true })}
+          >
+            <PanelRightClose size={15} />
+          </button>
+          {/* The tabs scroll horizontally when the panel is narrow so the collapse
+              toggle is never pushed off the panel's edge. */}
+          <div
+            ref={tabsRef}
+            className={clsx(
+              'no-scrollbar -my-2 flex min-w-0 flex-1 items-center px-1 py-2',
+              tabsOverflow ? 'overflow-x-auto' : 'overflow-visible'
+            )}
+          >
+            <Segmented
+              value={rightTab}
+              onChange={(id) => useApp.getState().setRightTab(workspace.id, id)}
+              options={(
+                [
+                  { id: 'status', label: 'Status', badge: 0, show: true },
+                  { id: 'files', label: 'Files', badge: 0, show: true },
+                  { id: 'changes', label: 'Changes', badge: gitStatus?.changedFiles || 0, show: showDiff },
+                  { id: 'skills', label: 'Skills', badge: 0, show: true },
+                ] as const
+              )
+                .filter((t) => t.show)
+                .map((t) => ({
+                  value: t.id,
+                  label: (
+                    <>
+                      {t.label}
+                      {t.badge > 0 && <CountBadge count={t.badge} />}
+                    </>
+                  ),
+                }))}
+            />
+          </div>
         </div>
       </div>
 
-      {/* tabs: Status | Files | [Changes] | [Checks] | Skills · [Review] */}
-      <div className="flex shrink-0 items-center gap-1 border-b px-3 pb-2">
-        <button
-          className="shrink-0 rounded-ctl p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
-          title="Collapse panel"
-          onClick={() => void useApp.getState().saveSettings({ rightPanelCollapsed: true })}
-        >
-          <PanelRightClose size={15} />
-        </button>
-        {(
-          [
-            { id: 'status', label: 'Status', badge: 0, show: true },
-            { id: 'files', label: 'Files', badge: 0, show: true },
-            { id: 'changes', label: 'Changes', badge: gitStatus?.changedFiles || 0, show: showDiff },
-            { id: 'checks', label: 'Checks', badge: 0, show: showPr },
-            { id: 'skills', label: 'Skills', badge: 0, show: true },
-          ] as const
-        )
-          .filter((t) => t.show)
-          .map((t) => (
-            <button
-              key={t.id}
-              className={clsx(
-                'flex items-center gap-1.5 whitespace-nowrap rounded-ctl px-2 py-1 text-xs font-medium transition-colors',
-                rightTab === t.id ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg'
-              )}
-              onClick={() => useApp.getState().setRightTab(workspace.id, t.id)}
-            >
-              {t.label}
-              {t.badge > 0 && <span className="rounded-full bg-border px-1.5 text-2xs text-muted">{t.badge}</span>}
-            </button>
-          ))}
-        <div className="flex-1" />
-        {showDiff && (
-          <button
-            className="btn h-6 gap-1.5 text-2xs"
-            title="Review the diff (⌘⇧D)"
-            onClick={() => useApp.getState().setTab(workspace.id, 'diff')}
-          >
-            <Eye size={12} />
-            Review
-          </button>
-        )}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div key={rightTab} data-motion="swap" className="min-h-0 flex-1 overflow-y-auto" style={{ paddingTop: headH }}>
         {/* Guard each tab's content on its capability so a stale rightTab (e.g.
-            'checks' left over from a git project) falls back to Status. */}
+            'changes' left over from a git project) falls back to Status. */}
         {rightTab === 'files' ? (
           <FilesTab workspace={workspace} />
         ) : rightTab === 'changes' && showDiff ? (
           <ChangesTab workspace={workspace} />
         ) : rightTab === 'skills' ? (
           <SkillsPanel workspace={workspace} />
-        ) : rightTab === 'checks' && showPr ? (
-          <ChecksPanel workspace={workspace} active />
         ) : (
           <StatusPanel workspace={workspace} />
         )}
@@ -184,15 +193,15 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
 }
 
 /** Thin icon-only rail shown when the right panel is collapsed — mirrors the
- *  collapsed sidebar. An expand toggle up top, quick tab shortcuts (each expands
- *  the panel to that tab), and a Review button at the bottom. */
+ *  collapsed sidebar. An expand toggle up top and quick tab shortcuts (each
+ *  expands the panel to that tab). */
 function CollapsedRightPanel({ workspace }: { workspace: Workspace }) {
   const rightTab = useApp((s) => s.rightTab[workspace.id] ?? 'status');
   const changed = useApp((s) => s.gitStatus[workspace.id]?.changedFiles ?? 0);
   const caps = useCaps(workspace.projectId);
   const showPr = useShowPr(workspace.projectId);
 
-  const expand = (tab?: 'status' | 'files' | 'changes' | 'checks' | 'skills') => {
+  const expand = (tab?: 'status' | 'files' | 'changes' | 'skills') => {
     if (tab) useApp.getState().setRightTab(workspace.id, tab);
     void useApp.getState().saveSettings({ rightPanelCollapsed: false });
   };
@@ -202,42 +211,41 @@ function CollapsedRightPanel({ workspace }: { workspace: Workspace }) {
       { id: 'status', label: 'Status', Icon: Activity, show: true },
       { id: 'files', label: 'Files', Icon: Folder, show: true },
       { id: 'changes', label: 'Changes', Icon: GitCompare, show: caps.git || caps.checkpoints },
-      { id: 'checks', label: 'Checks', Icon: ListChecks, show: showPr },
       { id: 'skills', label: 'Skills', Icon: Sparkles, show: true },
     ] as const
   ).filter((t) => t.show);
 
   return (
     // w-12 must stay in sync with COLLAPSED_RIGHT_RAIL (store/app.ts).
-    <aside className="relative flex w-12 shrink-0 flex-col items-center border-l bg-canvas">
+    <aside data-morph="right-panel" className="relative flex w-12 shrink-0 flex-col items-center border-l">
       <div className="drag-region h-11 w-full shrink-0" />
       {/* primary PR action, shrunk to an icon button that mirrors the expanded
           panel's top-right Create PR / Merge control (hidden without PR caps). */}
       {showPr && <CollapsedPrButton workspace={workspace} />}
       <button
-        className="no-drag mb-1 mt-0.5 rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+        className="no-drag mb-1.5 mt-1 grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
         title="Expand panel"
         onClick={() => expand()}
       >
         <PanelRightOpen size={16} />
       </button>
-      <div className="mb-1 w-6 border-t" />
-      <div className="flex flex-col items-center gap-0.5">
+      <div className="mb-1.5 w-5 border-t" />
+      <div className="flex flex-col items-center gap-1">
         {tabs.map((t) => {
           const Icon = t.Icon;
           return (
             <button
               key={t.id}
               className={clsx(
-                'no-drag relative rounded-ctl p-1.5 transition-colors',
-                rightTab === t.id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-accent-soft hover:text-fg'
+                'no-drag relative grid h-8 w-8 place-items-center rounded-full transition-colors',
+                rightTab === t.id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
               )}
               title={t.label}
               onClick={() => expand(t.id)}
             >
-              <Icon size={16} />
+              <Icon size={15} />
               {t.id === 'changes' && changed > 0 && (
-                <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+                <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent" />
               )}
             </button>
           );
@@ -293,7 +301,7 @@ function DiffStatBadge({ workspace }: { workspace: Workspace }) {
 
 function PanelIconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button className="shrink-0 rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg" title={title} onClick={onClick}>
+    <button className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg" title={title} onClick={onClick}>
       {children}
     </button>
   );
@@ -333,15 +341,18 @@ function PrActions({ workspace }: { workspace: Workspace }) {
       <>
         {archiveIcon}
         <DiffStatBadge workspace={workspace} />
-        <button
-          className="btn h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+        <StainedGlass
+          as="button"
+          tone="ink"
+          ripple={creatingPr}
+          className="btn h-7 shrink-0 gap-1.5 px-3 text-xs"
           title={hasChanges ? 'Commit all changes & create pull request (⌘⇧P)' : 'No changes yet — nothing to open a pull request for'}
           disabled={creatingPr || !hasChanges}
           onClick={() => void useApp.getState().createPr(workspace.id)}
         >
-          {creatingPr ? <Spinner /> : <GitPullRequest size={12} />}
+          {creatingPr ? <Spinner className="!text-on-ink" /> : <GitPullRequest size={12} />}
           {creatingPr ? 'Creating…' : 'Create PR'}
-        </button>
+        </StainedGlass>
       </>
     );
   }
@@ -351,14 +362,16 @@ function PrActions({ workspace }: { workspace: Workspace }) {
       <>
         <PrBadge pr={pr} />
         <ContinueButton workspace={workspace} />
-        <button
-          className="btn btn-merged h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+        <StainedGlass
+          as="button"
+          tone="merged"
+          className="btn h-7 shrink-0 gap-1.5 px-3 text-xs"
           title="Archive this workspace"
           onClick={() => void useApp.getState().archiveWorkspace(workspace.id)}
         >
           <Archive size={12} />
           Archive
-        </button>
+        </StainedGlass>
       </>
     );
   }
@@ -367,14 +380,16 @@ function PrActions({ workspace }: { workspace: Workspace }) {
     return (
       <>
         <PrBadge pr={pr} />
-        <button
-          className="btn btn-accent h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+        <StainedGlass
+          as="button"
+          tone="ink"
+          className="btn h-7 shrink-0 gap-1.5 px-3 text-xs"
           title="Archive this workspace"
           onClick={() => void useApp.getState().archiveWorkspace(workspace.id)}
         >
           <Archive size={12} />
           Archive
-        </button>
+        </StainedGlass>
       </>
     );
   }
@@ -402,11 +417,13 @@ function PrActions({ workspace }: { workspace: Workspace }) {
 function ResolveConflictsButton({ workspace, pr }: { workspace: Workspace; pr: PrStatus }) {
   const resolving = useApp((s) => !!s.resolvingPr[workspace.id]);
   const base = pr.baseRefName || 'the base branch';
-  const cls = 'btn h-7 shrink-0 gap-1.5 px-2.5 text-xs border-warn/50 text-warn hover:bg-warn/10';
+  const cls = 'btn h-7 shrink-0 gap-1.5 px-3 text-xs';
 
   if (workspace.harness === 'shell') {
     return (
-      <a
+      <StainedGlass
+        as="a"
+        tone="warn"
         className={cls}
         href={pr.url}
         target="_blank"
@@ -415,12 +432,15 @@ function ResolveConflictsButton({ workspace, pr }: { workspace: Workspace; pr: P
       >
         <GitMerge size={12} />
         Resolve conflicts
-      </a>
+      </StainedGlass>
     );
   }
 
   return (
-    <button
+    <StainedGlass
+      as="button"
+      tone="warn"
+      ripple={resolving}
       className={cls}
       disabled={resolving}
       title={
@@ -430,9 +450,9 @@ function ResolveConflictsButton({ workspace, pr }: { workspace: Workspace; pr: P
       }
       onClick={() => void useApp.getState().startConflictResolution(workspace.id)}
     >
-      {resolving ? <Spinner /> : <GitMerge size={12} />}
+      {resolving ? <Spinner className="!text-white" /> : <GitMerge size={12} />}
       {resolving ? 'Resolving…' : 'Resolve conflicts'}
-    </button>
+    </StainedGlass>
   );
 }
 
@@ -454,7 +474,7 @@ function PrBadge({ pr }: { pr: PrStatus }) {
               : { label: 'Open', cls: 'text-ok' };
   return (
     <a
-      className="flex shrink-0 items-center gap-1.5 rounded-ctl border bg-surface px-2 py-1 text-xs transition-colors hover:border-accent/50"
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-raised/80 px-2.5 text-xs shadow-[0_0_0_1px_var(--border)] transition-colors hover:bg-raised"
       href={pr.url}
       target="_blank"
       rel="noreferrer"
@@ -484,15 +504,18 @@ function MergeButton({ workspace, pr }: { workspace: Workspace; pr: PrStatus }) 
     void useApp.getState().refreshPr(workspace.id, true);
   };
   return (
-    <button
-      className="btn btn-ok h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+    <StainedGlass
+      as="button"
+      tone="ok"
+      ripple={merging}
+      className="btn h-7 shrink-0 gap-1.5 px-3 text-xs"
       disabled={merging}
       title="Squash & merge this PR"
       onClick={() => void merge()}
     >
       {merging ? <Spinner className="!text-white" /> : <GitMerge size={12} />}
       Merge
-    </button>
+    </StainedGlass>
   );
 }
 
@@ -500,7 +523,7 @@ function ContinueButton({ workspace }: { workspace: Workspace }) {
   const [continuing, setContinuing] = useState(false);
   return (
     <button
-      className="btn h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+      className="btn h-7 shrink-0 gap-1.5 px-3 text-xs"
       title="Keep this workspace and start a fresh branch off the updated base"
       disabled={continuing}
       onClick={async () => {
@@ -534,16 +557,16 @@ function CollapsedPrButton({ workspace }: { workspace: Workspace }) {
     return (
       <button
         className={clsx(
-          'no-drag relative rounded-ctl p-1.5 transition-colors',
+          'no-drag relative grid h-8 w-8 place-items-center rounded-full transition-colors',
           disabled ? 'text-faint' : 'text-muted hover:bg-accent-soft hover:text-fg'
         )}
         title={hasChanges ? 'Create pull request (⌘⇧P)' : 'No changes yet — nothing to open a pull request for'}
         disabled={disabled}
         onClick={() => void useApp.getState().createPr(workspace.id)}
       >
-        {creatingPr ? <Spinner /> : <GitPullRequest size={16} />}
+        {creatingPr ? <Spinner /> : <GitPullRequest size={15} />}
         {hasChanges && !creatingPr && (
-          <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+          <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent" />
         )}
       </button>
     );
@@ -559,11 +582,11 @@ function CollapsedPrButton({ workspace }: { workspace: Workspace }) {
           : 'text-ok';
   return (
     <button
-      className={clsx('no-drag rounded-ctl p-1.5 transition-colors hover:bg-accent-soft', tone)}
+      className={clsx('no-drag grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-accent-soft', tone)}
       title={`PR #${pr.number} · ${pr.state.toLowerCase()} — expand for actions`}
       onClick={() => void useApp.getState().saveSettings({ rightPanelCollapsed: false })}
     >
-      {pr.state === 'MERGED' ? <GitMerge size={16} /> : <GitPullRequest size={16} />}
+      {pr.state === 'MERGED' ? <GitMerge size={15} /> : <GitPullRequest size={15} />}
     </button>
   );
 }
@@ -589,15 +612,15 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const files = diff?.files ?? [];
 
   return (
-    <div className="space-y-3 px-3 py-3">
+    <div className="space-y-3 px-3 pb-4 pt-3.5">
       {/* summary line — folder projects diff against their last shadow checkpoint */}
-      <div className="flex items-center justify-between px-1 text-xs text-muted">
+      <div className="flex items-center justify-between px-1.5 text-xs text-muted">
         <span>
           vs <span className="font-mono">{project?.baseBranch ?? diff?.base ?? 'last checkpoint'}</span>
         </span>
         {project?.kind === 'folder' ? (
           <button
-            className="btn h-5 gap-1 px-1.5 text-2xs"
+            className="btn h-6 gap-1 px-2.5 text-2xs"
             title="Restore tracked files to the last checkpoint (new files are kept)"
             onClick={() =>
               useApp.getState().setModal({
@@ -634,7 +657,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
 
       {pr && (
         <a
-          className="flex items-center gap-2 rounded-ctl border bg-surface px-2.5 py-1.5 text-xs text-muted hover:border-accent/50"
+          className="flex items-center gap-2 rounded-ctl bg-accent-soft px-3 py-2 text-xs text-muted transition-colors hover:text-fg"
           href={pr.url}
           target="_blank"
           rel="noreferrer"
@@ -643,30 +666,36 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
           <span className="truncate">
             #{pr.number} {pr.title}
           </span>
-          <span className="ml-auto shrink-0 text-2xs">{pr.state}</span>
+          <span className="ml-auto shrink-0 rounded-full bg-raised px-1.5 text-2xs font-medium">{pr.state}</span>
         </a>
       )}
 
       {/* changed files */}
-      <div className="overflow-hidden rounded-card border bg-surface">
-        {files.length === 0 && <div className="px-3 py-3 text-xs text-faint">No changes yet.</div>}
-        {files.slice(0, 100).map((f) => (
-          <FileRow key={f.path} f={f} onClick={() => useApp.getState().setTab(workspace.id, 'diff')} />
-        ))}
+      <div className="-mx-1 space-y-px">
+        {files.length === 0 && <div className="px-3 py-6 text-center text-xs text-faint">No changes yet.</div>}
+        <ChangedFileTree
+          files={files.slice(0, 100)}
+          onSelect={() => useApp.getState().setTab(workspace.id, 'diff')}
+          trailing={(f) => (
+            <span className="shrink-0 font-mono text-2xs">
+              <span className="text-ok">+{f.additions}</span> <span className="text-err">−{f.deletions}</span>
+            </span>
+          )}
+        />
       </div>
 
       {unresolved.length > 0 && (
-        <div className="overflow-hidden rounded-card border bg-surface">
-          <div className="flex items-center justify-between border-b px-2.5 py-1.5">
-            <span className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted">
-              <MessageSquare size={11} /> Comments ({unresolved.length})
+        <div className="card p-1.5">
+          <div className="flex items-center justify-between px-2 pb-1 pt-1">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted">
+              <MessageSquare size={11} className="text-faint" /> Comments ({unresolved.length})
             </span>
-            <button className="btn h-5 text-2xs" onClick={() => useApp.getState().sendCommentsToAgent(workspace.id)}>
+            <button className="btn h-6 px-2.5 text-2xs" onClick={() => useApp.getState().sendCommentsToAgent(workspace.id)}>
               Send to agent
             </button>
           </div>
           {unresolved.slice(0, 6).map((c) => (
-            <div key={c.id} className="border-b px-2.5 py-1.5 text-xs last:border-b-0">
+            <div key={c.id} className="rounded-ctl px-2 py-1.5 text-xs">
               <div className="truncate font-mono text-2xs text-faint">
                 {c.file}:{c.line}
               </div>
@@ -676,15 +705,17 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         </div>
       )}
 
-      <TodoSection workspace={workspace} compact />
+      <div className="px-1.5">
+        <TodoSection workspace={workspace} compact />
+      </div>
 
       {contextFiles.length > 0 && (
-        <div className="overflow-hidden rounded-card border bg-surface">
-          <div className="border-b px-2.5 py-1.5 text-2xs font-semibold uppercase tracking-wide text-muted">
+        <div className="card p-1.5">
+          <div className="px-2 pb-1 pt-1 text-xs font-medium text-muted">
             .context (agent handoffs)
           </div>
           {contextFiles.slice(0, 5).map((f) => (
-            <div key={f.path} className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-muted">
+            <div key={f.path} className="flex items-center gap-2 rounded-ctl px-2 py-1.5 text-xs text-muted">
               <FileText size={11} className="shrink-0" />
               <span className="truncate font-mono text-2xs">{f.path.replace(/^\.context\//, '')}</span>
               <span className="ml-auto shrink-0 text-2xs text-faint">{timeAgo(f.mtime)}</span>
@@ -693,26 +724,6 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         </div>
       )}
     </div>
-  );
-}
-
-function FileRow({ f, onClick }: { f: DiffFile; onClick: () => void }) {
-  const letter =
-    f.status === 'added' || f.status === 'untracked' ? 'A' : f.status === 'deleted' ? 'D' : f.status === 'renamed' ? 'R' : 'M';
-  const color =
-    letter === 'A' ? 'text-ok' : letter === 'D' ? 'text-err' : letter === 'R' ? 'text-st-running' : 'text-warn';
-  return (
-    <button
-      className="flex w-full items-center gap-2 border-b px-2.5 py-1.5 text-left last:border-b-0 hover:bg-accent-soft/50"
-      title={f.path}
-      onClick={onClick}
-    >
-      <span className={clsx('w-3 shrink-0 text-center font-mono text-2xs font-semibold', color)}>{letter}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-2xs">{basename(f.path)}</span>
-      <span className="shrink-0 font-mono text-2xs">
-        <span className="text-ok">+{f.additions}</span> <span className="text-err">−{f.deletions}</span>
-      </span>
-    </button>
   );
 }
 
@@ -734,6 +745,9 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [ctx, setCtx] = useState<{ x: number; y: number; entry: FsEntry; path: string } | null>(null);
+  // "+" → inline path input; the value is the initial text (a folder prefix
+  // when started from a folder's right-click menu), null when closed.
+  const [creating, setCreating] = useState<string | null>(null);
   const treeRef = useRef(tree);
   treeRef.current = tree;
 
@@ -779,6 +793,23 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
     });
   };
 
+  // Create the file (or folder, for a trailing '/'), reveal it in the tree, and
+  // open a new file in the editor. Returns an error message to keep the input open.
+  const create = async (raw: string): Promise<string | null> => {
+    const dir = raw.trim().endsWith('/');
+    const rel = raw.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
+    if (!rel) return 'Enter a file name';
+    const r = await tryInvoke('fs:create', { workspaceId: workspace.id, path: rel, dir });
+    if (r.error) return r.error;
+    setCreating(null);
+    const parts = rel.split('/');
+    const ancestors = parts.slice(0, dir ? parts.length : -1).map((_, i) => parts.slice(0, i + 1).join('/'));
+    setExpanded((s) => new Set([...s, ...ancestors]));
+    await Promise.all(['', ...ancestors].map((d) => load(d, true)));
+    if (!dir) useApp.getState().openFile(workspace.id, rel);
+    return null;
+  };
+
   const rows: React.ReactNode[] = [];
   const walk = (dir: string, depth: number) => {
     for (const e of tree[dir] ?? []) {
@@ -804,9 +835,25 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
 
   const rootLoaded = tree[''] !== undefined;
   return (
-    <div className="py-1">
-      {!rootLoaded && <div className="px-3 py-3 text-xs text-faint">Loading…</div>}
-      {rootLoaded && rows.length === 0 && <div className="px-3 py-3 text-xs text-faint">Empty working tree.</div>}
+    <div className="space-y-px px-2 py-2">
+      {/* New file needs the local editor + filesystem, so remote workspaces skip it. */}
+      {!isRemote && (
+        <div className="flex items-center justify-between pb-1 pl-2.5 pr-1">
+          <span className="text-2xs text-faint">Working tree</span>
+          <button
+            className="rounded-full p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+            title="New file (end with / for a folder)"
+            onClick={() => setCreating((c) => (c === null ? '' : c))}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      )}
+      {creating !== null && (
+        <NewEntryInput key={creating} initial={creating} onSubmit={create} onCancel={() => setCreating(null)} />
+      )}
+      {!rootLoaded && <div className="px-2.5 py-3 text-xs text-faint">Loading…</div>}
+      {rootLoaded && rows.length === 0 && <div className="px-2.5 py-3 text-xs text-faint">Empty working tree.</div>}
       {rows}
       {ctx && (
         <FileTreeContextMenu
@@ -816,8 +863,58 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
           workspaceId={workspace.id}
           path={ctx.path}
           onClose={() => setCtx(null)}
+          onNewFile={(dir) => setCreating(dir ? `${dir}/` : '')}
         />
       )}
+    </div>
+  );
+}
+
+/** Inline path input for the Files tab's "+" (Enter creates, Esc cancels). */
+function NewEntryInput({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  onSubmit: (path: string) => Promise<string | null>;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    const err = await onSubmit(value);
+    setBusy(false);
+    setError(err);
+  };
+  return (
+    <div className="px-1 pb-1.5">
+      <input
+        autoFocus
+        className="input h-7 w-full font-mono text-2xs"
+        placeholder="path/to/new-file.ts"
+        value={value}
+        spellCheck={false}
+        disabled={busy}
+        onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+        onChange={(e) => {
+          setValue(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          else if (e.key === 'Escape') onCancel();
+        }}
+        onBlur={() => {
+          if (!value.trim() && !busy) onCancel();
+        }}
+      />
+      <div className={clsx('px-1 pt-1 text-2xs', error ? 'text-err' : 'text-faint')}>
+        {error ?? 'Enter to create · end with / for a folder · Esc to cancel'}
+      </div>
     </div>
   );
 }
@@ -839,7 +936,8 @@ function FileTreeRow({
 }) {
   return (
     <button
-      className="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[13px] hover:bg-accent-soft/50"
+      data-motion="row"
+      className="flex w-full items-center gap-1.5 rounded-lg py-1 pr-2 text-left text-[13px] transition-colors hover:bg-accent-soft"
       style={{ paddingLeft: depth * 14 + 8 }}
       title={entry.name}
       onClick={onClick}
@@ -878,6 +976,7 @@ function FileTreeContextMenu({
   workspaceId,
   path,
   onClose,
+  onNewFile,
 }: {
   x: number;
   y: number;
@@ -885,6 +984,7 @@ function FileTreeContextMenu({
   workspaceId: string;
   path: string;
   onClose: () => void;
+  onNewFile: (dir: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useDismiss(true, onClose, ref);
@@ -902,7 +1002,8 @@ function FileTreeContextMenu({
     <div
       ref={ref}
       style={{ position: 'fixed', left: Math.min(x, window.innerWidth - 224), top: Math.min(y, window.innerHeight - 180), zIndex: 60 }}
-      className="glass w-56 overflow-hidden py-1"
+      data-motion="pop"
+      className="glass w-56 origin-top-left overflow-hidden py-1"
     >
       <MenuItem
         onClick={() => {
@@ -919,7 +1020,7 @@ function FileTreeContextMenu({
           if (r.error) useApp.getState().toast('error', r.error);
         }}
       >
-        <Code2 size={15} className="text-muted" /> Open in IDE
+        <VSCodeMark size={15} className="text-muted" /> Open in IDE
       </MenuItem>
       <MenuItem
         onClick={() => {
@@ -939,6 +1040,14 @@ function FileTreeContextMenu({
           <ExternalLink size={15} className="text-muted" /> Open with default app
         </MenuItem>
       )}
+      <MenuItem
+        onClick={() => {
+          onClose();
+          onNewFile(entry.dir ? path : path.slice(0, Math.max(0, path.lastIndexOf('/'))));
+        }}
+      >
+        <FilePlus size={15} className="text-muted" /> New file here…
+      </MenuItem>
       <MenuDivider />
       <MenuItem
         onClick={() => {
@@ -1071,43 +1180,52 @@ function Dock({ workspace }: { workspace: Workspace }) {
           className="-top-1"
         />
       )}
-      <div className="flex items-center gap-0.5 px-2 py-1">
-        {tabs.map((t) => {
-          const activeTab = open && tab === t.id;
-          return (
-            <div
-              key={t.id}
-              className={clsx(
-                'group flex items-center rounded-ctl text-xs transition-colors',
-                activeTab ? 'bg-accent-soft font-medium text-accent' : 'text-muted hover:text-fg'
-              )}
-            >
-              <button
-                className={clsx('flex min-w-0 max-w-[140px] items-center gap-1.5 py-1 pl-2', t.closable ? 'pr-1' : 'pr-2')}
-                title={t.label}
-                onClick={() => useApp.getState().setDock(workspace.id, !(open && tab === t.id), t.id)}
+      <div className="flex items-center gap-1 px-2 py-1.5">
+        <LiquidGlass
+          radius={999}
+          {...GLASS_CONTROL}
+          tint="clear"
+          className="lg-float flex min-w-0 items-center gap-0.5 p-[3px]"
+          style={{ background: 'var(--accent-soft)' }}
+        >
+          {tabs.map((t) => {
+            const activeTab = open && tab === t.id;
+            return (
+              <div
+                key={t.id}
+                data-motion="tab"
+                className={clsx(
+                  'group flex h-7 shrink-0 items-center rounded-full text-xs font-medium transition-colors',
+                  activeTab ? 'tab-lit text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
+                )}
               >
-                <span className="truncate">{t.label}</span>
-                {t.running && <span className="dot dot-running pulse !h-1.5 !w-1.5 shrink-0" />}
-              </button>
-              {t.closable && (
                 <button
-                  className="mr-1 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
-                  title="Close terminal"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (t.id.startsWith('rs:')) useApp.getState().closeRunTab(workspace.id, t.id.slice(3));
-                    else useApp.getState().closeDockTerminal(workspace.id, Number(t.id.split(':')[1]));
-                  }}
+                  className={clsx('flex h-full min-w-0 max-w-[140px] items-center gap-1.5 pl-3', t.closable ? 'pr-1' : 'pr-3')}
+                  title={t.label}
+                  onClick={() => useApp.getState().setDock(workspace.id, !(open && tab === t.id), t.id)}
                 >
-                  <X size={11} />
+                  <span className="truncate">{t.label}</span>
+                  {t.running && <StainedDot tone="running" size={6} ripple />}
                 </button>
-              )}
-            </div>
-          );
-        })}
+                {t.closable && (
+                  <button
+                    className="mr-1 grid h-5 w-5 place-items-center rounded-full text-faint opacity-0 transition-opacity hover:bg-accent-soft hover:text-err group-hover:opacity-100"
+                    title="Close terminal"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (t.id.startsWith('rs:')) useApp.getState().closeRunTab(workspace.id, t.id.slice(3));
+                      else useApp.getState().closeDockTerminal(workspace.id, Number(t.id.split(':')[1]));
+                    }}
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </LiquidGlass>
         <button
-          className="rounded-ctl p-1 text-muted hover:bg-accent-soft hover:text-fg"
+          className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title="New terminal"
           onClick={() => useApp.getState().addDockTerminal(workspace.id)}
         >
@@ -1116,7 +1234,7 @@ function Dock({ workspace }: { workspace: Workspace }) {
         <div className="flex-1" />
         {scriptKind && open && (
           <button
-            className={clsx('btn btn-ghost h-6 px-1.5 text-2xs', scriptRunning ? 'text-err' : 'text-muted')}
+            className={clsx('btn h-7 w-7 !px-0 text-2xs', scriptRunning ? 'btn-ghost text-err' : 'btn-accent')}
             title={scriptRunning ? `Stop ${scriptKind} script` : `Run ${scriptKind} script (WORKSPACE_PORT ${workspace.port})`}
             onClick={() => {
               if (scriptRunning) void invoke('script:stop', { workspaceId: workspace.id, kind: scriptKind });
@@ -1126,11 +1244,11 @@ function Dock({ workspace }: { workspace: Workspace }) {
                 });
             }}
           >
-            {scriptRunning ? <Square size={11} fill="currentColor" /> : <Play size={11} />}
+            {scriptRunning ? <Square size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}
           </button>
         )}
         <button
-          className="rounded-ctl p-1 text-muted hover:bg-accent-soft hover:text-fg"
+          className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           title={open ? 'Collapse' : 'Expand'}
           onClick={() => useApp.getState().setDock(workspace.id, !open)}
         >
@@ -1139,7 +1257,7 @@ function Dock({ workspace }: { workspace: Workspace }) {
       </div>
 
       {open && (
-        <div className="relative border-t" style={{ background: 'var(--term-bg)', height: dockH }}>
+        <div data-motion="collapse" className="relative" style={{ background: 'var(--term-bg)', height: dockH }}>
           {[...visited].filter((id) => tabs.some((t) => t.id === id)).map((id) => (
             <div key={id} className={clsx('absolute inset-0', id !== tab && 'hidden')}>
               {id === 'run' ? (
@@ -1152,6 +1270,7 @@ function Dock({ workspace }: { workspace: Workspace }) {
                   ptyId={ptyIdFor(id)}
                   ensure={id.startsWith('term:')}
                   active={open && id === tab}
+                  focusKey={`${workspace.id}:${id}`}
                   emptyHint={
                     id === 'setup' ? 'Setup script output appears here — press ▶ to run it.' : undefined
                   }
@@ -1191,8 +1310,29 @@ function RunScriptTerminal({
       ptyId={`rs:${workspace.id}:${scriptId}`}
       ensure={false}
       interactive
+      focusKey={`${workspace.id}:rs:${scriptId}`}
       active={active}
       emptyHint={`"${name}" hasn't run in this workspace yet — press ▶ on its card in the Run tab. Commands run right here, then the terminal is yours.`}
     />
   );
+}
+
+/** Callback ref + a value read from the element, re-read whenever it or its
+ *  content resizes (for chrome that floats over a scroller, and for overflow). */
+function useMeasured<T>(read: (el: HTMLElement) => T, initial: T): [(el: HTMLElement | null) => void, T] {
+  const [value, setValue] = useState(initial);
+  const ro = useRef<ResizeObserver | null>(null);
+  const readRef = useRef(read);
+  readRef.current = read;
+  const ref = useCallback((el: HTMLElement | null) => {
+    ro.current?.disconnect();
+    ro.current = null;
+    if (!el) return;
+    const measure = () => setValue(readRef.current(el));
+    measure();
+    ro.current = new ResizeObserver(measure);
+    ro.current.observe(el);
+    if (el.firstElementChild) ro.current.observe(el.firstElementChild);
+  }, []);
+  return [ref, value];
 }

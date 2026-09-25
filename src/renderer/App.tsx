@@ -22,6 +22,7 @@ import SettingsModal from './components/SettingsModal';
 import GitHubSignInModal from './components/GitHubSignInModal';
 import SubagentPreview from './components/SubagentPreview';
 import ImageLightbox from './components/ImageLightbox';
+import { GlobalImageMenu } from './components/ImageMenu';
 import { Modal, EmptyHint } from './components/common';
 import { Boxes } from 'lucide-react';
 
@@ -139,9 +140,6 @@ function AppInner() {
         else s.openPreview(wsId);
       } else if (action === 'tab-terminal' && wsId) {
         s.openDockTerminal(wsId);
-      } else if (action === 'tab-checks' && wsId) {
-        const caps = capsOf(s, s.workspaces.find((w) => w.id === wsId)?.projectId);
-        if (caps.githubRemote && s.ghAuth.authenticated) s.setRightTab(wsId, 'checks');
       } else if (action === 'create-pr' && wsId) {
         const caps = capsOf(s, s.workspaces.find((w) => w.id === wsId)?.projectId);
         if (caps.githubRemote && s.ghAuth.authenticated) void s.createPr(wsId);
@@ -194,22 +192,31 @@ function AppInner() {
   }
 
   return (
-    <div className="flex h-full bg-bg">
+    <div className="wash flex h-full">
       <Sidebar />
-      <main className="flex min-w-0 flex-1 flex-col border-l">
+      {/* The work area floats beside the sidebar as one rounded "stage" (theme.css
+          `.stage`). The 8px gutter around it is window chrome, so its top strip
+          stays draggable. */}
+      <div className="relative flex min-w-0 flex-1 py-2 pr-2">
+        <div className="drag-region absolute inset-x-0 top-0 h-2" />
+        <div className="stage flex min-w-0 flex-1 overflow-hidden">
+      {/* Chat keeps a usable floor so that when the window is too narrow for
+          sidebar + right panel at their set widths, the squeeze falls on the
+          (shrinkable) right panel instead of pushing it off the window's edge. */}
+      <main className="flex min-w-[320px] flex-1 flex-col">
         {showWorkspaces ? (
           <WorkspacesView />
         ) : activeWs ? (
           <WorkspaceView key={activeWs.id} workspace={activeWs} />
         ) : (
-          <div className="flex h-full flex-col">
+          <div className="wash-hero flex h-full flex-col">
             <div className="drag-region h-11 shrink-0" />
             <EmptyHint
               icon={<Boxes size={32} strokeWidth={1.5} />}
               title="No workspace selected"
               body="Create a workspace to spin up an isolated git worktree with its own branch, terminal, and agent."
               action={
-                <button className="btn btn-accent no-drag" onClick={() => useApp.getState().setModal({ kind: 'new-workspace' })}>
+                <button className="btn btn-accent no-drag h-9 px-5 text-[13px]" onClick={() => useApp.getState().setModal({ kind: 'new-workspace' })}>
                   New workspace
                 </button>
               }
@@ -217,7 +224,10 @@ function AppInner() {
           </div>
         )}
       </main>
-      {activeWs && !showWorkspaces && <RightPanel workspace={activeWs} />}
+      {/* An offloaded archive has no files for the panel to show (archive-disk-reclaim.md). */}
+      {activeWs && !showWorkspaces && !activeWs.filesFreed && <RightPanel workspace={activeWs} />}
+        </div>
+      </div>
 
       <CommandPalette />
       <Toasts />
@@ -235,6 +245,7 @@ function AppInner() {
       {modal?.kind === 'harness-sync' && <HarnessSyncModal />}
       {modal?.kind === 'subagent-preview' && <SubagentPreview />}
       <ImageLightbox />
+      <GlobalImageMenu />
     </div>
   );
 }
@@ -296,7 +307,7 @@ function FolderChoiceModal() {
           <code className="font-mono text-xs">{name}</code> isn’t a git repository. Choose how to open it:
         </p>
         <button
-          className="w-full rounded-card border p-3 text-left transition-colors hover:border-accent/50 hover:bg-accent-soft/40"
+          className="w-full rounded-card border p-3.5 text-left transition-colors hover:bg-accent-soft"
           onClick={() => choose(false)}
         >
           <div className="text-[13px] font-medium text-fg">Work in this folder</div>
@@ -305,7 +316,7 @@ function FolderChoiceModal() {
           </div>
         </button>
         <button
-          className="w-full rounded-card border p-3 text-left transition-colors hover:border-accent/50 hover:bg-accent-soft/40"
+          className="w-full rounded-card border p-3.5 text-left transition-colors hover:bg-accent-soft"
           onClick={() => choose(true)}
         >
           <div className="text-[13px] font-medium text-fg">Initialize git here</div>

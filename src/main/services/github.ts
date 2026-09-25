@@ -79,20 +79,41 @@ export async function ghClone(url: string, dest: string): Promise<void> {
 
 let repoListCache: { at: number; value: RecentRepo[] } | null = null;
 
-/** The signed-in user's repos, most recently pushed first (for "Recent repos"). */
+/**
+ * Every repo the signed-in user can access — owned, collaborator, and via org
+ * membership — most recently pushed first (for "Recent repos"). `gh repo list`
+ * only covers repos the user owns, so this goes through the REST API instead.
+ */
 export async function repoList(): Promise<RecentRepo[]> {
   if (repoListCache && Date.now() - repoListCache.at < 60_000) return repoListCache.value;
-  const rows = await ghJson<any[]>(['repo', 'list', '--limit', '30', '--json', 'nameWithOwner,description,url'], {
-    timeout: 30_000,
-  });
+  const rows = await ghJson<any[]>(
+    ['api', '/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&per_page=100'],
+    { timeout: 30_000 }
+  );
   if (!rows) return [];
   const value = rows.map((x) => ({
-    nameWithOwner: x.nameWithOwner ?? '',
+    nameWithOwner: x.full_name ?? '',
     description: x.description ?? '',
-    url: x.url ?? `https://github.com/${x.nameWithOwner}`,
+    url: x.html_url ?? `https://github.com/${x.full_name}`,
   }));
   repoListCache = { at: Date.now(), value };
   return value;
+}
+
+/** Search GitHub repos by name (public + private ones the user can see). */
+export async function repoSearch(query: string): Promise<RecentRepo[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const rows = await ghJson<any[]>(
+    ['search', 'repos', q, '--match', 'name', '--limit', '20', '--json', 'fullName,description,url'],
+    { timeout: 20_000 }
+  );
+  if (!rows) return [];
+  return rows.map((x) => ({
+    nameWithOwner: x.fullName ?? '',
+    description: x.description ?? '',
+    url: x.url ?? `https://github.com/${x.fullName}`,
+  }));
 }
 
 /** Create a private GitHub repo from an existing local folder and push it. */
@@ -220,23 +241,51 @@ interface PrProbe {
   number: number;
   state: string;
   mergeable: string | null;
+  reviewDecision: string | null;
+  checks: PrCheck[];
 }
 
 /**
- * One-call identity probe for the background poller: just number/state/
- * mergeable — no checks, comments, or deployments. `pr: null` means gh
- * answered "no PR for this branch"; `ok: false` means gh couldn't answer
- * (offline, auth expired) — callers treat that as no news, not a change.
+ * One-call probe for the background poller: number/state/mergeable plus the
+ * check rollup and review decision — still a single `gh pr view` (no comments,
+ * no deployments, no mergeability settle), so it stays far cheaper than the
+ * full refresh it decides whether to run. Checks and review are included
+ * because a green→red check or an approval is exactly the kind of change the
+ * poll must catch, yet identity/state/mergeable alone never move for it.
+ * `pr: null` means gh answered "no PR for this branch"; `ok: false` means gh
+ * couldn't answer (offline, auth expired) — callers treat that as no news.
  */
 export async function prProbe(wtPath: string, host: ExecHost = localHost): Promise<{ ok: boolean; pr: PrProbe | null }> {
-  const r = await gh(['pr', 'view', '--json', 'number,state,mergeable'], { cwd: wtPath, timeout: 20_000, host });
+  const r = await gh(['pr', 'view', '--json', 'number,state,mergeable,reviewDecision,statusCheckRollup'], {
+    cwd: wtPath,
+    timeout: 20_000,
+    host,
+  });
   if (!r.ok) return { ok: isNoPr(r), pr: null };
   try {
     const j = JSON.parse(r.stdout);
-    return { ok: true, pr: { number: j.number, state: j.state, mergeable: j.mergeable || null } };
+    const checks: PrCheck[] = Array.isArray(j.statusCheckRollup) ? j.statusCheckRollup.map(mapCheck) : [];
+    return {
+      ok: true,
+      pr: { number: j.number, state: j.state, mergeable: j.mergeable || null, reviewDecision: j.reviewDecision || null, checks },
+    };
   } catch {
     return { ok: false, pr: null };
   }
+}
+
+/**
+ * Compact fingerprint of the check + review state a probe and a cached full
+ * status can be compared on, so the poller notices a check flipping or a review
+ * landing without diffing whole arrays. Order-independent (checks come back in
+ * no fixed order).
+ */
+export function prSignals(pr: { checks: PrCheck[]; reviewDecision: string | null }): string {
+  const checks = pr.checks
+    .map((c) => `${c.name}:${c.state}`)
+    .sort()
+    .join('|');
+  return `${pr.reviewDecision ?? ''}#${checks}`;
 }
 
 /**

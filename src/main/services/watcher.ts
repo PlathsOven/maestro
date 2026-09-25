@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { broadcast } from '../bus';
-import { Workspaces } from '../db';
+import { Projects, Workspaces } from '../db';
 import { hostForWorkspace } from '../hosts';
 import type { ExecHost } from '../hosts/types';
 import type { ContextFile, Workspace } from '../../shared/types';
@@ -16,16 +16,51 @@ const timers = new Map<string, NodeJS.Timeout>();
 
 const NOISY = /(^|\/)(\.git|node_modules|\.context|dist|build|\.next|target|__pycache__|\.venv)(\/|$)/;
 
+// A throttle, not a debounce: the first change opens a short window and
+// everything inside it coalesces. A debounce kept resetting while an agent
+// edited continuously, freezing the UI's git state for the whole turn.
 function nudge(wsId: string) {
-  const prev = timers.get(wsId);
-  if (prev) clearTimeout(prev);
+  if (timers.has(wsId)) return;
   timers.set(
     wsId,
     setTimeout(() => {
       timers.delete(wsId);
       const fresh = Workspaces.get(wsId);
       if (fresh && !fresh.archived) broadcast('ws:updated', fresh);
-    }, 800)
+    }, 400)
+  );
+}
+
+/**
+ * Commits, pushes, checkouts and `git add` only touch git's own files — for a
+ * linked worktree those live outside it (its `.git` is a `gitdir:` pointer
+ * file), so the tree watcher never sees them. Adds watchers on the
+ * worktree's HEAD/index and on the shared refs for its branch and the base
+ * (ahead/behind), filtered so other workspaces' commits don't nudge this one.
+ */
+function watchGitDirs(ws: Workspace, into: fs.FSWatcher[]) {
+  const dotGit = path.join(ws.worktreePath, '.git');
+  let gitDir = dotGit;
+  let commonDir = dotGit;
+  if (!fs.statSync(dotGit).isDirectory()) {
+    gitDir = path.resolve(ws.worktreePath, fs.readFileSync(dotGit, 'utf8').replace(/^gitdir:/, '').trim());
+    commonDir = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim());
+  }
+  // git writes `<name>.lock` and renames it into place.
+  const name = (f: string | Buffer | null) => f?.toString().split(path.sep).join('/').replace(/\.lock$/, '');
+  into.push(
+    fs.watch(gitDir, (_ev, f) => {
+      const n = name(f);
+      if (n === 'HEAD' || n === 'index') nudge(ws.id);
+    })
+  );
+  into.push(
+    fs.watch(path.join(commonDir, 'refs'), { recursive: true }, (_ev, f) => {
+      const n = name(f);
+      const branch = Workspaces.get(ws.id)?.branch;
+      const base = (Projects.get(ws.projectId)?.baseBranch ?? '').replace(/^origin\//, '');
+      if (n === `heads/${branch}` || n === `remotes/origin/${branch}` || n === `remotes/origin/${base}`) nudge(ws.id);
+    })
   );
 }
 
@@ -41,11 +76,19 @@ export function watchWorkspace(ws: Workspace) {
         if (filename && NOISY.test(filename.toString())) return;
         nudge(ws.id);
       });
-      watcher.on('error', () => unwatchWorkspace(ws.id));
+      const watchers = [watcher];
+      try {
+        watchGitDirs(ws, watchers);
+      } catch {
+        // unexpected git layout — the tree watcher + turn-end refreshes still apply
+      }
+      for (const w of watchers) w.on('error', () => unwatchWorkspace(ws.id));
       unwatchers.set(ws.id, () => {
-        try {
-          watcher.close();
-        } catch {}
+        for (const w of watchers) {
+          try {
+            w.close();
+          } catch {}
+        }
       });
     } catch {
       // recursive fs.watch unsupported → skip silently

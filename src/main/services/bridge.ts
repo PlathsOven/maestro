@@ -10,16 +10,17 @@
  * The box still runs message/stop/queue_* for cloud workspaces; the device runs
  * those for local workspaces and every other kind (git/PR/workspace lifecycle).
  */
+import { broadcast } from '../bus';
 import { Comments, Messages, Settings, Todos, Workspaces, now, uid } from '../db';
-import { isLinked, relayFetch, applyEvents, schedulePublish, publishRunScripts, publishTodos, publishComments, resyncAll } from './account';
-import { sendChat, clearQueue, removeQueued, scheduleChat, editScheduledChat } from './chat';
+import { isLinked, relayFetch, relayRetryIn, relayStatus, applyEvents, schedulePublish, publishRunScripts, publishTodos, publishComments, resyncAll, downloadAttachment } from './account';
+import { agentLoopError, recordUserMessage, sendChat, clearQueue, removeQueued, editQueued, sendQueuedNow, scheduleChat, editScheduledChat } from './chat';
 import { cancelScheduled } from './schedule';
-import { createWorkspace } from './workspaces';
+import { createWorkspace, writeWorkspaceAttachment } from './workspaces';
 import { execRunScript, stopRunScript } from './runscripts';
 import { setWorkspaceCloud } from './cloudmove';
-import { stopAgent } from './harness';
+import { postSystem, stopAgent } from './harness';
 import { submitAskAnswer } from './ask';
-import type { HarnessId } from '../../shared/types';
+import type { Attachment, HarnessId } from '../../shared/types';
 import {
   execPrCreate,
   execPrMerge,
@@ -42,6 +43,44 @@ interface Job {
 
 let running = false;
 let backoff = 2000;
+
+/**
+ * Cadence (web-relay-event-bus §4.4). The relay tells us on every poll whether
+ * anything is watching this account; while something is we long-poll and stream
+ * live turns, and when nothing is we drop to a heartbeat and Neon gets to sleep.
+ * The grace window means a phone that reloads or flips apps doesn't cost the
+ * user a wake-up. 'legacy' is a relay that predates the flag — it gets exactly
+ * the old behaviour.
+ */
+export type RelayMode = 'live' | 'idle' | 'legacy';
+const LIVE_GRACE_MS = 60_000;
+/** Seconds between idle heartbeats; the relay sets it (`idleWait`). */
+let idleWait = 30;
+let sawWatch = false;
+let watchingAt = 0;
+let lastMode: RelayMode | null = null;
+
+export function relayMode(): RelayMode {
+  if (!sawWatch) return 'legacy';
+  return Date.now() - watchingAt < LIVE_GRACE_MS ? 'live' : 'idle';
+}
+
+/** Tell the renderer when the cadence changes, so Settings → Account can say
+ *  whether a phone is connected. */
+function noteMode(): void {
+  const mode = relayMode();
+  if (mode === lastMode) return;
+  lastMode = mode;
+  broadcast('account:relay-status', relayStatus());
+}
+
+/** Sleep in ≤5s slices so a stop / sign-out still takes effect promptly. */
+async function nap(ms: number): Promise<void> {
+  const until = Date.now() + ms;
+  while (running && isLinked() && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, Math.min(5000, until - Date.now())));
+  }
+}
 
 function cursor(): number {
   return Number(Settings.raw('account.deviceCursor') || '0');
@@ -70,22 +109,66 @@ const parseConv = (conversationId: string): [string, number] => {
   return [wsId, Number(agentStr || '1')];
 };
 
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+};
+
+/** Turn the relay attachment refs a web send carried into local worktree
+ *  attachments: download each photo over the device token and write it under
+ *  .context/attachments/, so the harness reads it off disk like a desktop attach
+ *  (web-desktop-parity §6.4). Failures are skipped — the text still sends. */
+async function downloadWebAttachments(wsId: string, refs: unknown): Promise<Attachment[]> {
+  if (!Array.isArray(refs) || refs.length === 0) return [];
+  const ws = Workspaces.get(wsId);
+  if (!ws) return [];
+  const out: Attachment[] = [];
+  for (const ref of refs.slice(0, 10)) {
+    const id = String((ref as any)?.id ?? '');
+    if (!id) continue;
+    const dl = await downloadAttachment(id);
+    if (!dl) continue;
+    const ext = EXT_BY_MIME[dl.mime.toLowerCase()] ?? 'png';
+    const name = String((ref as any)?.name ?? '').trim() || `photo.${ext}`;
+    const path = await writeWorkspaceAttachment(ws, { name, dataBase64: dl.dataBase64 });
+    out.push({ kind: dl.mime.startsWith('image/') ? 'image' : 'file', path, label: name });
+  }
+  return out;
+}
+
 /** Execute one job by calling the same service function the IPC handler calls
  *  (§9.4). Returns the relay's `done` body. Unknown kinds stay compatible. */
 async function runJob(job: Job): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   const [wsId, agentId] = parseConv(job.conversationId);
   switch (job.kind) {
     case 'message': {
+      // A `maestro-message` from an agent on another machine: apply the loop
+      // guard here (the sender can't see this chat's history). A refused message
+      // is still recorded — un-queued, under the relay's id — because
+      // republishing that id is the only thing that clears the relay's queued row.
+      const target = job.payload?.origin === 'agent' ? Workspaces.get(wsId) : null;
+      const blocked = target && agentLoopError(wsId, agentId);
+      if (target && blocked) {
+        recordUserMessage(target, agentId, String(job.payload?.text ?? ''), [], now(), { id: job.payload?.messageId, origin: 'agent' });
+        postSystem(wsId, agentId, `Didn't run the message above: ${blocked}.`);
+        schedulePublish(wsId);
+        return { ok: false, error: blocked };
+      }
       // The relay's message-queued event may have inserted a queued placeholder
       // row keyed by messageId; sendChat replaces it (id + origin) and starts the
       // turn with the desktop's normal system-prompt preamble (§12.6).
+      const attachments = await downloadWebAttachments(wsId, job.payload?.attachments);
       const r = await sendChat({
         workspaceId: wsId,
         agentId,
         text: String(job.payload?.text ?? ''),
-        attachments: [],
+        attachments,
         id: job.payload?.messageId,
-        origin: 'web',
+        turnId: job.payload?.turnId,
+        origin: job.payload?.origin === 'agent' ? 'agent' : 'web',
       });
       schedulePublish(wsId);
       return { ok: r.ok, error: r.error };
@@ -132,16 +215,29 @@ async function runJob(job: Job): Promise<{ ok: boolean; result?: unknown; error?
       return { ok: true, result: { agentId: next } };
     }
     case 'queue_remove': {
-      // Best-effort: drop the local queued row the web removed. The relay already
-      // removed its own row, so the web UI is correct regardless.
-      if (job.payload?.messageId && Messages.exists(job.payload.messageId)) Messages.remove(job.payload.messageId);
-      if (job.payload?.turnId) removeQueued(wsId, agentId, String(job.payload.turnId));
+      // The queued row now carries the web's messageId (enqueueLocal preserves it),
+      // so remove the real row by that id — the local and relay queues stay in sync.
+      const id = String(job.payload?.messageId ?? '');
+      if (id) {
+        removeQueued(wsId, agentId, id);
+        if (Messages.exists(id)) Messages.remove(id);
+      }
       schedulePublish(wsId);
       return { ok: true };
     }
     case 'queue_edit': {
-      // The relay holds the authoritative edited text; nothing safe to rewrite in
-      // the local queue by the web's id, so ack without a local change.
+      // Rewrite the real queued row by the web's messageId (empty text drops it).
+      const id = String(job.payload?.messageId ?? '');
+      if (id) editQueued(wsId, agentId, id, String(job.payload?.text ?? ''));
+      schedulePublish(wsId);
+      return { ok: true };
+    }
+    case 'queue_send_now': {
+      // Steer: interrupt the running turn so this queued message runs next. No-op
+      // if the turn already ended or the row is gone (a stale click racing a drain).
+      const id = String(job.payload?.messageId ?? '');
+      if (id) sendQueuedNow(wsId, agentId, id);
+      schedulePublish(wsId);
       return { ok: true };
     }
     case 'pr_create':
@@ -287,9 +383,19 @@ async function runJob(job: Job): Promise<{ ok: boolean; result?: unknown; error?
 }
 
 async function poll(): Promise<void> {
-  const res = await relayFetch(`/api/device/poll?wait=25&cursor=${cursor()}`);
+  // Live: hold the connection open, as before. Idle: ask for an answer now and
+  // sleep — the relay can answer a heartbeat without touching its database, and
+  // a job still arrives within one `idleWait`.
+  const wait = relayMode() === 'idle' ? 0 : 25;
+  const res = await relayFetch(`/api/device/poll?wait=${wait}&cursor=${cursor()}`);
   if (!res.ok) throw new Error(`device poll ${res.status}`);
-  const j = (await res.json()) as { jobs?: Job[]; events?: any[]; next?: number };
+  const j = (await res.json()) as { jobs?: Job[]; events?: any[]; next?: number; watch?: boolean; idleWait?: number };
+  if (typeof j.watch === 'boolean') {
+    sawWatch = true;
+    if (j.watch) watchingAt = Date.now();
+    if (typeof j.idleWait === 'number' && j.idleWait > 0) idleWait = j.idleWait;
+  }
+  noteMode();
   applyEvents(j.events ?? []);
   if (typeof j.next === 'number') setCursor(j.next);
   const done = handled();
@@ -315,12 +421,24 @@ async function poll(): Promise<void> {
 
 async function loop(): Promise<void> {
   while (running && isLinked()) {
+    // Honour the shared relay breaker (web-relay-egress-quota §B2) so this loop
+    // and the publish paths back off together instead of each hammering a dead
+    // relay on its own schedule. This poll is also the PROBER that closes it:
+    // relayFetch resets the breaker on the first 2xx. Sleep in ≤5s slices so a
+    // stop / sign-out still takes effect promptly.
+    const pause = relayRetryIn();
+    if (pause > 0) {
+      await nap(Math.min(pause, 5000));
+      continue;
+    }
     try {
       await poll();
       backoff = 2000; // healthy response → reset
+      // Idle: the heartbeat answered at once, so we pace the next one ourselves.
+      if (relayMode() === 'idle') await nap(idleWait * 1000);
     } catch {
       // Network error / relay down — back off 2s → 30s, then retry.
-      await new Promise((r) => setTimeout(r, backoff));
+      await nap(backoff);
       backoff = Math.min(backoff * 2, 30_000);
     }
   }
@@ -331,6 +449,10 @@ export function startBridge(): void {
   if (running) return;
   running = true;
   backoff = 2000;
+  // A fresh link may be a different (or older) relay: re-learn its protocol.
+  sawWatch = false;
+  watchingAt = 0;
+  lastMode = null;
   void loop();
 }
 

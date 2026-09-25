@@ -209,11 +209,13 @@ export function ContextMenu({
   x,
   y,
   onClose,
+  zIndex = 60,
   children,
 }: {
   x: number;
   y: number;
   onClose: () => void;
+  zIndex?: number;
   children: React.ReactNode;
 }) {
   const width = 200;
@@ -224,8 +226,9 @@ export function ContextMenu({
   return (
     <div
       ref={ref}
-      style={{ position: 'fixed', left, top, zIndex: 60, width }}
-      className="glass overflow-hidden py-1"
+      style={{ position: 'fixed', left, top, zIndex, width }}
+      data-motion="pop"
+      className="glass origin-top-left overflow-hidden py-1"
       // Keep clicks inside the menu from bubbling to the row underneath (whose
       // onClick would re-select the chat and undo a "Mark as unread").
       onMouseDown={(e) => e.stopPropagation()}
@@ -346,7 +349,7 @@ export function DetailCard({
   if (left + width > window.innerWidth - m) left = Math.max(m, rect.left - width - m);
   const top = Math.max(m, Math.min(rect.top, window.innerHeight - 220));
   return (
-    <div className="glass fade-in pointer-events-none fixed z-50 p-3" style={{ left, top, width }}>
+    <div data-motion="fade" className="glass pointer-events-none fixed z-50 p-3" style={{ left, top, width }}>
       {children}
     </div>
   );

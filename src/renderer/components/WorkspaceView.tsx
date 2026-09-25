@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import clsx from 'clsx';
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   DownloadCloud,
-  ExternalLink,
   FileCode,
   FolderOpen,
   GitBranch,
@@ -20,7 +20,10 @@ import {
 import { tryInvoke } from '../lib/api';
 import { hostAddress } from '../lib/hosts';
 import { COLLAPSED_RIGHT_RAIL, EMPTY_ARR, useApp, useCaps } from '../store/app';
-import { Spinner, StatusDot } from './common';
+import { Segmented, Spinner, StatusDot } from './common';
+import { VSCodeMark } from '../../shared/ui/brandIcons';
+import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
+import { StainedDot } from '../../shared/ui/StainedGlass';
 import { Menu, MenuItem, MenuDivider } from './Sidebar';
 import type { BranchInfo, Workspace } from '../../shared/types';
 import { formatShortcut, type ShortcutId } from '../../shared/shortcuts';
@@ -89,11 +92,14 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
     };
   }, [isAdopted, workspace.id, workspace.worktreePath]);
 
+  // An archived workspace whose worktree was offloaded to save disk has nothing
+  // on disk until restored — only its chat is viewable (archive-disk-reclaim.md).
+  const freed = !!workspace.filesFreed;
   // A diff is available for git projects and for folder projects with shadow-git
   // checkpoints (§7 Phase 5); a stale 'diff' tab on a plain folder falls back.
-  const showDiff = caps.git || caps.checkpoints;
+  const showDiff = (caps.git || caps.checkpoints) && !freed;
   const mode: 'chat' | 'diff' | 'editor' | 'preview' =
-    tab === 'diff' && showDiff ? 'diff' : tab === 'editor' ? 'editor' : tab === 'preview' ? 'preview' : 'chat';
+    freed ? 'chat' : tab === 'diff' && showDiff ? 'diff' : tab === 'editor' ? 'editor' : tab === 'preview' ? 'preview' : 'chat';
   useEffect(() => {
     if (mode === 'diff') setDiffVisited(true);
     if (mode === 'editor') setEditorVisited(true);
@@ -101,19 +107,30 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
   }, [mode]);
 
   const status = workspace.status === 'idle' && running ? 'running' : workspace.status;
+  const hostDown = !!(host && hostState && hostState !== 'connected');
+  // Chat scrolls under the header, which floats as glass (scroll-edge fade, no
+  // border). Diff/editor/preview keep it in flow: the preview is a native view
+  // that can't sit under HTML, and the others pin their own toolbars.
+  // A banner under the header (host down, archived) needs it in flow too.
+  const floatHeader = mode === 'chat' && !hostDown && !workspace.archived;
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div data-motion="swap" className="relative flex h-full min-w-0 flex-col">
       {/* breadcrumb header: status · project · branch, with the view toggles and
           window actions on the right. The PR lifecycle action (Create PR → Merge →
           Continue/Archive) now lives at the top of the right panel. */}
-      <header className="drag-region flex h-11 shrink-0 items-center gap-2 border-b px-4">
+      <header
+        className={clsx(
+          'drag-region flex h-11 shrink-0 items-center gap-2 px-4',
+          floatHeader ? 'scroll-edge-top absolute inset-x-0 top-0 z-20' : 'border-b'
+        )}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <StatusDot status={status} />
           {host && (
             <span
               className={clsx(
-                'flex shrink-0 items-center gap-1 rounded bg-raised px-1.5 py-0.5 text-2xs font-medium',
+                'flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium',
                 hostState === 'connected' || hostState === undefined ? 'text-muted' : hostState === 'error' || hostState === 'disconnected' ? 'text-err' : 'text-warn'
               )}
               title={`${cloudConversation ? 'Cloud · ' : ''}${hostAddress(host)} — ${hostState ?? 'connecting'}`}
@@ -128,7 +145,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
               <BranchMenu workspace={workspace} />
               {isAdopted && (
                 <span
-                  className="flex shrink-0 items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 text-2xs font-medium text-muted"
+                  className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
                   title="Adopted from Conductor — Maestro opened this existing worktree in place. Deleting the workspace here never removes the directory."
                 >
                   <DownloadCloud size={10} /> adopted
@@ -137,7 +154,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
             </>
           ) : (
             <span
-              className="flex shrink-0 items-center gap-1.5 rounded bg-accent-soft px-1.5 py-0.5 text-2xs font-medium text-muted"
+              className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
               title="Agents work directly in this folder — no branches or diffs. They have direct access under the current permission mode."
             >
               <FolderOpen size={11} /> in-place · direct access
@@ -154,67 +171,69 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
           {/* center mode toggle: Chat · Diff (git/checkpoints) · Editor (once a
               file is open) · Preview (always). The Globe button is retired — the
               embedded preview lives right here (§5.1). */}
-          <div className="mr-1 flex items-center rounded-ctl border bg-surface p-0.5">
-            {(
-              [
-                { id: 'chat', icon: <MessageSquare size={12} />, label: 'Chat', title: tabTip('Chat', 'tab-chat') },
-                ...(showDiff
-                  ? [{ id: 'diff' as const, icon: <FileDiff size={12} />, label: 'Diff', title: tabTip('Diff viewer', 'tab-diff') }]
-                  : []),
-                ...(hasOpenFiles || mode === 'editor'
-                  ? [{ id: 'editor' as const, icon: <FileCode size={12} />, label: 'Editor', title: tabTip('Editor', 'tab-editor') }]
-                  : []),
-                { id: 'preview' as const, icon: <Globe size={12} />, label: 'Preview', title: tabTip('Preview', 'tab-preview') },
-              ] as { id: 'chat' | 'diff' | 'editor' | 'preview'; icon: React.ReactNode; label: string; title: string }[]
-            ).map((m) => (
-              <button
-                key={m.id}
-                className={clsx(
-                  'relative flex items-center gap-1 rounded px-2 py-0.5 text-2xs font-medium transition-colors',
-                  mode === m.id ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg'
-                )}
-                title={m.title}
-                onClick={() =>
-                  m.id === 'preview'
-                    ? useApp.getState().openPreview(workspace.id)
-                    : useApp.getState().setTab(workspace.id, m.id)
+          {!freed && (
+            <>
+              <Segmented<'chat' | 'diff' | 'editor' | 'preview'>
+                size="md"
+                className="mr-1"
+                value={mode}
+                onChange={(id) =>
+                  id === 'preview' ? useApp.getState().openPreview(workspace.id) : useApp.getState().setTab(workspace.id, id)
                 }
-              >
-                {m.icon}
-                {m.label}
-                {/* There's something to show and the user isn't looking (§5): the
-                    dev server is up, Chromium has a page, or an agent is driving
-                    the pane. Same expanding halo as the running-status dots. */}
-                {m.id === 'preview' && mode !== 'preview' && previewLive && (
-                  <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5">
-                    <span className="status-ping absolute inset-0 rounded-full bg-st-running" />
-                    <span className="absolute inset-0 rounded-full bg-st-running" />
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <HeaderBtn
-            title="Open in IDE"
-            onClick={async () => {
-              const r = await tryInvoke('workspace:openInIDE', { workspaceId: workspace.id });
-              if (r.error) useApp.getState().toast('error', r.error);
-            }}
-          >
-            <ExternalLink size={13} />
-          </HeaderBtn>
-          <HeaderBtn title="Reveal in Finder" onClick={() => void tryInvoke('workspace:reveal', { workspaceId: workspace.id })}>
-            <FolderOpen size={13} />
-          </HeaderBtn>
+                options={(
+                  [
+                    { id: 'chat', icon: <MessageSquare size={12} />, label: 'Chat', title: tabTip('Chat', 'tab-chat') },
+                    ...(showDiff
+                      ? [{ id: 'diff' as const, icon: <FileDiff size={12} />, label: 'Diff', title: tabTip('Diff viewer', 'tab-diff') }]
+                      : []),
+                    ...(hasOpenFiles || mode === 'editor'
+                      ? [{ id: 'editor' as const, icon: <FileCode size={12} />, label: 'Editor', title: tabTip('Editor', 'tab-editor') }]
+                      : []),
+                    { id: 'preview' as const, icon: <Globe size={12} />, label: 'Preview', title: tabTip('Preview', 'tab-preview') },
+                  ] as { id: 'chat' | 'diff' | 'editor' | 'preview'; icon: React.ReactNode; label: string; title: string }[]
+                ).map((m) => ({
+                  value: m.id,
+                  title: m.title,
+                  label: (
+                    <>
+                      {m.icon}
+                      {m.label}
+                      {/* There's something to show and the user isn't looking (§5): the
+                          dev server is up, Chromium has a page, or an agent is driving
+                          the pane. Same expanding halo as the running-status dots. */}
+                      {m.id === 'preview' && mode !== 'preview' && previewLive && (
+                        <StainedDot tone="running" size={6} ripple className="!absolute right-0.5 top-0.5" />
+                      )}
+                    </>
+                  ),
+                }))}
+              />
+              <LiquidGlass radius={999} {...GLASS_CONTROL} tint="clear" className="lg-float flex items-center p-[3px]">
+                <HeaderBtn
+                  title="Open in IDE"
+                  onClick={async () => {
+                    const r = await tryInvoke('workspace:openInIDE', { workspaceId: workspace.id });
+                    if (r.error) useApp.getState().toast('error', r.error);
+                  }}
+                >
+                  <VSCodeMark size={13} />
+                </HeaderBtn>
+                <HeaderBtn title="Reveal in Finder" onClick={() => void tryInvoke('workspace:reveal', { workspaceId: workspace.id })}>
+                  <FolderOpen size={13} />
+                </HeaderBtn>
+              </LiquidGlass>
+            </>
+          )}
         </div>
       </header>
 
       {/* SSH connection banner — shown while a remote host is down/reconnecting. */}
-      {host && hostState && hostState !== 'connected' && (
+      {hostDown && host && (
         <div
+          data-motion="collapse"
           className={clsx(
             'flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-2xs',
-            hostState === 'connecting' ? 'bg-warn/10 text-warn' : 'bg-err/10 text-err'
+            hostState === 'connecting' ? 'text-warn' : 'text-err'
           )}
         >
           <Server size={12} />
@@ -224,18 +243,23 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
         </div>
       )}
 
+      {workspace.archived && <ArchivedBanner workspace={workspace} />}
+
       {/* center: chat (with chat tabs) or diff review */}
-      <div className="relative min-h-0 flex-1">
-        <div className={clsx('absolute inset-0', mode !== 'chat' && 'hidden')}>
+      <div
+        className="relative min-h-0 flex-1"
+        style={floatHeader ? ({ '--chrome-top': '44px' } as React.CSSProperties) : undefined}
+      >
+        <div data-motion="swap" className={clsx('absolute inset-0', mode !== 'chat' && 'hidden')}>
           <ChatPanel workspace={workspace} />
         </div>
         {diffVisited && (
-          <div className={clsx('absolute inset-0', mode !== 'diff' && 'hidden')}>
+          <div data-motion="swap" className={clsx('absolute inset-0', mode !== 'diff' && 'hidden')}>
             <DiffViewer workspace={workspace} active={mode === 'diff'} />
           </div>
         )}
         {editorVisited && (
-          <div className={clsx('absolute inset-0', mode !== 'editor' && 'hidden')}>
+          <div data-motion="swap" className={clsx('absolute inset-0', mode !== 'editor' && 'hidden')}>
             <React.Suspense
               fallback={
                 <div className="flex h-full items-center justify-center gap-2 text-sm text-muted">
@@ -262,7 +286,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
         )}
         {/* run-script editor: opened by clicking a card in the Run tab */}
         {editingScriptId && (
-          <div className="absolute inset-0 z-10 bg-bg">
+          <div data-motion="fade" className="absolute inset-0 z-10 bg-bg">
             <RunScriptEditor workspace={workspace} scriptId={editingScriptId} />
           </div>
         )}
@@ -270,6 +294,29 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
             The branch survives, so offer to recreate it as a Maestro worktree. */}
         {dirMissing && <AdoptedMissing workspace={workspace} onGone={() => setDirMissing(false)} />}
       </div>
+    </div>
+  );
+}
+
+/** Archived workspaces stay browsable; this says so and offers the way back. */
+function ArchivedBanner({ workspace }: { workspace: Workspace }) {
+  const restoring = workspace.status === 'setting-up';
+  return (
+    <div data-motion="collapse" className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-2xs text-muted">
+      <Archive size={12} className="shrink-0" />
+      <span className="min-w-0 flex-1 truncate">
+        {workspace.filesFreed
+          ? 'Archived — files cleared to save disk space. Restoring brings back the branch, uncommitted changes and local files.'
+          : 'Archived.'}{' '}
+        Sending a message restores it too.
+      </span>
+      <button
+        className="btn h-6 shrink-0 px-2.5 text-2xs"
+        disabled={restoring}
+        onClick={() => void useApp.getState().restoreWorkspace(workspace.id)}
+      >
+        {restoring ? 'Restoring…' : 'Restore'}
+      </button>
     </div>
   );
 }
@@ -324,7 +371,7 @@ function AdoptedMissing({ workspace, onGone }: { workspace: Workspace; onGone: (
 
 function HeaderBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button className="rounded-ctl p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg" title={title} onClick={onClick}>
+    <button className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg" title={title} onClick={onClick}>
       {children}
     </button>
   );
@@ -384,7 +431,7 @@ function BranchMenu({ workspace }: { workspace: Workspace }) {
     return (
       <input
         autoFocus
-        className="input no-drag h-6 w-72 px-1.5 py-0 font-mono text-xs"
+        className="input no-drag h-7 w-72 !rounded-full px-3 py-0 font-mono text-xs"
         placeholder={mode === 'create' ? 'new branch name (git checkout -b)' : 'branch name (git branch -m)'}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -403,13 +450,16 @@ function BranchMenu({ workspace }: { workspace: Workspace }) {
   return (
     <div className="no-drag relative min-w-0">
       <button
-        className="group flex min-w-0 items-center gap-1.5"
+        className={clsx(
+          'group flex h-7 min-w-0 items-center gap-1.5 rounded-full px-1.5 transition-colors hover:bg-accent-soft',
+          mode !== 'closed' && 'bg-accent-soft'
+        )}
         title={`${workspace.branch} · workspace ${workspace.name} — branch actions`}
         onClick={() => setMode(mode === 'closed' ? 'menu' : 'closed')}
       >
-        <GitBranch size={13} className="shrink-0 text-muted" />
-        <span className="truncate text-[13px] font-semibold">{workspace.branch}</span>
-        <ChevronDown size={11} className="shrink-0 text-faint opacity-0 group-hover:opacity-100" />
+        <GitBranch size={13} className="shrink-0 text-faint" />
+        <span className="truncate text-[13px] font-semibold tracking-tight">{workspace.branch}</span>
+        <ChevronDown size={11} className="shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
       </button>
       {mode === 'menu' && (
         <div className="absolute left-0 top-full z-40 w-72">
@@ -430,7 +480,7 @@ function BranchMenu({ workspace }: { workspace: Workspace }) {
         <div className="absolute left-0 top-full z-40 w-72">
           <Menu onClose={() => setMode('closed')}>
             <div className="max-h-64 overflow-y-auto">
-              {branches === null && <div className="px-3 py-2 text-xs text-faint">Loading branches…</div>}
+              {branches === null && <div className="px-3.5 py-2 text-xs text-faint">Loading branches…</div>}
               {branches?.filter((b) => b.name !== workspace.branch).map((b) => (
                 <MenuItem key={b.name} onClick={() => void switchTo(b.name)}>
                   <GitBranch size={12} className="text-muted" />
@@ -439,7 +489,7 @@ function BranchMenu({ workspace }: { workspace: Workspace }) {
               ))}
             </div>
             <MenuDivider />
-            <div className="px-3 py-1 text-2xs text-faint">One branch per worktree — conflicts offer a “-2” copy.</div>
+            <div className="px-3.5 py-1.5 text-2xs text-faint">One branch per worktree — conflicts offer a “-2” copy.</div>
           </Menu>
         </div>
       )}

@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Check,
   Copy,
-  Download,
   ExternalLink,
   Eye,
   FileWarning,
@@ -19,8 +18,7 @@ import { tryInvoke } from '../lib/api';
 import { basename, renderMarkdown } from '../lib/format';
 import { useZoomableImage, IMG_ZOOM_MIN, IMG_ZOOM_MAX, IMG_ZOOM_STEP } from '../lib/useZoomableImage';
 import { EMPTY_ARR, useApp } from '../store/app';
-import { Modal, Spinner, useDismiss } from './common';
-import { MenuItem } from './Sidebar';
+import { Modal, Segmented, Spinner } from './common';
 import { fileGlyph } from './RightPanel';
 import { monaco, monacoLanguage, applyEditorTheme, ensureEditorTheme } from '../lib/monaco';
 import {
@@ -33,6 +31,7 @@ import {
 import { registerBufferEvictor } from '../lib/editorEvictor';
 import { parseNotebook, serializeNotebook } from '../lib/nbformat';
 import NotebookEditor from './NotebookEditor';
+import { ImageContextMenu } from './ImageMenu';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
 import type { Workspace } from '../../shared/types';
@@ -64,6 +63,7 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
   const dirtyMap = useApp((s) => s.dirtyFiles[wsId]) ?? EMPTY_OBJ;
   const wsVersion = useApp((s) => s.wsVersion[wsId] ?? 0);
   const theme = useApp((s) => s.resolvedTheme);
+  const colorTheme = useApp((s) => s.settings.colorTheme);
   const closeNonce = useApp((s) => s.closeActiveFileNonce); // ⌘W from the menu (see effect below)
 
   const [views, setViews] = useState<Record<string, FileView>>({});
@@ -119,10 +119,11 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
     [wsId]
   );
 
-  // ---- theme: define + apply on mount and whenever the app theme flips ----
+  // ---- theme: define + apply on mount and whenever the app theme (variant or
+  // family) changes — the palette is read from the live CSS tokens ----
   useEffect(() => {
     applyEditorTheme(theme);
-  }, [theme]);
+  }, [theme, colorTheme]);
 
   // ---- create / replace a text model in the buffer cache ----
   const installTextBuffer = useCallback(
@@ -368,7 +369,7 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       {/* tab strip */}
-      <div className="flex shrink-0 items-stretch overflow-x-auto border-b bg-surface">
+      <div className="no-scrollbar flex shrink-0 items-center gap-1 overflow-x-auto px-2 pb-1 pt-1.5">
         {openFiles.map((path) => {
           const dup = dupBasenames.get(basename(path))! > 1;
           const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')).split('/').pop() : null;
@@ -376,8 +377,8 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
             <div
               key={path}
               className={clsx(
-                'group flex min-w-0 max-w-[220px] shrink-0 items-center gap-1.5 border-r px-2.5 py-1.5 text-xs',
-                path === activeFile ? 'bg-bg text-fg' : 'text-muted hover:bg-bg/50 hover:text-fg'
+                'group flex h-7 min-w-0 max-w-[220px] shrink-0 items-center gap-1.5 rounded-full pl-3 pr-1.5 text-xs transition-colors',
+                path === activeFile ? 'bg-accent-soft font-medium text-fg' : 'text-muted hover:bg-accent-soft/60 hover:text-fg'
               )}
             >
               <button
@@ -397,7 +398,7 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
               </button>
               {/* dirty dot until hover, then the close ✕ (middle-click also closes) */}
               <button
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-faint hover:bg-accent-soft hover:text-fg"
+                className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-faint hover:bg-accent-soft hover:text-fg"
                 title="Close tab (middle-click)"
                 onClick={() => requestClose(path)}
               >
@@ -417,12 +418,12 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
 
       {/* breadcrumb + actions for the active file */}
       {activeFile && (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b px-3 text-2xs text-muted">
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b px-4 text-2xs text-muted">
           <span className="min-w-0 truncate font-mono" title={activeFile}>
             {activeFile}
           </span>
           <button
-            className="shrink-0 rounded p-0.5 text-faint transition-colors hover:bg-accent-soft hover:text-fg"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-fg"
             title="Copy relative path"
             onClick={copyPath}
           >
@@ -430,34 +431,19 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
           </button>
           <div className="flex-1" />
           {isMarkdown && activeFile && (
-            <div className="flex shrink-0 items-center rounded-ctl border bg-surface p-0.5">
-              {(
-                [
-                  { id: 'preview', icon: <Eye size={11} />, label: 'Preview' },
-                  { id: 'edit', icon: <Pencil size={11} />, label: 'Edit' },
-                ] as const
-              ).map((m) => {
-                const on = (mdMode[activeFile] ?? 'preview') === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    className={clsx(
-                      'flex items-center gap-1 rounded px-1.5 py-0.5 font-medium transition-colors',
-                      on ? 'bg-accent-soft text-accent' : 'text-muted hover:text-fg'
-                    )}
-                    onClick={() => setMdMode((p) => ({ ...p, [activeFile]: m.id }))}
-                  >
-                    {m.icon}
-                    {m.label}
-                  </button>
-                );
-              })}
-            </div>
+            <Segmented<'preview' | 'edit'>
+              value={mdMode[activeFile] ?? 'preview'}
+              options={[
+                { value: 'preview', label: <span className="flex items-center gap-1"><Eye size={11} /> Preview</span> },
+                { value: 'edit', label: <span className="flex items-center gap-1"><Pencil size={11} /> Edit</span> },
+              ]}
+              onChange={(v) => setMdMode((p) => ({ ...p, [activeFile]: v }))}
+            />
           )}
           <button
             className={clsx(
-              'flex shrink-0 items-center gap-1 rounded-ctl px-1.5 py-0.5 transition-colors',
-              activeDirty ? 'text-accent hover:bg-accent-soft' : 'cursor-default text-faint'
+              'flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 font-medium transition-colors',
+              activeDirty ? 'bg-ink text-on-ink hover:opacity-90' : 'cursor-default text-faint'
             )}
             title="Save (⌘S)"
             disabled={!activeDirty}
@@ -655,25 +641,6 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
     { padding: 48, wheelModifier: true }
   );
 
-  const copyImage = async () => {
-    try {
-      const blob = await (await fetch(view.dataUrl)).blob();
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-      useApp.getState().toast('success', 'Image copied to clipboard');
-    } catch (err) {
-      useApp.getState().toast('error', `Copy failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const saveImage = () => {
-    const a = document.createElement('a');
-    a.href = view.dataUrl;
-    a.download = view.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
-
   return (
     <div
       className="absolute inset-0 flex flex-col"
@@ -698,7 +665,7 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
           />
         </div>
       </div>
-      <div className="flex items-center gap-3 border-t bg-bg px-3 py-1.5 text-2xs">
+      <div className="flex items-center gap-3 border-t bg-bg px-4 py-1.5 text-2xs">
         <div className="min-w-0 flex-1 truncate text-muted">
           {view.name}
           {dims && <span className="text-faint"> · {dims.w}×{dims.h}</span>}
@@ -706,7 +673,7 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
-            className="btn h-6 w-6 p-0"
+            className="btn btn-ghost h-6 w-6 p-0"
             title="Zoom out"
             onClick={() => zoomBy(1 / IMG_ZOOM_STEP)}
             disabled={scale <= IMG_ZOOM_MIN}
@@ -714,14 +681,14 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
             <ZoomOut size={13} />
           </button>
           <button
-            className="btn h-6 min-w-12 px-2 tabular-nums"
+            className="btn btn-ghost h-6 min-w-12 px-2 tabular-nums"
             title={isFit ? 'Actual size (100%)' : 'Fit to window'}
             onClick={toggleFit}
           >
             {Math.round(scale * 100)}%
           </button>
           <button
-            className="btn h-6 w-6 p-0"
+            className="btn btn-ghost h-6 w-6 p-0"
             title="Zoom in"
             onClick={() => zoomBy(IMG_ZOOM_STEP)}
             disabled={scale >= IMG_ZOOM_MAX}
@@ -734,57 +701,11 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
         <ImageContextMenu
           x={menu.x}
           y={menu.y}
-          onCopy={() => void copyImage()}
-          onSave={saveImage}
+          src={view.dataUrl}
+          name={view.name}
           onClose={() => setMenu(null)}
         />
       )}
-    </div>
-  );
-}
-
-function ImageContextMenu({
-  x,
-  y,
-  onCopy,
-  onSave,
-  onClose,
-}: {
-  x: number;
-  y: number;
-  onCopy: () => void;
-  onSave: () => void;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(true, onClose, ref);
-  return (
-    <div
-      ref={ref}
-      style={{
-        position: 'fixed',
-        left: Math.min(x, window.innerWidth - 200),
-        top: Math.min(y, window.innerHeight - 100),
-        zIndex: 60,
-      }}
-      className="glass w-48 overflow-hidden py-1"
-    >
-      <MenuItem
-        onClick={() => {
-          onClose();
-          onCopy();
-        }}
-      >
-        <Copy size={15} className="text-muted" /> Copy image
-      </MenuItem>
-      <MenuItem
-        onClick={() => {
-          onClose();
-          onSave();
-        }}
-      >
-        <Download size={15} className="text-muted" /> Save image…
-      </MenuItem>
     </div>
   );
 }
@@ -800,7 +721,7 @@ function BinaryCard({
 }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-3 rounded-card border bg-surface px-6 py-8 text-center">
+      <div className="flex max-w-sm flex-col items-center gap-3 rounded-card bg-accent-soft px-8 py-10 text-center">
         <FileWarning size={28} className="text-faint" strokeWidth={1.5} />
         <div className="min-w-0">
           <div className="truncate font-mono text-sm text-fg">{view.name}</div>
@@ -834,7 +755,7 @@ function ChangeBanner({
 }) {
   const deleted = kind === 'deleted';
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b bg-warn/10 px-3 py-1.5 text-2xs text-warn">
+    <div className="mx-3 mb-1 mt-2 flex shrink-0 items-center gap-2 rounded-ctl bg-warn/10 px-3 py-1.5 text-2xs text-warn">
       {deleted ? <Trash2 size={12} className="shrink-0" /> : <AlertTriangle size={12} className="shrink-0" />}
       <span className="min-w-0 flex-1">
         {deleted
@@ -842,15 +763,15 @@ function ChangeBanner({
           : 'Changed on disk since you opened it.'}
       </span>
       {deleted ? (
-        <button className="btn btn-ghost h-5 px-1.5 text-2xs" onClick={onSaveAnyway}>
+        <button className="btn btn-ghost h-6 px-2 text-2xs" onClick={onSaveAnyway}>
           Save (recreate)
         </button>
       ) : (
         <>
-          <button className="btn btn-ghost h-5 px-1.5 text-2xs" onClick={onReload} title="Discard my edits and load the disk version">
+          <button className="btn btn-ghost h-6 px-2 text-2xs" onClick={onReload} title="Discard my edits and load the disk version">
             Reload
           </button>
-          <button className="btn btn-ghost h-5 px-1.5 text-2xs" onClick={onKeepMine} title="Keep my edits; my next save overwrites the disk version">
+          <button className="btn btn-ghost h-6 px-2 text-2xs" onClick={onKeepMine} title="Keep my edits; my next save overwrites the disk version">
             Keep mine
           </button>
         </>

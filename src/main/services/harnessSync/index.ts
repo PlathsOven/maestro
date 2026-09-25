@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { broadcast, getWindow } from '../../bus';
+import { broadcast } from '../../bus';
 import { Messages, Projects, Settings, Workspaces, now, uid } from '../../db';
+import { backgroundFactor } from '../activity';
 import { addProject, createWorkspace } from '../workspaces';
 import { addRunFinishedListener } from '../harness';
 import { claudeDir } from '../harness/claude';
@@ -54,6 +55,9 @@ function rebuildWatched(): void {
     }
   }
   watched = next;
+  // The poll's size memo is keyed by the same session ids — drop the entries this
+  // rebuild orphaned (deleted chat, archived workspace) so it stays bounded.
+  for (const sessionId of sizes.keys()) if (!watched.has(sessionId)) sizes.delete(sessionId);
 }
 
 /** The set of session ids already tied to a Maestro chat (dedup, §5.3). */
@@ -69,8 +73,6 @@ function linkedIds(): Set<string> {
 
 const candidates = new Map<string, { root: string; app: HarnessSyncApp; ids: Set<string> }>();
 let lastScanAt: number | null = null;
-// Sessions seen with no prompts yet — retried when they grow.
-const emptySeen = new Map<string, number>();
 
 function isEnabled(): boolean {
   return Settings.global().harnessSync?.enabled ?? false;
@@ -323,6 +325,23 @@ function scheduleIngest(sessionId: string, root: string, filename: string): void
   );
 }
 
+// Verdict cache for sessions that aren't a Maestro chat (perf-cpu-ram §4.5.2):
+// deciding costs a 64 KB head read plus `placeCwd` (3 git subprocesses on a miss),
+// and every Claude Code session on the machine — including Maestro's own `claude
+// -p` children — pokes this path every 400 ms while it writes. Re-deciding once a
+// minute is plenty; the answer only changes when the user types a new prompt or
+// adds the repo to Maestro.
+const VERDICT_MS = 60_000;
+const verdicts = new Map<string, number>(); // sessionId → skip until
+
+/** Remember "not a chat (yet)" for this session. Pruned (rather than capped) so a
+ *  machine with thousands of transcripts can't grow the map forever. */
+function rememberVerdict(sessionId: string): void {
+  const at = Date.now();
+  if (verdicts.size > 1000) for (const [id, until] of verdicts) if (until <= at) verdicts.delete(id);
+  verdicts.set(sessionId, at + VERDICT_MS);
+}
+
 async function handleChange(sessionId: string, root: string, filename: string): Promise<void> {
   const w = watched.get(sessionId);
   if (w) {
@@ -335,34 +354,36 @@ async function handleChange(sessionId: string, root: string, filename: string): 
     return;
   }
   if (!isEnabled()) return;
+  if ((verdicts.get(sessionId) ?? 0) > Date.now()) return;
 
   // An unknown session in a known repo can become a chat automatically.
   const app: HarnessSyncApp = root === path.join(codexDir(), 'sessions') ? 'codex' : 'claude-code';
   const file = path.join(root, filename);
   const s = headReadFile(app, file);
-  if (!s) return;
-  if (!isImportable(s)) {
-    if (s.prompts < 1) emptySeen.set(sessionId, s.bytes);
-    return;
-  }
-  const placement = await placeCwd(s.cwd);
-  if (placement.kind === 'workspace' || placement.kind === 'adopt') {
-    const result: HarnessSyncImportResult = { projects: 0, workspaces: 0, chats: 0, focusWorkspaceId: null, errors: [] };
-    const ws = await resolveTarget(placement, app, result);
-    if (ws) {
-      await createChatForSession(ws, s).catch(() => {});
-      clearPlaceCache();
-      rebuildWatched();
+  if (s && isImportable(s)) {
+    const placement = await placeCwd(s.cwd);
+    if (placement.kind === 'workspace' || placement.kind === 'adopt') {
+      const result: HarnessSyncImportResult = { projects: 0, workspaces: 0, chats: 0, focusWorkspaceId: null, errors: [] };
+      const ws = await resolveTarget(placement, app, result);
+      if (ws) {
+        await createChatForSession(ws, s).catch(() => {});
+        clearPlaceCache();
+        rebuildWatched();
+        // Adopted: from here on it takes the `watched` path above. If the chat
+        // failed to materialize, fall through and rest the session like any other.
+        if (watched.has(sessionId)) return;
+      }
+    } else if (placement.kind === 'new-project' || placement.kind === 'new-folder') {
+      const dismissed = Settings.global().harnessSync?.dismissedRoots ?? [];
+      if (!dismissed.includes(normPath(placement.root))) {
+        const entry = candidates.get(placement.root) ?? { root: placement.root, app, ids: new Set<string>() };
+        entry.ids.add(sessionId);
+        candidates.set(placement.root, entry);
+        broadcastStatus();
+      }
     }
-  } else if (placement.kind === 'new-project' || placement.kind === 'new-folder') {
-    const dismissed = Settings.global().harnessSync?.dismissedRoots ?? [];
-    if (!dismissed.includes(normPath(placement.root))) {
-      const entry = candidates.get(placement.root) ?? { root: placement.root, app, ids: new Set<string>() };
-      entry.ids.add(sessionId);
-      candidates.set(placement.root, entry);
-      broadcastStatus();
-    }
   }
+  rememberVerdict(sessionId);
 }
 
 function sessionIdFromClaude(filename: string): string | null {
@@ -400,7 +421,6 @@ function watchTree(root: string, kind: HarnessSyncApp): fs.FSWatcher | null {
 // ---------- fallback poll ----------
 
 const POLL_MS = 30_000;
-const UNFOCUSED_EVERY = 10; // ≈5 min while backgrounded
 const sizes = new Map<string, number>();
 
 function pollTick(): void {
@@ -493,12 +513,14 @@ export function startHarnessSync(): void {
   watchTree(path.join(claudeDir(), 'projects'), 'claude-code');
   watchTree(path.join(codexDir(), 'sessions'), 'codex');
 
-  let tick = 0;
-  setInterval(() => {
-    tick++;
-    if (!(getWindow()?.isFocused() ?? false) && tick % UNFOCUSED_EVERY !== 0) return;
+  // Self-rearming (not setInterval) so the cadence follows focus live: 30s in
+  // front, 2 min in the background (perf-cpu-ram §4.6). The watchers do the real
+  // work; this only backstops a tree where recursive fs.watch is unavailable.
+  const loop = () => {
     try {
       pollTick();
     } catch {}
-  }, POLL_MS);
+    setTimeout(loop, POLL_MS * backgroundFactor());
+  };
+  setTimeout(loop, POLL_MS);
 }

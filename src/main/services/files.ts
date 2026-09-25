@@ -234,6 +234,21 @@ export function writeFile(
 }
 
 /**
+ * Create a new, empty file (or a folder, when `dir`) in the worktree for the
+ * Files tab's "+" button. Missing parent folders are created along the way.
+ * Confined like `writeFile` (safeResolve + realpath of the nearest existing
+ * ancestor), and never overwrites: an existing entry at `relPath` is an error.
+ */
+export function createEntry(worktreePath: string, relPath: string, dir: boolean): void {
+  const abs = safeResolve(worktreePath, relPath);
+  if (!abs) throw new Error('Path is outside the workspace');
+  if (!containedReal(worktreePath, path.dirname(abs))) throw new Error('Path is outside the workspace');
+  if (fs.existsSync(abs)) throw new Error(`${relPath} already exists`);
+  fs.mkdirSync(dir ? abs : path.dirname(abs), { recursive: true });
+  if (!dir) fs.writeFileSync(abs, '');
+}
+
+/**
  * List one directory of a workspace's working tree for the "All files" browser,
  * on the project's host. Unlike `git ls-files`, this is the real on-disk tree —
  * ignored and untracked entries (node_modules, dist, .git, .context, …) are

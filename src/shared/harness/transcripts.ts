@@ -8,7 +8,9 @@
  *
  * Both folds are line-oriented and idempotent: given the full set of lines from a
  * cursor, they group them into turns. The ingest layer advances a byte cursor by
- * the `consumed` count so settled turns are never re-read.
+ * the `consumed` count so settled turns are never re-read, and hands the open
+ * turn's `carry` back on the next call so a growing turn is never re-folded
+ * either (perf-cpu-ram §4.5.1).
  */
 import type { AgentBlock } from '../types';
 import { parseClaudeLine, parseJsonLine, truncate } from './parse';
@@ -37,10 +39,25 @@ export interface FoldResult {
   closed: ExternalTurn[];
   /** the still-in-progress final turn, if any. Streamed live / persisted at rest. */
   open?: ExternalTurn;
+  /** resumption state for `open` — hand it back as the next call's `carry` to
+   *  fold only the lines appended since (present iff `open` is). */
+  carry?: FoldCarry;
   /** number of leading input lines that belong entirely to closed turns — the
    *  count ingest advances its byte cursor past. `lines.length` when nothing is
    *  still open. */
   consumed: number;
+}
+
+/**
+ * The open turn plus its live block accumulator. Continuing from one is exactly
+ * equivalent to folding the turn's lines in a single pass — which the visible
+ * `blocks` alone cannot guarantee, because the accumulator's finalized/streaming
+ * split decides where a later block lands (`message-final` supersedes streamed
+ * deltas). Opaque to callers: store it, pass it back, drop it when the turn ends.
+ */
+export interface FoldCarry {
+  turn: ExternalTurn;
+  stream: BlockStream;
 }
 
 /** A turn under construction: the public shape plus the block accumulator and the
@@ -55,12 +72,12 @@ function tsOf(j: any): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-/** Reconstruct a work turn from a carry (a previous call's open turn), seeding the
- *  block accumulator with its blocks so later tool-results still attach by id. */
-function revive(carry: ExternalTurn): WorkTurn {
-  const stream = newBlockStream();
-  stream.finalBlocks = carry.blocks.map((b) => ({ ...b }) as AgentBlock);
-  return { ...carry, blocks: [...carry.blocks], stream, startIndex: -1 };
+/** Resume a previous call's open turn: its accumulator is carried on as-is, so
+ *  later lines (a tool-result attaching by id, an authoritative message) land
+ *  exactly where a single-pass fold would have put them. `startIndex` is -1 —
+ *  the turn began before this window, so it consumes none of its lines. */
+function revive(carry: FoldCarry): WorkTurn {
+  return { ...carry.turn, stream: carry.stream, startIndex: -1 };
 }
 
 function toExternal(t: WorkTurn, final: boolean): ExternalTurn {
@@ -92,7 +109,7 @@ function isInjectedPrompt(text: string): boolean {
   return /^<(maestro|system_instruction|system-reminder)/i.test(text.trim());
 }
 
-export function foldClaudeLines(lines: string[], carry?: ExternalTurn): FoldResult {
+export function foldClaudeLines(lines: string[], carry?: FoldCarry): FoldResult {
   const closed: ExternalTurn[] = [];
   let cur: WorkTurn | undefined = carry ? revive(carry) : undefined;
   const finishCur = () => {
@@ -158,7 +175,7 @@ function codexJoinText(items: unknown): string {
     .join('\n');
 }
 
-export function foldCodexLines(lines: string[], carry?: ExternalTurn): FoldResult {
+export function foldCodexLines(lines: string[], carry?: FoldCarry): FoldResult {
   const closed: ExternalTurn[] = [];
   let cur: WorkTurn | undefined = carry ? revive(carry) : undefined;
   let pendingPrompt: { text: string; ts: number } | null = null;
@@ -312,5 +329,5 @@ function finalizeFold(closed: ExternalTurn[], cur: WorkTurn | undefined, total: 
   }
   const open = toExternal(cur, false);
   const consumed = cur.startIndex >= 0 ? cur.startIndex : 0;
-  return { closed, open, consumed };
+  return { closed, open, carry: { turn: open, stream: cur.stream }, consumed };
 }

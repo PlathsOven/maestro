@@ -1,12 +1,10 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
   Bot,
   Brain,
   Check,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   Columns2,
   Copy,
   FileText,
@@ -52,6 +50,8 @@ import AttachmentPreviewModal from './AttachmentPreviewModal';
 // Transcript rendering now lives in the shared UI package (web-desktop-parity §6);
 // the desktop wraps it with store-bound adapters below.
 import SharedMarkdown from '../../shared/ui/Markdown';
+import { GLASS_FIELD, LiquidGlass } from '../../shared/ui/LiquidGlass';
+import { Chevron } from '../../shared/ui/primitives';
 import { BlockList, AttachmentChip as SharedAttachmentChip } from '../../shared/ui/blocks';
 import { AgentMessageView, UserMessageView, SystemMessageView, LiveTurnView as SharedLiveTurnView } from '../../shared/ui/transcript';
 import { beginPointerDrag, DetailCard, DetailRow, EmptyHint, ReadUnreadMenu, RenameInput, Resizer, ScrollingTitle, Spinner, StatusCircle, useDismiss, useHoverDetail } from './common';
@@ -59,6 +59,9 @@ import { INDICATOR_LABEL, isUnread, sessionIndicator, type IndicatorStatus } fro
 import { roleLabel, roleModelLabel } from '../../shared/types';
 import type { AgentBlock, Attachment, ChatMessage, SubagentRun, Workspace } from '../../shared/types';
 import { chatDisplayTitle } from '../../shared/chatTitle';
+import { matchesShortcut } from '../../shared/shortcuts';
+import { useShortcuts } from '../lib/shortcuts';
+import { ChatFindBar } from './ChatFind';
 
 export { BlockList };
 
@@ -136,15 +139,20 @@ type PaneTreeProps = {
 function SplitView({ workspace }: { workspace: Workspace }) {
   const focused = useApp((s) => s.composerAgent[workspace.id] ?? 1);
   const layout = useApp((s) => s.paneLayout[workspace.id]) ?? leaf(focused);
+  const split = paneCount(layout) > 1;
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 bg-canvas">
-      <PaneTree
-        node={layout}
-        workspace={workspace}
-        focused={focused}
-        firstId={firstLeaf(layout)}
-        chrome={paneCount(layout) > 1}
-      />
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      style={split ? { paddingTop: 'var(--chrome-top, 0px)' } : undefined}
+    >
+      {/* With pane headers showing, the panes start below the floating bar
+          (reset the inset for them) instead of scrolling under it. */}
+      <div
+        className="flex min-h-0 min-w-0 flex-1"
+        style={split ? ({ '--chrome-top': '0px' } as React.CSSProperties) : undefined}
+      >
+        <PaneTree node={layout} workspace={workspace} focused={focused} firstId={firstLeaf(layout)} chrome={split} />
+      </div>
     </div>
   );
 }
@@ -355,18 +363,30 @@ function ChatPane({
   onHeaderDragStart: (e: React.DragEvent) => void;
 }) {
   const messages = useApp((s) => s.messages[workspace.id]);
-  const liveTurns = useApp((s) => s.liveTurns);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastTopRef = useRef(0);
   const [pinned, setPinned] = useState(true);
   const [floatId, setFloatId] = useState<string | null>(null);
+  // The composer floats over the transcript (liquid glass), so the scroller is
+  // padded by the composer's live height to keep the last message reachable.
+  const dockRef = useRef<HTMLDivElement>(null);
+  const [dockH, setDockH] = useState(0);
+  // Find-in-chat: null = closed; `n` bumps on every open so ⌘F refocuses it.
+  const [find, setFind] = useState<{ seed: string; n: number } | null>(null);
+  const keys = useShortcuts();
+  const platform = useApp((s) => s.platform);
+  const findNonce = useApp((s) => s.chatFindNonce);
 
   const chatMessages = useMemo(
     () => (messages ?? []).filter((m) => m.agentId === agentId),
     [messages, agentId]
   );
-  const liveTurn = liveTurns[`${workspace.id}:${agentId}`];
-  const pendingAsk = useApp((s) => s.pendingAsks[`${workspace.id}:${agentId}`]);
+  // Narrowed to this pane's own chat (perf spec §4.9.1). Subscribing to the whole
+  // `liveTurns` map re-rendered every mounted pane — and with it every message in
+  // it — on every token of every chat in the fleet.
+  const chatKey = `${workspace.id}:${agentId}`;
+  const liveTurn = useApp((s) => s.liveTurns[chatKey]);
+  const pendingAsk = useApp((s) => s.pendingAsks[chatKey]);
 
   // The unread ("complete") dot clears when the user has actually seen the end of
   // the conversation: this scrollport is at its bottom, on screen, in a focused
@@ -376,8 +396,9 @@ function ChatPane({
   // while you're away is never silently cleared: the focus check fails until you
   // return, and once you're back the new content is what's on screen. Everything
   // is read fresh (DOM + store) so the focus/observer listeners can't act on a
-  // stale closure.
-  const maybeMarkRead = () => {
+  // stale closure. Stable per chat (§4.9.3) so the listener effects below can
+  // carry honest dependency arrays instead of re-subscribing on every render.
+  const maybeMarkRead = useCallback(() => {
     const el = scrollRef.current;
     // offsetParent goes null when a display:none ancestor hides the chat (the
     // Diff/Editor/Preview tab is on top) — being mounted isn't being seen; a
@@ -388,7 +409,7 @@ function ChatPane({
     // the moment the turn settles, which is when the dot would turn green.
     if (useApp.getState().liveTurns[`${workspace.id}:${agentId}`]) return;
     if (atBottomOf(el)) useApp.getState().markChatRead(workspace.id, agentId);
-  };
+  }, [workspace.id, agentId]);
 
   // The prompt that triggered the output currently on screen = the last user
   // message that has scrolled up behind the floating bar. The reminder exists to
@@ -397,7 +418,9 @@ function ChatPane({
   // Testing against the top alone (`top + 8`) left a dead zone one bar-height tall:
   // a message tucked behind the bar was still counted as on screen, so the float
   // kept showing the *previous* (older) prompt while covering the newer one.
-  const recomputeFloat = () => {
+  // Reads the DOM fresh on every call, so one identity serves for the pane's
+  // lifetime — the resize listener below is attached once per mount (§4.9.3).
+  const recomputeFloat = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const threshold = el.getBoundingClientRect().top + FLOAT_BAR_H;
@@ -407,18 +430,19 @@ function ChatPane({
       else break; // document order: once one is on/below screen, the rest are too
     }
     setFloatId(id);
-  };
+  }, []);
 
   // Follow the tail while pinned — but never while the user is selecting text in
-  // this pane. Auto-follow re-runs on *every* render, and a streaming turn
-  // re-renders on every token: yanking scrollTop out from under a drag moves the
-  // text under the cursor, so the selection lands somewhere other than where it
-  // was aimed and long selections are impossible to finish. Holding position for
-  // the length of a selection costs nothing — clearing it resumes the follow.
+  // this pane. Auto-follow re-runs whenever the content grows (a new message, a
+  // streaming turn's blocks, an ask card): yanking scrollTop out from under a drag
+  // moves the text under the cursor, so the selection lands somewhere other than
+  // where it was aimed and long selections are impossible to finish. Holding
+  // position for the length of a selection costs nothing — clearing it resumes the
+  // follow (the next event re-runs this).
   useEffect(() => {
     const el = scrollRef.current;
     if (pinned && el && !hasSelectionIn(el)) el.scrollTop = el.scrollHeight;
-  });
+  }, [chatMessages, liveTurn, pendingAsk, pinned]);
 
   // Selecting another session swaps this pane's conversation without remounting
   // it (the leaf keeps its React identity), so the previous chat's scroll offset
@@ -435,13 +459,17 @@ function ChatPane({
     lastTopRef.current = el.scrollTop;
   }, [workspace.id, agentId]);
 
-  // No deps: message heights settle across renders (markdown, folds, streaming),
-  // so re-measure each pass — mirrors the auto-scroll effect above.
+  // Which prompt is behind the bar changes with the content and with the
+  // scrollport's size — mirrors the auto-scroll effect above. onScroll recomputes
+  // too, so a late-settling height (an image finishing) is picked up the moment
+  // the user moves.
   useEffect(() => {
     recomputeFloat();
+  }, [chatMessages, liveTurn, pendingAsk, recomputeFloat]);
+  useEffect(() => {
     window.addEventListener('resize', recomputeFloat);
     return () => window.removeEventListener('resize', recomputeFloat);
-  });
+  }, [recomputeFloat]);
 
   // Sees-the-bottom checks for the paths that produce no scroll event. Content
   // settling covers a turn finishing (or a session switch swapping in a chat)
@@ -451,7 +479,7 @@ function ChatPane({
   // these viewing moments actually recurs, not be un-done by the next render.
   useEffect(() => {
     maybeMarkRead();
-  }, [chatMessages, liveTurn]);
+  }, [chatMessages, liveTurn, maybeMarkRead]);
   // Window focus (coming back to the app with the bottom already on screen) and
   // pane visibility (the chat tab surfacing back over Diff/Editor/Preview; the
   // observer also fires once on observe, covering mount and session switches).
@@ -465,7 +493,7 @@ function ChatPane({
       window.removeEventListener('focus', maybeMarkRead);
       io.disconnect();
     };
-  }, [workspace.id, agentId]);
+  }, [maybeMarkRead]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -491,6 +519,53 @@ function ChatPane({
     maybeMarkRead();
   };
 
+  useLayoutEffect(() => {
+    const d = dockRef.current;
+    if (!d) return;
+    const measure = () => setDockH((h) => (h === d.offsetHeight ? h : d.offsetHeight));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(d);
+    return () => ro.disconnect();
+  }, []);
+  // The composer growing (a long draft, the queue card, an error banner) must not
+  // bury the tail: while pinned, follow it like new content.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (pinned && el && !hasSelectionIn(el)) {
+      el.scrollTop = el.scrollHeight;
+      lastTopRef.current = el.scrollTop;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dockH]);
+
+  // ⌘F (or the palette) bumps the store nonce; the focused pane opens its find
+  // bar. The key is only taken while this chat is on screen and nothing else
+  // owns it — the Editor keeps Monaco's find, terminals and modals their own.
+  useEffect(() => {
+    if (!focused) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = scrollRef.current;
+      const s = useApp.getState();
+      if (!matchesShortcut(e, keys['chat.find'], platform) || !el || el.offsetParent === null) return;
+      if (s.modal || s.paletteOpen || (e.target as Element | null)?.closest?.('.xterm, .monaco-editor')) return;
+      e.preventDefault();
+      s.openChatFind();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focused, keys, platform]);
+  const seenFindNonce = useRef(findNonce); // mounting a pane never opens it
+  useEffect(() => {
+    if (findNonce === seenFindNonce.current || !focused) return;
+    seenFindNonce.current = findNonce;
+    // A short one-line selection in this pane seeds the query, like a browser.
+    const el = scrollRef.current;
+    const picked = el && hasSelectionIn(el) ? window.getSelection()!.toString().trim() : '';
+    const seed = picked.length <= 200 && !picked.includes('\n') ? picked : '';
+    setFind((f) => ({ seed, n: (f?.n ?? 0) + 1 }));
+  }, [findNonce, focused]);
+
   const empty = chatMessages.length === 0 && !liveTurn && !pendingAsk;
   const floatMsg = floatId ? chatMessages.find((m) => m.id === floatId) : undefined;
 
@@ -499,10 +574,28 @@ function ChatPane({
       {chrome && (
         <PaneHeader workspace={workspace} agentId={agentId} focused={focused} onDragStart={onHeaderDragStart} />
       )}
-      <div ref={scrollRef} onScroll={onScroll} data-img-gallery className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {floatMsg && <FloatingPrompt msg={floatMsg} scrollRef={scrollRef} />}
+      {find && (
+        <ChatFindBar
+          paneKey={chatKey}
+          scrollRef={scrollRef}
+          open={find}
+          top={chrome ? 48 : 'calc(var(--chrome-top, 0px) + 8px)'}
+          bottomInset={dockH}
+          onClose={() => setFind(null)}
+        />
+      )}
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        data-img-gallery
+        className="min-h-0 flex-1 overflow-y-auto px-5"
+        style={{ paddingTop: 'calc(var(--chrome-top, 0px) + 16px)', paddingBottom: dockH + 16 }}
+      >
+        {/* The find bar takes the top of the pane while open; the prompt float
+            would sit under it and cover the matches it scrolls to. */}
+        {floatMsg && !find && <FloatingPrompt msg={floatMsg} scrollRef={scrollRef} />}
         {showSetup && workspace.status === 'setting-up' && (
-          <div className="mb-3 rounded-card border bg-surface px-3 py-2.5" role="status" aria-live="polite">
+          <div className="mx-auto mb-4 max-w-3xl rounded-card bg-surface px-4 py-3" role="status" aria-live="polite">
             <div className="text-xs text-muted">
               {workspace.wsKind === 'in-place'
                 ? 'Preparing workspace…'
@@ -517,7 +610,7 @@ function ChatPane({
         )}
         {empty ? (
           <EmptyHint
-            icon={<MessageSquare size={30} strokeWidth={1.5} />}
+            icon={<MessageSquare size={26} strokeWidth={1.4} />}
             title="Describe the task"
             body={
               workspace.wsKind === 'in-place'
@@ -526,7 +619,7 @@ function ChatPane({
             }
           />
         ) : (
-          <div className={clsx('mx-auto space-y-4', chrome ? 'max-w-2xl' : 'max-w-3xl')}>
+          <div className={clsx('mx-auto space-y-6', chrome ? 'max-w-2xl' : 'max-w-3xl')}>
             {chatMessages.map((m) => (
               <MessageView key={m.id} msg={m} />
             ))}
@@ -535,7 +628,10 @@ function ChatPane({
           </div>
         )}
       </div>
-      <Composer workspace={workspace} agentId={agentId} />
+      {/* right-2.5 leaves the scroller's scrollbar uncovered */}
+      <div ref={dockRef} className="pointer-events-none absolute bottom-0 left-0 right-2.5 z-10">
+        <Composer workspace={workspace} agentId={agentId} />
+      </div>
     </div>
   );
 }
@@ -570,21 +666,21 @@ function PaneHeader({
       onClick={() => useApp.getState().setComposerAgent(workspace.id, agentId)}
       title="Drag to rearrange · click to focus"
       className={clsx(
-        'group flex h-8 shrink-0 cursor-grab items-center gap-1.5 border-b px-2 active:cursor-grabbing',
-        focused ? 'bg-accent-soft/70' : 'bg-bg hover:bg-accent-soft/30'
+        'group mx-2 mt-2 flex h-8 shrink-0 cursor-grab items-center gap-1.5 rounded-full px-2 transition-colors active:cursor-grabbing',
+        focused ? 'bg-accent-soft' : 'hover:bg-accent-soft/50'
       )}
     >
-      <GripVertical size={13} className="shrink-0 text-faint" />
+      <GripVertical size={13} className="shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
       {status ? (
         <StatusCircle status={status} size={11} />
       ) : (
-        <MessageSquare size={11} className={clsx('shrink-0', focused ? 'text-accent' : 'text-faint')} />
+        <MessageSquare size={11} className={clsx('shrink-0', focused ? 'text-muted' : 'text-faint')} />
       )}
       <span className={clsx('min-w-0 flex-1 truncate text-xs', focused ? 'font-medium text-fg' : 'text-muted')}>
         {title}
       </span>
       <button
-        className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+        className="shrink-0 rounded-full p-1 text-faint opacity-0 transition-[opacity,background-color,color] hover:bg-accent-soft hover:text-fg group-hover:opacity-100"
         title="Maximize — show only this chat"
         onClick={(e) => {
           e.stopPropagation();
@@ -594,7 +690,7 @@ function PaneHeader({
         <Maximize size={12} />
       </button>
       <button
-        className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
+        className="shrink-0 rounded-full p-1 text-faint opacity-0 transition-[opacity,background-color,color] hover:bg-accent-soft hover:text-err group-hover:opacity-100"
         title="Close pane — keeps the chat in the session list"
         onClick={(e) => {
           e.stopPropagation();
@@ -621,25 +717,27 @@ function FloatingPrompt({ msg, scrollRef }: { msg: ChatMessage; scrollRef: React
     // because the overlay unmounted under the cursor and severed the gesture each
     // time. `h-0` reserves no layout space (messages aren't pushed down); `sticky
     // top-0` pins it flush to the top of the scrollport as content scrolls behind.
-    <div className="pointer-events-none sticky top-0 z-10 h-0">
+    <div data-find-skip data-motion="fade" className="pointer-events-none sticky z-10 h-0" style={{ top: 'var(--chrome-top, 0px)' }}>
       <div className="mx-auto max-w-3xl pt-2">
-        <button
-          className="glass fade-in pointer-events-auto w-full px-3.5 py-2 text-left transition-colors hover:border-accent/50"
-          title="Jump to this message"
-          onClick={() =>
-            scrollRef.current
-              ?.querySelector(`[data-user-msg="${msg.id}"]`)
-              ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-          }
-        >
-          <span className="mb-0.5 flex items-center gap-1.5 text-2xs text-faint">
-            <User size={11} />
-            You · {timeAgo(msg.ts)}
-          </span>
-          <span className="line-clamp-2 text-[13px] leading-snug text-muted">
-            {msg.content.replace(/\s+/g, ' ').trim()}
-          </span>
-        </button>
+        {/* Same refracting glass as the composer, with the nav bars' floating
+            shadow, so the transcript bends through the rim as it scrolls. Extra
+            frost keeps the prompt legible: this float always sits over text. */}
+        <LiquidGlass radius={18} {...GLASS_FIELD} blur={4} tint="light" className="lg-float pointer-events-auto">
+          <button
+            className="block w-full px-3.5 py-2 text-left"
+            title="Jump to this message"
+            onClick={() =>
+              scrollRef.current
+                ?.querySelector(`[data-user-msg="${msg.id}"]`)
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }
+          >
+            <span className="mb-0.5 flex items-center gap-1.5 text-2xs text-faint">You · {timeAgo(msg.ts)}</span>
+            <span className="line-clamp-2 text-[13px] leading-snug text-fg/80">
+              {msg.content.replace(/\s+/g, ' ').trim()}
+            </span>
+          </button>
+        </LiquidGlass>
       </div>
     </div>
   );
@@ -724,7 +822,7 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
   }, [chatsMeta, chatIds, messages]);
 
   return (
-    <div className="relative flex shrink-0 flex-col border-r bg-bg" style={{ width: sessionsW }}>
+    <div className="relative flex shrink-0 flex-col border-r bg-bg/50" style={{ width: sessionsW }}>
       <Resizer
         axis="x"
         size={sessionsW}
@@ -735,13 +833,16 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
         onCommit={() => useApp.getState().commitLayout()}
         className="-right-1"
       />
-      <div className="flex items-center justify-between px-3 pb-1.5 pt-3">
-        <span className="text-2xs font-semibold uppercase tracking-wide text-faint">Sessions</span>
+      <div
+        className="flex items-center justify-between pb-2 pl-4 pr-2.5"
+        style={{ paddingTop: 'calc(var(--chrome-top, 0px) + 12px)' }}
+      >
+        <span className="text-xs font-medium text-muted">Sessions</span>
         <div className="flex items-center gap-0.5">
           <div ref={historyRef} className="relative">
             <button
               className={clsx(
-                'flex items-center rounded-ctl p-1 transition-colors',
+                'flex items-center rounded-full p-1.5 transition-colors',
                 historyOpen ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
               )}
               title="Recently closed sessions"
@@ -758,7 +859,7 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
             )}
           </div>
           <button
-            className="rounded-ctl p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
+            className="rounded-full p-1.5 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
             title="New chat (⌘T)"
             onClick={() => useApp.getState().newChat(workspace.id)}
           >
@@ -767,7 +868,7 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
         </div>
       </div>
       <div
-        className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2"
+        className="min-h-0 flex-1 space-y-px overflow-y-auto px-2 pb-2"
         onDragOver={onRailDragOver}
         onDragLeave={onRailDragLeave}
         onDrop={onRailDrop}
@@ -817,15 +918,15 @@ function ClosedSessionsMenu({
   onReopen: () => void;
 }) {
   return (
-    <div className="glass absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto py-1">
-      <div className="px-3 py-1 text-2xs font-semibold uppercase tracking-wide text-faint">Recently closed</div>
+    <div data-motion="pop" className="glass absolute left-0 top-full z-50 mt-1.5 max-h-80 w-64 overflow-y-auto p-1">
+      <div className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-faint">Recently closed</div>
       {sessions.length === 0 ? (
-        <div className="px-3 py-2 text-2xs text-faint">No recently closed sessions</div>
+        <div className="px-2.5 py-2 text-xs text-faint">No recently closed sessions</div>
       ) : (
         sessions.map((s) => (
           <button
             key={s.id}
-            className="group flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent-soft"
+            className="group flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent-soft"
             title="Reopen this session"
             onClick={() => {
               useApp.getState().reopenChat(workspace.id, s.id);
@@ -835,7 +936,7 @@ function ClosedSessionsMenu({
             <MessageSquare size={13} className="shrink-0 text-faint" />
             <span className="min-w-0 flex-1 truncate text-[13px] text-muted group-hover:text-fg">{s.title}</span>
             {s.lastAgentAt != null && <span className="shrink-0 text-2xs text-faint">{timeAgo(s.lastAgentAt)}</span>}
-            <RotateCcw size={12} className="shrink-0 text-faint group-hover:text-accent" />
+            <RotateCcw size={12} className="shrink-0 text-faint group-hover:text-fg" />
           </button>
         ))
       )}
@@ -885,6 +986,7 @@ function SessionRow({
   const { rect, hoverProps, hideHover } = useHoverDetail();
   return (
     <div
+      data-motion="row"
       draggable={!editing}
       onDragStart={(e) => {
         hideHover();
@@ -893,8 +995,8 @@ function SessionRow({
       onDragOver={(e) => onReorderDragOver(e, index)}
       onDragEnd={onReorderEnd}
       className={clsx(
-        'group relative flex cursor-pointer items-center gap-2 rounded-ctl px-2 py-1.5',
-        active ? 'bg-accent-soft' : 'hover:bg-accent-soft/60'
+        'group relative flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 transition-colors',
+        active ? 'tab-lit' : 'hover:bg-accent-soft/60'
       )}
       // Selecting the session opens its pane at the newest message; the pane
       // clears the unread dot itself once that bottom is actually on screen.
@@ -914,7 +1016,7 @@ function SessionRow({
       {status ? (
         <StatusCircle status={status} size={13} />
       ) : (
-        <MessageSquare size={13} className={clsx('shrink-0', active ? 'text-accent' : 'text-faint')} />
+        <MessageSquare size={13} className={clsx('shrink-0', active ? 'text-muted' : 'text-faint')} />
       )}
       {editing ? (
         <RenameInput
@@ -934,8 +1036,8 @@ function SessionRow({
       {!editing && (
         <button
           className={clsx(
-            'shrink-0 rounded p-0.5 hover:text-accent',
-            inSplit ? 'text-accent' : 'hidden text-faint group-hover:block'
+            'shrink-0 rounded-full p-1 transition-colors hover:bg-accent-soft hover:text-fg',
+            inSplit ? 'text-fg' : 'hidden text-faint group-hover:block'
           )}
           title={inSplit ? 'Showing in split view — click to remove' : 'Open beside the current chat (split view)'}
           onClick={(e) => {
@@ -948,7 +1050,7 @@ function SessionRow({
       )}
       {!editing && (
         <button
-          className="hidden shrink-0 rounded p-0.5 text-faint hover:text-err group-hover:block"
+          className="hidden shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-err group-hover:block"
           title="Close chat (⌘W · reopen with ⇧⌘T)"
           onClick={(e) => {
             e.stopPropagation();
@@ -1018,7 +1120,16 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function MessageView({ msg }: { msg: ChatMessage }) {
+/**
+ * One transcript row, by role — memoised (perf spec §4.9.1). A streaming turn
+ * re-renders its pane on every event, and re-rendering a settled message costs a
+ * markdown parse per block; `msg` is the only prop and store messages are
+ * immutable (every writer replaces the object, never patches it), so identity is
+ * a sound memo key. Anything that changes *without* a new message object —
+ * specialist runs, the auth-fix retry target — is subscribed inside the child,
+ * which re-renders on its own.
+ */
+const MessageView = React.memo(function MessageView({ msg }: { msg: ChatMessage }) {
   if (msg.role === 'user') {
     return <UserMessage msg={msg} />;
   }
@@ -1026,7 +1137,7 @@ function MessageView({ msg }: { msg: ChatMessage }) {
     return <SystemMessage msg={msg} />;
   }
   return <AgentMessage msg={msg} />;
-}
+});
 
 /**
  * Desktop system note: the shared view + store-driven error reporting. When the
@@ -1034,8 +1145,10 @@ function MessageView({ msg }: { msg: ChatMessage }) {
  * wired to resend the message the fault interrupted.
  */
 function SystemMessage({ msg }: { msg: ChatMessage }) {
-  const messages = useApp((s) => s.messages[msg.workspaceId]);
   const fix = msg.meta?.fix;
+  // Only a repair card needs the transcript (to find the interrupted prompt), so
+  // plain notes — the vast majority — don't re-render with every new message.
+  const messages = useApp((s) => (fix ? s.messages[msg.workspaceId] : undefined));
   // What the user sent right before the fault stopped the turn.
   const interrupted = fix
     ? (messages ?? []).filter((m) => m.agentId === msg.agentId && m.role === 'user' && m.ts <= msg.ts).pop()
@@ -1064,9 +1177,11 @@ function SystemMessage({ msg }: { msg: ChatMessage }) {
 /**
  * Desktop agent turn: the shared view, with the store-driven SubagentBar mounted
  * as its slot. Loads the turn's specialist runs lazily on reload; kept live
- * during a session by subagent:updated.
+ * during a session by subagent:updated. Memoised like MessageView (§4.9.1) —
+ * this is where the transcript's markdown parsing lives — with its own narrow
+ * subscription for the runs, so the slot still updates while the memo holds.
  */
-function AgentMessage({ msg }: { msg: ChatMessage }) {
+const AgentMessage = React.memo(function AgentMessage({ msg }: { msg: ChatMessage }) {
   const subRuns = useApp((s) => s.subagentRuns[msg.id]);
   const subCount = subRuns?.length ?? msg.meta?.subagents ?? 0;
   const subsLoaded = subRuns !== undefined;
@@ -1074,7 +1189,7 @@ function AgentMessage({ msg }: { msg: ChatMessage }) {
     if ((msg.meta?.subagents ?? 0) > 0 && !subsLoaded) void useApp.getState().loadSubagents(msg.workspaceId, msg.id);
   }, [msg.workspaceId, msg.id, msg.meta?.subagents, subsLoaded]);
   return <AgentMessageView message={msg} subagentSlot={<SubagentBar messageId={msg.id} count={subCount} />} />;
-}
+});
 
 /** Color for a specialist run's status dot. */
 function subStatusClass(status: SubagentRun['status']): string {
@@ -1093,12 +1208,12 @@ function SubagentBar({ messageId, count }: { messageId: string; count: number })
   if (count === 0) return null;
   const list = runs ?? [];
   return (
-    <div className="mb-1.5 px-1">
+    <div className="mb-2 px-1">
       <button
-        className="group/subs flex items-center gap-1.5 py-0.5 text-xs text-faint transition-colors hover:text-muted"
+        className="group/subs -ml-1 flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-xs text-faint transition-colors hover:bg-accent-soft hover:text-muted"
         onClick={() => setOpen(!open)}
       >
-        {open ? <ChevronDown size={11} className="shrink-0" /> : <ChevronRight size={11} className="shrink-0" />}
+        <Chevron open={open} size={11} />
         <Waypoints size={11} className="shrink-0" />
         <span>
           {count} subagent{count === 1 ? '' : 's'}
@@ -1112,7 +1227,7 @@ function SubagentBar({ messageId, count }: { messageId: string; count: number })
         )}
       </button>
       {open && (
-        <div className="mt-1 space-y-1 border-l-2 pl-2">
+        <div data-motion="collapse" className="ml-1.5 mt-1 space-y-0.5 border-l pl-2.5">
           {list.length === 0 ? (
             <div className="flex items-center gap-1.5 px-1 py-0.5 text-2xs text-faint">
               <Spinner className="!h-3 !w-3" /> Loading…
@@ -1132,29 +1247,30 @@ function SubagentRow({ run }: { run: SubagentRun }) {
   return (
     <button
       className={clsx(
-        'flex w-full items-center gap-2 rounded-ctl border bg-surface/60 px-2.5 py-1.5 text-left text-xs transition-colors hover:border-accent/40',
-        failed && 'border-err/40'
+        'flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-accent-soft hover:text-fg',
+        failed && 'bg-err/5'
       )}
       title="Open the specialist's full trace"
       onClick={() => useApp.getState().setModal({ kind: 'subagent-preview', run })}
     >
-      <Waypoints size={12} className="shrink-0 text-muted" />
-      <span className="shrink-0 font-medium">{roleLabel(run.role, settings)}</span>
-      <span className="min-w-0 flex-1 truncate text-2xs text-muted">{roleModelLabel(run)}</span>
+      <Waypoints size={12} className="shrink-0 text-faint" />
+      <span className="shrink-0 font-medium text-fg">{roleLabel(run.role, settings)}</span>
+      <span className="min-w-0 flex-1 truncate text-2xs text-faint">{roleModelLabel(run)}</span>
       {run.durationMs != null && <span className="shrink-0 text-2xs text-faint">{formatDuration(run.durationMs)}</span>}
       {run.status === 'running' ? (
         <Spinner className="!h-3 !w-3" />
       ) : failed ? (
         <XCircle size={12} className="shrink-0 text-err" />
       ) : (
-        <CheckCircle2 size={12} className="shrink-0 text-ok" />
+        <Check size={12} className="shrink-0 text-faint" />
       )}
     </button>
   );
 }
 
-/** Desktop live turn: flatten the store's LiveTurn (final + delta + accumulating
- *  block) into the block list the shared view renders. */
+/** Desktop live turn: settled blocks, then the streaming message's blocks, then
+ *  the accumulating text run. The block objects keep their identity across
+ *  tokens (only the running text is new), so the shared view re-renders just it. */
 function LiveTurnView({ turn }: { turn: LiveTurn }) {
   const blocks: AgentBlock[] = [...turn.finalBlocks, ...turn.deltaBlocks];
   if (turn.accumType && turn.accumText) {

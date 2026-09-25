@@ -19,7 +19,11 @@ export interface PanelWorkspace {
   diffAdd: number;
   diffDel: number;
   changedFiles: number;
-  git: PanelGit | null;
+  /** Optional because the web's *fleet* rows don't carry it — only the
+   *  single-workspace read the panels open with does (the fleet drops the
+   *  changed-file list; web-relay-egress-quota §A7). Both views already render
+   *  `git` absent as "—". */
+  git?: PanelGit | null;
   statusDigest?: PanelStatusDigest | null;
   runScripts?: PanelRunScript[] | null;
   todos?: PanelTodo[] | null;

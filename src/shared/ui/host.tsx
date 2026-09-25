@@ -18,10 +18,14 @@ export interface UiHost {
   /** Imperative post-render pass over a rendered-markdown subtree. The desktop
    *  wires this to its worktree-image loader + in-app file-link opener
    *  (useWorktreeImages), so agent screenshots and file links keep working
-   *  exactly as before. Runs after every render (markdown is rebuilt each time);
-   *  return a cleanup to detach listeners. Undefined ⇒ the shared Markdown falls
+   *  exactly as before. Runs whenever the rendered markdown changes (each
+   *  streaming delta included), which is the only time React rewrites that
+   *  subtree; return a cleanup to detach listeners. Undefined ⇒ the shared Markdown falls
    *  back to `imageSrc` for images and neutralises relative links (web). */
   hydrateMarkdown?: (root: HTMLElement) => (() => void) | void;
+  /** Spotlight an image tapped in rendered markdown. Undefined ⇒ images aren't
+   *  tappable (the desktop spotlights through hydrateMarkdown). */
+  openImage?: (src: string, alt: string) => void;
   copyText: (text: string) => Promise<void>;
   toast: (t: {
     kind: 'error' | 'info' | 'success';

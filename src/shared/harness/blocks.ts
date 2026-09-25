@@ -21,6 +21,16 @@ export interface BlockStream {
   deltaBlocks: AgentBlock[];
   accumType: 'text' | 'thinking' | null;
   accumText: string;
+  /**
+   * Lowest `finalBlocks` index patched IN PLACE since a publisher last read it —
+   * a `tool-result` landing in a block an earlier `message-final` already
+   * finalized, which is the common case (tools finalize with the message, their
+   * results arrive later). The live-turn delta protocol keys off it: a tick may
+   * only ask the relay to keep the first `finalDirtyFrom` blocks, or the relay
+   * would hold a copy of a block that has since changed (perf-cpu-ram §4.3).
+   * Undefined means "nothing final was rewritten"; the reader resets it.
+   */
+  finalDirtyFrom?: number;
 }
 
 export function newBlockStream(): BlockStream {
@@ -65,6 +75,10 @@ export function applyBlockEvent(s: BlockStream, ev: AgentEvent): boolean {
         const b = all[i];
         if (b.type === 'tool' && b.id === ev.toolId) {
           b.result = { ok: ev.ok, summary: ev.summary };
+          // An index inside finalBlocks means a block a previous live tick may
+          // already have shipped just changed — remember the earliest one so the
+          // next tick re-sends from there (§4.3).
+          if (i < s.finalBlocks.length) s.finalDirtyFrom = Math.min(s.finalDirtyFrom ?? i, i);
           break;
         }
       }

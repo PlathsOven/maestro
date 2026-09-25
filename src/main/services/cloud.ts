@@ -8,6 +8,7 @@ import type { ExecHost } from '../hosts/types';
 import { JournalChild, parseFrame, readJournalFrom } from '../hosts/journal';
 import { adapters, beginTurn, isAgentRunning, resolveTurn, setAwayDigestHook } from './harness';
 import { boxLinkedForHost } from './account';
+import { backgroundFactor, onForeground } from './activity';
 import { fireRemoteScheduled, pokeScheduler } from './schedule';
 import type { BuildOpts } from './harness/adapter';
 import type { Workspace } from '../../shared/types';
@@ -440,18 +441,34 @@ async function killChat(host: ExecHost, p: ChatPaths): Promise<void> {
 
 interface Follower {
   stop: () => void;
+  /** Back to the 1s cadence — something just happened on this chat. */
+  wake: () => void;
 }
 const followers = new Map<string, Follower>(); // `${wsId}:${agentId}`
 const fKey = (wsId: string, agentId: number) => `${wsId}:${agentId}`;
 
 const POLL_MS = 1000;
+const IDLE_CAP_MS = 10_000; // slowest an idle chat polls in the foreground
+const MAX_IDLE_MS = 30_000; // …and in the background (perf-cpu-ram §4.6)
+
+// The fleet is back in front of the user: re-tighten every idle follower so the
+// first journal line of whatever they do next lands in a second.
+onForeground(() => {
+  for (const f of followers.values()) f.wake();
+});
 
 /** Start (or keep) the follower for a cloud chat: it tails the journal from the
  *  stored offset, replays completed turns through `finalize`, and stays attached
- *  to a live turn. Idempotent. */
+ *  to a live turn. Idempotent — a second call on a live follower just wakes it. */
 export function startFollower(ws: Workspace, agentId: number): void {
   const key = fKey(ws.id, agentId);
-  if (followers.has(key)) return;
+  const running = followers.get(key);
+  if (running) {
+    // A send, a reconnect, a scheduler wake: whatever asked for a follower is
+    // about to produce journal bytes, so the existing one shouldn't be napping.
+    running.wake();
+    return;
+  }
   const host = hostForWorkspace(ws);
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -472,20 +489,40 @@ export function startFollower(ws: Workspace, agentId: number): void {
     followers.delete(key);
   };
 
+  // Adaptive cadence (§4.6): every tick is an SFTP stat, plus — when the chat is
+  // caught up — a `cat run.pid` and an `ls queue`, all on the 8-channel budget. A
+  // tick that finds nothing doubles the delay; anything happening resets it.
+  let delay = POLL_MS;
+  const again = (active: boolean) => {
+    if (stopped) return;
+    delay = active ? POLL_MS : Math.min(delay * 2, Math.min(IDLE_CAP_MS * backgroundFactor(), MAX_IDLE_MS));
+    timer = setTimeout(poll, delay);
+  };
+  const wake = () => {
+    delay = POLL_MS;
+    // Only re-arm while we're between polls (`timer` is null inside one, and the
+    // poll re-arms at the reset delay when it ends) — never two polls at once.
+    if (timer) {
+      clearTimeout(timer);
+      timer = setTimeout(poll, delay);
+    }
+  };
+
   const poll = async () => {
+    timer = null;
     if (stopped) return;
     let p: ChatPaths;
     try {
       p = await chatPaths(host, ws, agentId);
     } catch {
-      timer = setTimeout(poll, POLL_MS);
+      again(false); // unreachable box — back off until it answers again
       return;
     }
     let read: { data: string; size: number };
     try {
       read = await readJournalFrom(host, p.journal, readOffset);
     } catch {
-      timer = setTimeout(poll, POLL_MS);
+      again(false);
       return;
     }
     const buf = carry + read.data;
@@ -555,12 +592,18 @@ export function startFollower(ws: Workspace, agentId: number): void {
     }
 
     if (stopped) return;
+    // Bytes arrived, a turn is attached, or there's more journal to read: the
+    // chat is producing, so keep the fast cadence (a staged job counts too — see
+    // the idle branch).
+    let active = read.data.length > 0 || !!current || !!carry || read.size > readOffset;
     // Idle: no live turn, caught up to EOF, AND no queued job pending. The drain
     // may still be *alive but napping* on a future scheduled job (§4) — so split
     // the two cases.
     if (!current && !carry && read.size <= readOffset) {
       const alive = await drainAlive(host, p);
       const pending = (await host.exec('sh', ['-lc', `ls ${shq(p.queue)}/*.job 2>/dev/null | head -1`])).stdout.trim();
+      // A staged job is about to become journal lines — don't nap through it.
+      active = active || !!pending;
       if (!alive && !pending) {
         // The chat is quiescent: rotate the journal so files stay small (§6.3) and
         // stand down; the next send (or reconnect) starts a fresh follower.
@@ -577,10 +620,10 @@ export function startFollower(ws: Workspace, agentId: number): void {
         return;
       }
     }
-    timer = setTimeout(poll, POLL_MS);
+    again(active);
   };
 
-  followers.set(key, { stop: finish });
+  followers.set(key, { stop: finish, wake });
   void poll();
 }
 

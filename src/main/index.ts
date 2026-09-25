@@ -9,6 +9,7 @@ import { resolveShortcuts } from '../shared/shortcuts';
 import { appIconPath } from './icon';
 import { registerIpc } from './ipc';
 import { detectHarnesses, stopAllAgents } from './services/harness';
+import { memorySummary } from './services/memguard';
 import { refreshCodexCatalog } from './services/harness/codex-models';
 import { catchUpAll, reconnectCatchUp, stopAllFollowers } from './services/cloud';
 import { bootDrainLocalQueues } from './services/chat';
@@ -16,12 +17,12 @@ import * as account from './services/account';
 import { isCloudWorkspace } from './hosts';
 import { setHostConnectedHook } from './hosts/ssh';
 import { installBridgeClis, startRoleServer, stopRoleServer } from './services/roleserver';
-import { destroyAllPreviews } from './services/preview';
+import { destroyAllPreviews, releasePreviewFocus } from './services/preview';
 import { killAllPtys } from './services/pty';
 import { shutdownAllKernels } from './services/jupyter';
 import { stopAllDictation } from './services/stt';
 import { watchAllActive } from './services/watcher';
-import { backfillChatTitles } from './services/workspaces';
+import { backfillChatTitles, sweepArchivedWorkspaces } from './services/workspaces';
 import { startPrPolling } from './services/pr';
 import { startHarnessSync } from './services/harnessSync';
 import { initRemoteHosts } from './hosts/remote';
@@ -250,9 +251,38 @@ function createWindow() {
     startupLog(`renderer failed to load (${code} ${desc}) ${url}`);
     reveal('did-fail-load'); // an error page beats an invisible process
   });
+  // A dead renderer used to be the end of the session: a blank window until the
+  // user quit and relaunched — while main, and any agent turn it was running,
+  // carried on fine behind it. The renderer is disposable by design (everything
+  // it shows is rebuilt from main: messages from the db, running turns via
+  // `chat:live`), so bring it back. The usual cause is the machine running out of
+  // memory (`oom` here means "an allocation failed", not "this process was big" —
+  // docs/specs/memory-guard.md), and a reload into the same exhaustion just dies
+  // again, hence the backoff. The count resets once a renderer has stayed up, and
+  // is capped so a renderer that can't start doesn't retry forever.
+  const RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000, 60_000];
+  let recoveries = 0;
+  let lastLoadAt = Date.now();
+  let recoveryTimer: NodeJS.Timeout | undefined;
+  mainWindow.webContents.on('did-finish-load', () => {
+    lastLoadAt = Date.now();
+  });
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
-    startupLog(`renderer process gone: ${details.reason} (exit ${details.exitCode})`);
+    startupLog(`renderer process gone: ${details.reason} (exit ${details.exitCode}) — ${memorySummary()}`);
     reveal('render-process-gone');
+    if (details.reason === 'clean-exit') return;
+    if (Date.now() - lastLoadAt > 2 * 60_000) recoveries = 0;
+    const delay = RECOVERY_DELAYS_MS[recoveries++];
+    if (delay === undefined) {
+      startupLog('renderer keeps dying — giving up on automatic recovery (View → Reload to retry)');
+      return;
+    }
+    clearTimeout(recoveryTimer);
+    recoveryTimer = setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      startupLog(`reloading the renderer (attempt ${recoveries}) — ${memorySummary()}`);
+      mainWindow.webContents.reload();
+    }, delay);
   });
 
   // External links open in the default browser, not inside the app.
@@ -272,6 +302,10 @@ function createWindow() {
 
   // dom-ready lands before ready-to-show, so the window is never shown unzoomed.
   mainWindow.webContents.on('dom-ready', restoreZoom);
+
+  // Focusing the app itself takes the keyboard back from any preview page the
+  // user had clicked into (see guardFocus in services/preview).
+  mainWindow.webContents.on('focus', releasePreviewFocus);
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
@@ -429,7 +463,6 @@ function buildMenu() {
         { label: 'Editor', accelerator: keys['tab-editor'] ?? undefined, click: menuAction('tab-editor') },
         // ⌘⇧P is taken by Create Pull Request, so Preview uses ⌘⇧B (spec §5.1).
         { label: 'Preview', accelerator: keys['tab-preview'] ?? undefined, click: menuAction('tab-preview') },
-        { label: 'Checks', accelerator: keys['tab-checks'] ?? undefined, click: menuAction('tab-checks') },
         { type: 'separator' },
         { label: 'Toggle Theme', click: menuAction('toggle-theme') },
         { type: 'separator' },
@@ -606,6 +639,11 @@ if (!gotLock && !isSmoke) {
         .finally(() => void catchUpAll())
     );
     step('bootDrainLocalQueues', bootDrainLocalQueues);
+    // Reclaim disk from archived workspaces that still hold their worktree
+    // (archived before this existed, or while it was off) — after boot settles.
+    step('sweepArchivedWorkspaces', () => {
+      setTimeout(() => void sweepArchivedWorkspaces().catch(() => {}), 60_000);
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

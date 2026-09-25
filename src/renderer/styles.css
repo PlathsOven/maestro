@@ -1,4 +1,5 @@
 @import '../shared/ui/theme.css';
+@import '../shared/ui/themes.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -42,4 +43,14 @@ body,
 }
 .xterm .xterm-viewport {
   background-color: transparent !important;
+}
+
+/* Find-in-chat matches (ChatFind.tsx, CSS Custom Highlight API). Raw rgba — a
+   Tailwind opacity modifier on a var-colour token compiles to nothing. */
+::highlight(chat-find) {
+  background-color: rgba(224, 147, 15, 0.3);
+}
+::highlight(chat-find-current) {
+  background-color: #e0930f;
+  color: #1c1b1a;
 }

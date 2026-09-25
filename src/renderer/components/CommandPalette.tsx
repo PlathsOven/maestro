@@ -15,8 +15,10 @@ import {
   Sun,
   Terminal as TerminalIcon,
 } from 'lucide-react';
+import { GitHubMark } from '../../shared/ui/brandIcons';
 import { useApp, capsOf } from '../store/app';
 import { StatusDot } from './common';
+import { LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { formatShortcut, type ShortcutId } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
 
@@ -81,10 +83,10 @@ export default function CommandPalette() {
     const wsActions: Item[] = activeWsId
       ? ([
           { id: 'a-chat', label: 'Go to Chat', hint: hk('focus-composer'), icon: <MessageSquare size={13} />, action: () => { s.setTab(activeWsId, 'chat'); s.focusComposer(); }, show: true },
+          { id: 'a-find', label: 'Find in Chat', hint: hk('chat.find'), icon: <Search size={13} />, action: () => { s.setTab(activeWsId, 'chat'); s.openChatFind(); }, show: true },
           { id: 'a-new-chat', label: 'New Chat', hint: hk('new-chat'), icon: <MessageSquare size={13} />, action: () => { s.setTab(activeWsId, 'chat'); s.newChat(activeWsId); }, show: true },
           { id: 'a-term', label: 'Open Terminal', hint: hk('tab-terminal'), icon: <TerminalIcon size={13} />, action: () => s.openDockTerminal(activeWsId), show: true },
           { id: 'a-diff', label: 'Open Diff Viewer', hint: hk('tab-diff'), icon: <FileDiff size={13} />, action: () => s.setTab(activeWsId, 'diff'), show: caps.git },
-          { id: 'a-checks', label: 'Open Checks', hint: hk('tab-checks'), icon: <ListChecks size={13} />, action: () => s.setRightTab(activeWsId, 'checks'), show: showPr },
           { id: 'a-review-agent', label: 'Start Review Agent (new chat)', icon: <ListChecks size={13} />, action: () => void s.startReviewAgent(activeWsId), show: caps.git },
           { id: 'a-pr', label: 'Create Pull Request', hint: hk('create-pr'), icon: <GitPullRequest size={13} />, action: () => void s.createPr(activeWsId), show: showPr },
           { id: 'a-archive', label: 'Archive Workspace', icon: <Archive size={13} />, action: () => void s.archiveWorkspace(activeWsId), show: true },
@@ -95,7 +97,7 @@ export default function CommandPalette() {
       { id: 'a-new-ws', label: 'New Workspace', hint: hk('new-workspace'), icon: <Plus size={13} />, action: () => s.setModal({ kind: 'new-workspace' }) },
       ...wsActions,
       { id: 'a-open-project', label: 'Open Project…', icon: <FolderGit2 size={13} />, action: () => void s.openLocalProject() },
-      { id: 'a-clone-repo', label: 'Open GitHub Project…', icon: <FolderGit2 size={13} />, action: () => s.setModal({ kind: 'clone-repo' }) },
+      { id: 'a-clone-repo', label: 'Open GitHub Project…', icon: <GitHubMark size={13} />, action: () => s.setModal({ kind: 'clone-repo' }) },
       { id: 'a-remote-folder', label: 'Open Remote Folder…', icon: <FolderGit2 size={13} />, action: () => s.setModal({ kind: 'remote-folder' }) },
       { id: 'a-create-project', label: 'Quick Start Project…', icon: <FolderGit2 size={13} />, action: () => s.setModal({ kind: 'create-project' }) },
       ...(conductorDetected
@@ -127,15 +129,24 @@ export default function CommandPalette() {
 
   return (
     <div
-      className="glass-scrim fixed inset-0 z-50 flex items-start justify-center bg-black/30 pt-[16vh]"
+      data-motion="modal"
+      className="glass-scrim fixed inset-0 z-50 flex items-start justify-center bg-black/25 pt-[16vh]"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <div className="glass glass-panel fade-in w-[560px] overflow-hidden">
-        <div className="flex items-center gap-2 border-b px-3.5 py-2.5">
-          <Search size={14} className="text-muted" />
+      <LiquidGlass
+        radius={20}
+        bezel={20}
+        thickness={80}
+        strength={0.5}
+        blur={4}
+        tint="panel"
+        className="flex w-[600px] flex-col overflow-hidden"
+      >
+        <div className="flex items-center gap-3 px-5 pb-3 pt-4">
+          <Search size={17} className="shrink-0 text-faint" />
           <input
             ref={inputRef}
-            className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
+            className="flex-1 bg-transparent text-[16px] tracking-tight outline-none placeholder:text-faint"
             placeholder="Jump to workspace or run a command…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -154,14 +165,14 @@ export default function CommandPalette() {
             }}
           />
         </div>
-        <div className="max-h-[380px] overflow-y-auto py-1.5">
-          {filtered.length === 0 && <div className="px-4 py-3 text-xs text-faint">No matches</div>}
+        <div className="max-h-[400px] overflow-y-auto border-t border-border/60 p-2">
+          {filtered.length === 0 && <div className="px-3 py-6 text-center text-xs text-faint">No matches</div>}
           {filtered.map((item, i) => (
             <button
               key={item.id}
               className={clsx(
-                'flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left text-[13px]',
-                i === idx ? 'bg-accent-soft' : ''
+                'flex h-9 w-full items-center gap-3 rounded-ctl px-3 text-left text-[13px]',
+                i === idx ? 'bg-accent-soft text-fg' : 'text-fg/90'
               )}
               onMouseEnter={() => setIdx(i)}
               onClick={() => {
@@ -171,11 +182,11 @@ export default function CommandPalette() {
             >
               <span className="flex w-4 shrink-0 items-center justify-center text-muted">{item.icon}</span>
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              {item.hint && <span className="shrink-0 text-2xs text-faint">{item.hint}</span>}
+              {item.hint && <span className="max-w-[45%] shrink-0 truncate text-2xs text-faint">{item.hint}</span>}
             </button>
           ))}
         </div>
-      </div>
+      </LiquidGlass>
     </div>
   );
 }

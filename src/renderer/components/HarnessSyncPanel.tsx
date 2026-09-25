@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, MessageSquare, RefreshCw } from 'lucide-react';
+import { Check, MessageSquare, RefreshCw } from 'lucide-react';
+import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { useApp } from '../store/app';
-import { Spinner } from './common';
+import { Spinner, Toggle } from './common';
 import type { HarnessSyncGroup } from '../../shared/types';
+import { Chevron } from '../../shared/ui/primitives';
 
 // The "Sync chats from Claude Code & Codex" panel (docs/specs/harness-chat-sync.md
 // §4.1). Layout mirrors ConductorImportPanel: read-only scan, preview grouped by
@@ -57,8 +59,8 @@ function CheckBox({ checked, disabled, small }: { checked: boolean; disabled?: b
   const size = small ? 15 : 17;
   return (
     <span
-      className={`flex shrink-0 items-center justify-center rounded border transition-colors ${
-        checked ? 'border-accent bg-accent text-white' : 'border-line bg-raised'
+      className={`flex shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+        checked ? 'border-transparent bg-ink text-on-ink' : 'border-faint/60 bg-raised'
       } ${disabled ? 'opacity-50' : ''}`}
       style={{ width: size, height: size }}
     >
@@ -109,7 +111,7 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
   if (!scan || groups.length === 0) {
     if (scanError && !scanning)
       return (
-        <div className="card flex flex-col items-center gap-3 p-6 text-center text-sm text-muted">
+        <div className="flex flex-col items-center gap-3 rounded-card border border-border/70 bg-raised p-6 text-center text-[13px] text-muted">
           <div>Couldn’t scan Claude Code / Codex chats.</div>
           <button className="btn" onClick={() => void doScan(true)}>
             Retry
@@ -118,12 +120,12 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
       );
     if (scanning || !scan)
       return (
-        <div className="card flex items-center justify-center gap-2 p-6 text-sm text-muted">
+        <div className="flex items-center justify-center gap-2 rounded-card border border-border/70 bg-raised p-6 text-[13px] text-muted">
           <Spinner /> Scanning Claude Code & Codex chats…
         </div>
       );
     return (
-      <div className="card p-6 text-center text-sm text-muted">No importable Claude Code or Codex chats found.</div>
+      <div className="rounded-card border border-border/70 bg-raised p-6 text-center text-[13px] text-muted">No importable Claude Code or Codex chats found.</div>
     );
   }
 
@@ -155,10 +157,10 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
   const count = selected.size;
 
   return (
-    <div className="card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-line bg-raised/40 px-4 py-3">
-        <div>
-          {!hideTitle && <div className="text-[13px] font-semibold">Sync chats from Claude Code & Codex</div>}
+    <div className="overflow-hidden rounded-card border border-border/70 bg-raised">
+      <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-3.5">
+        <div className="min-w-0">
+          {!hideTitle && <div className="text-[13px] font-semibold tracking-tight">Sync chats from Claude Code & Codex</div>}
           <div className="text-xs text-muted">
             {selectableCount > 0
               ? `Found ${selectableCount} chat${selectableCount === 1 ? '' : 's'} in ${groups.length} repo${groups.length === 1 ? '' : 's'}.`
@@ -166,7 +168,7 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
           </div>
         </div>
         <button
-          className="btn h-7 px-2 text-2xs"
+          className="btn btn-ghost h-7 w-7 shrink-0 !px-0 text-muted hover:text-fg"
           title="Re-scan"
           onClick={() => {
             setSeeded(false);
@@ -177,50 +179,53 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
         </button>
       </div>
 
-      <div className="max-h-[46vh] overflow-y-auto">
+      <div className="max-h-[46vh] overflow-y-auto border-y border-border/60 px-1.5 py-1.5">
         {groups.map((g, i) => {
           const t = groupTitle(g);
           const ids = g.sessions.filter((s) => !s.alreadyImported).map((s) => s.sessionId);
           const allOn = ids.length > 0 && ids.every((id) => selected.has(id));
           const isOpen = expanded.has(g.key);
           return (
-            <div key={g.key} className={i > 0 ? 'border-t border-line' : ''}>
+            <div key={g.key} className={i > 0 ? 'mt-0.5' : ''}>
               <div
-                className="flex cursor-pointer items-center gap-3 px-4 py-2.5 hover:bg-raised/40"
+                className="flex cursor-pointer items-center gap-3 rounded-ctl px-2.5 py-2.5 hover:bg-accent-soft"
                 onClick={() => ids.length && toggleGroup(g)}
               >
                 <CheckBox checked={allOn} disabled={ids.length === 0} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{t.name}</div>
+                  <div className="truncate text-[13px] font-medium">{t.name}</div>
                   <div className="truncate text-2xs text-faint">
                     {t.sub && <span>{t.sub} · </span>}
                     {t.tag} · {g.sessions.length} chat{g.sessions.length === 1 ? '' : 's'}
                   </div>
                 </div>
                 <button
-                  className="rounded p-1 text-muted hover:bg-raised"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted hover:bg-accent-soft hover:text-fg"
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleExpanded(g.key);
                   }}
                 >
-                  {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  <Chevron open={isOpen} size={15} />
                 </button>
               </div>
               {isOpen && (
-                <div className="border-t border-line bg-raised/30 pb-1">
+                <div data-motion="collapse" className="pb-1">
                   {g.sessions.map((s) => (
                     <div
                       key={s.sessionId}
-                      className={`flex items-center gap-3 px-4 py-1.5 pl-9 ${
-                        s.alreadyImported ? 'opacity-60' : 'cursor-pointer hover:bg-raised/40'
+                      className={`flex items-center gap-3 rounded-ctl py-1.5 pl-9 pr-2.5 ${
+                        s.alreadyImported ? 'opacity-60' : 'cursor-pointer hover:bg-accent-soft'
                       }`}
                       onClick={() => !s.alreadyImported && toggleSession(s.sessionId)}
                     >
                       <CheckBox checked={s.alreadyImported ? true : selected.has(s.sessionId)} disabled={s.alreadyImported} small />
                       <div className="min-w-0 flex-1 truncate text-xs">{s.title}</div>
                       <div className="flex shrink-0 items-center gap-2 text-2xs text-faint">
-                        <span>{appLabel(s.app)}</span>
+                        <span className="flex items-center gap-1">
+                          <HarnessLogo harness={s.app} size={11} />
+                          {appLabel(s.app)}
+                        </span>
                         <span className="flex items-center gap-1">
                           <MessageSquare size={11} /> {s.turns}
                         </span>
@@ -236,17 +241,17 @@ export default function HarnessSyncPanel({ hideTitle }: { hideTitle?: boolean })
         })}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-line bg-raised/40 px-4 py-2.5">
-        <label className="flex cursor-pointer items-center gap-2 text-2xs text-muted">
-          <input type="checkbox" checked={keepSyncing} onChange={(e) => setKeepSyncing(e.target.checked)} />
+      <div className="flex items-center justify-between gap-4 px-4 pt-3">
+        <span className="text-2xs text-muted">
           Keep syncing: new chats and turns from Claude Code & Codex appear here automatically
-        </label>
+        </span>
+        <Toggle checked={keepSyncing} onChange={setKeepSyncing} />
       </div>
 
-      <div className="flex items-center justify-between border-t border-line bg-raised/40 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 px-4 pb-3.5 pt-2.5">
         <span className="text-2xs text-faint">Read-only: your Claude Code &amp; Codex files are not modified.</span>
         <button
-          className="btn btn-accent flex items-center gap-2"
+          className="btn btn-accent h-8 shrink-0 px-3.5"
           disabled={count === 0 || importing}
           onClick={() => void doImport([...selected], keepSyncing)}
         >

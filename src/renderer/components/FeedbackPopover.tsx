@@ -39,7 +39,7 @@ export default function FeedbackPopover() {
   };
 
   return (
-    <div ref={ref} className="glass absolute bottom-full left-2 z-50 mb-2 w-72 rounded-card p-3 text-xs shadow-lg">
+    <div ref={ref} data-motion="pop-up" className="glass absolute bottom-full left-2 z-50 mb-2 w-80 !rounded-[18px] p-3 text-xs">
       {done ? (
         <div className="py-6 text-center text-muted">Thanks — sent.</div>
       ) : (
@@ -47,7 +47,7 @@ export default function FeedbackPopover() {
           <textarea
             autoFocus
             rows={4}
-            className="w-full resize-none rounded border bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent/60"
+            className="input w-full resize-none text-xs"
             placeholder="What's broken, or what would make Maestro better?"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -59,23 +59,23 @@ export default function FeedbackPopover() {
             }}
           />
           {error && (
-            <div className="mt-1.5 flex items-center gap-1.5 rounded bg-raised px-2 py-1 text-2xs text-muted">
+            <div className="mt-2 flex items-center gap-1.5 rounded-full bg-accent-soft py-1 pl-2.5 pr-1.5 text-2xs text-muted">
               <span className="min-w-0 flex-1 truncate">Attached: {error.message}</span>
               <button className="shrink-0 hover:text-fg" title="Don't include this error" onClick={() => setError(undefined)}>
                 <X size={12} />
               </button>
             </div>
           )}
-          <label className="mt-2 flex items-center gap-1.5 text-2xs text-muted">
+          <label className="mt-2.5 flex items-center gap-1.5 px-0.5 text-2xs text-muted">
             <input type="checkbox" checked={includeDiagnostics} onChange={(e) => setIncludeDiagnostics(e.target.checked)} />
             Include app version & OS
           </label>
           {failure && <div className="mt-1.5 text-2xs text-err">{failure}</div>}
-          <div className="mt-2 flex justify-end gap-1.5">
-            <button className="btn btn-ghost text-2xs" onClick={close}>
+          <div className="mt-3 flex justify-end gap-1.5">
+            <button className="btn btn-ghost text-muted hover:text-fg" onClick={close}>
               Cancel
             </button>
-            <button className="btn btn-accent text-2xs" disabled={!canSend} onClick={() => void send()}>
+            <button className="btn btn-accent px-3.5" disabled={!canSend} onClick={() => void send()}>
               {sending ? 'Sending…' : 'Send'}
             </button>
           </div>

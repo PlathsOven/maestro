@@ -23,7 +23,7 @@ export function StatusPanelView({
 }) {
   const d = ws.statusDigest ?? null;
   return (
-    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
       <div className="flex items-center gap-2">
         <Segmented
           value={scope}
@@ -35,41 +35,45 @@ export function StatusPanelView({
           ]}
         />
         <span className="flex-1" />
-        <button className="btn btn-ghost h-6 gap-1 px-1.5 text-2xs" disabled={busy} onClick={onRegenerate}>
+        <button className="btn btn-ghost h-7 gap-1 px-2.5 text-2xs text-muted" disabled={busy} onClick={onRegenerate}>
           <Sparkles size={12} /> Regenerate status
         </button>
       </div>
 
       {!d ? (
-        <div className="px-1 py-4 text-xs text-muted">{busy ? 'Summarizing with AI…' : 'Nothing here yet'}</div>
+        <div className="px-1 py-6 text-center text-xs text-muted">{busy ? 'Summarizing with AI…' : 'Nothing here yet'}</div>
       ) : (
         <>
-          {d.workingOn && (
-            <section>
-              <div className="label">Working on</div>
-              <div className="text-body">{d.workingOn}</div>
-            </section>
-          )}
-          {d.lastActivity && (
-            <section>
-              <div className="label">Last activity</div>
-              <div className="text-body text-muted">{d.lastActivity}</div>
-            </section>
-          )}
-          {d.goal && (
-            <section>
-              <div className="label">Goal</div>
-              <div className="text-body text-muted">{d.goal}</div>
-            </section>
+          {(d.workingOn || d.lastActivity || d.goal) && (
+            <div className="card space-y-4 p-4">
+              {d.workingOn && (
+                <section>
+                  <div className="label">Working on</div>
+                  <div className="text-body">{d.workingOn}</div>
+                </section>
+              )}
+              {d.lastActivity && (
+                <section>
+                  <div className="label">Last activity</div>
+                  <div className="text-body text-muted">{d.lastActivity}</div>
+                </section>
+              )}
+              {d.goal && (
+                <section>
+                  <div className="label">Goal</div>
+                  <div className="text-body text-muted">{d.goal}</div>
+                </section>
+              )}
+            </div>
           )}
           {d.nextUp && d.nextUp.length > 0 && (
-            <section>
-              <div className="label">Next up</div>
-              <div className="space-y-1">
+            <section className="card p-1.5">
+              <div className="label px-2.5 pb-0 pt-1.5">Next up</div>
+              <div className="space-y-0.5">
                 {d.nextUp.map((n, i) => (
                   <button
                     key={i}
-                    className="tap block w-full rounded-ctl border px-2.5 py-1.5 text-left text-body hover:border-accent/50"
+                    className="tap block w-full rounded-ctl px-2.5 py-2 text-left text-body transition-colors hover:bg-accent-soft"
                     title="Put this in the composer"
                     onClick={() => onPutInComposer(n)}
                   >
@@ -79,7 +83,7 @@ export function StatusPanelView({
               </div>
             </section>
           )}
-          <div className="flex items-center gap-1 text-2xs text-faint">
+          <div className="flex items-center gap-1 px-2 text-2xs text-faint">
             <Sparkles size={10} />
             {d.generatedAt ? timeAgo(d.generatedAt) : ''}
             {d.model ? ` · ${d.model}` : ''}

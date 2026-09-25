@@ -397,22 +397,26 @@ export async function unpushedCount(wtPath: string, branch: string, host: ExecHo
 }
 
 export async function statusSummary(wtPath: string, baseRef: string, host: ExecHost = localHost): Promise<GitStatusSummary> {
-  const branch = await currentBranch(wtPath, host);
-  let ahead = 0;
-  let behind = 0;
-  for (const ref of [baseRef, baseRef.replace(/^origin\//, '')]) {
-    const r = await host.exec('git', ['rev-list', '--left-right', '--count', `${ref}...HEAD`], { cwd: wtPath });
-    if (r.ok) {
-      const [b, a] = r.stdout.trim().split(/\s+/).map((n) => parseInt(n, 10));
-      behind = b || 0;
-      ahead = a || 0;
-      break;
+  // Independent reads — run them together. --no-optional-locks keeps `status`
+  // from rewriting the index, which the watcher observes (it'd re-trigger us).
+  const aheadBehind = async () => {
+    for (const ref of [baseRef, baseRef.replace(/^origin\//, '')]) {
+      const r = await host.exec('git', ['rev-list', '--left-right', '--count', `${ref}...HEAD`], { cwd: wtPath });
+      if (r.ok) {
+        const [b, a] = r.stdout.trim().split(/\s+/).map((n) => parseInt(n, 10));
+        return { behind: b || 0, ahead: a || 0 };
+      }
     }
-  }
+    return { behind: 0, ahead: 0 };
+  };
+  const [branch, { ahead, behind }, st] = await Promise.all([
+    currentBranch(wtPath, host),
+    aheadBehind(),
+    host.exec('git', ['--no-optional-locks', 'status', '--porcelain', '-uall'], { cwd: wtPath }),
+  ]);
   let staged = 0;
   let unstaged = 0;
   let untracked = 0;
-  const st = await host.exec('git', ['status', '--porcelain', '-uall'], { cwd: wtPath });
   for (const line of st.stdout.split('\n')) {
     if (!line) continue;
     const x = line[0];
@@ -500,6 +504,17 @@ export async function pushCurrent(
   return r.ok ? { ok: true, reattached } : { ok: false, error: r.stderr.trim() };
 }
 
+/** `--stat` plus the patch vs the merge-base, capped, for inlining into an LLM
+ *  prompt (so the model needn't run git itself — one inference, no tool round). */
+export async function diffForPrompt(wtPath: string, baseRef: string, host: ExecHost = localHost): Promise<string> {
+  const maxChars = 40_000;
+  const mb = await resolveMergeBase(wtPath, baseRef, host);
+  if (!mb) return '';
+  const r = await host.exec('git', ['diff', '--stat', '-p', mb, 'HEAD', '--', '.', ':!.context'], { cwd: wtPath, timeout: 30_000 });
+  const out = r.stdout.trim();
+  return out.length > maxChars ? `${out.slice(0, maxChars)}\n… (diff truncated)` : out;
+}
+
 export async function shortLog(wtPath: string, baseRef: string, host: ExecHost = localHost): Promise<string> {
   const mb = await resolveMergeBase(wtPath, baseRef, host);
   if (!mb) return '';
@@ -510,7 +525,7 @@ export async function shortLog(wtPath: string, baseRef: string, host: ExecHost =
 /** Untracked (git status ??) paths in the worktree, minus .context/ and ignored
  *  top-level dirs. Callers cap the list themselves. */
 async function untrackedPaths(wtPath: string, host: ExecHost): Promise<string[]> {
-  const st = await host.exec('git', ['status', '--porcelain', '-uall', '-z'], { cwd: wtPath });
+  const st = await host.exec('git', ['--no-optional-locks', 'status', '--porcelain', '-uall', '-z'], { cwd: wtPath });
   return st.stdout
     .split('\0')
     .filter((l) => l.startsWith('?? '))

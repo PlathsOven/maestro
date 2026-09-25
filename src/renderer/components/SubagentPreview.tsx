@@ -28,13 +28,13 @@ export default function SubagentPreview() {
       width={760}
       onClose={() => setModal(null)}
       title={
-        <span className="flex items-center gap-1.5">
-          <Waypoints size={13} /> {roleLabel(run.role, settings)} · trace
+        <span className="flex items-center gap-2">
+          <Waypoints size={14} className="text-muted" /> {roleLabel(run.role, settings)} · trace
         </span>
       }
     >
-      <div data-img-gallery className="mx-auto max-w-3xl space-y-4">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-faint">
+      <div data-img-gallery className="mx-auto max-w-3xl space-y-5">
+        <div className="-mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-faint">
           <span>{roleModelLabel(run)}</span>
           {run.durationMs != null && <span>· {formatDuration(run.durationMs)}</span>}
           <span
@@ -48,17 +48,17 @@ export default function SubagentPreview() {
         </div>
 
         <div>
-          <div className="mb-1 flex items-center gap-1.5 text-2xs text-faint">
-            <User size={11} /> Delegated task
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted">
+            <User size={12} /> Delegated task
           </div>
-          <div className="rounded-card border bg-surface px-3.5 py-2.5">
+          <div className="rounded-card bg-user-msg px-4 py-3">
             <Markdown text={run.prompt} />
           </div>
         </div>
 
         <div>
-          <div className="mb-1 flex items-center gap-1.5 text-2xs text-faint">
-            <Waypoints size={11} /> {roleLabel(run.role, settings)}
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted">
+            <Waypoints size={12} /> {roleLabel(run.role, settings)}
           </div>
           {run.blocks.length ? (
             <BlockList blocks={run.blocks} folded />

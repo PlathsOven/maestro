@@ -121,6 +121,9 @@ class LocalChild implements HostChild {
   ) {
     for (const cb of errorCbs) child.on('error', cb);
   }
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
   onStdoutLine(cb: (line: string) => void): void {
     const rl = readline.createInterface({ input: this.child.stdout });
     rl.on('line', cb);

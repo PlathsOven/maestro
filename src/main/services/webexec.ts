@@ -35,6 +35,14 @@ export async function execPrCreate(wsId: string): Promise<Done> {
 export async function execPrMerge(wsId: string, method: 'merge' | 'squash' | 'rebase' = 'squash'): Promise<Done> {
   const r = await mergePr(wsId, method);
   if (r.ok) republish(wsId);
+  else {
+    // GitHub refused the merge — usually conflicts it hadn't finished computing
+    // when the row said "mergeable". Force a re-check so `mergeable` settles to
+    // CONFLICTING and republish: the web's button flips Merge → Resolve
+    // conflicts, mirroring the desktop's post-failure re-check (pr.ts poll).
+    await refreshPr(wsId, true).catch(() => {});
+    republish(wsId);
+  }
   return { ok: r.ok, result: r.ok ? { merged: true } : undefined, error: r.error };
 }
 

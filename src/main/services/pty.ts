@@ -6,11 +6,24 @@ const MAX_BUFFER = 400_000;
 
 interface PtyRecord {
   pty: HostPty;
-  buffer: string;
+  /** Scrollback for a late attach / replay, kept as the chunks it arrived in plus
+   *  their total length. Re-slicing one big string per chunk copied up to 800 KB
+   *  for every write of a chatty process (perf-cpu-ram §4.7); appending is free
+   *  and the join only happens when someone actually reads. */
+  chunks: string[];
+  total: number;
   alive: boolean;
 }
 
 const ptys = new Map<string, PtyRecord>();
+
+/** What a reader sees: the last MAX_BUFFER characters, exactly as the old
+ *  `(buffer + data).slice(-MAX_BUFFER)` produced. */
+function replay(rec: PtyRecord | undefined): string {
+  if (!rec) return '';
+  const all = rec.chunks.length === 1 ? rec.chunks[0] : rec.chunks.join('');
+  return all.length > MAX_BUFFER ? all.slice(-MAX_BUFFER) : all;
+}
 
 interface SpawnPtyOpts {
   cwd: string;
@@ -35,7 +48,7 @@ export function ensurePty(id: string, opts: SpawnPtyOpts): { buffer: string } {
         existing.pty.resize(opts.cols, opts.rows);
       } catch {}
     }
-    return { buffer: existing.buffer };
+    return { buffer: replay(existing) };
   }
   return spawnPty(id, opts);
 }
@@ -50,10 +63,18 @@ export function spawnPty(id: string, opts: SpawnPtyOpts): { buffer: string } {
     env: { TERM: 'xterm-256color', ...(opts.env ?? {}) },
     command: opts.command,
   });
-  const rec: PtyRecord = { pty, buffer: '', alive: true };
+  const rec: PtyRecord = { pty, chunks: [], total: 0, alive: true };
   ptys.set(id, rec);
   pty.onData((data) => {
-    rec.buffer = (rec.buffer + data).slice(-MAX_BUFFER);
+    rec.chunks.push(data);
+    rec.total += data.length;
+    // Trim only at twice the cap (amortising the shift), and never below it, so
+    // `replay()` always has the full tail to slice.
+    if (rec.total > 2 * MAX_BUFFER) {
+      while (rec.chunks.length > 1 && rec.total - rec.chunks[0].length >= MAX_BUFFER) {
+        rec.total -= rec.chunks.shift()!.length;
+      }
+    }
     broadcast('pty:data', { id, data });
     opts.onData?.(data);
   });
@@ -97,7 +118,7 @@ export function isPtyAlive(id: string): boolean {
 
 export function getPtyBuffer(id: string): { buffer: string; alive: boolean } {
   const rec = ptys.get(id);
-  return { buffer: rec?.buffer ?? '', alive: !!rec?.alive };
+  return { buffer: replay(rec), alive: !!rec?.alive };
 }
 
 export function killWorkspacePtys(workspaceId: string) {

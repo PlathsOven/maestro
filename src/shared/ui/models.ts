@@ -6,6 +6,7 @@ import {
   HARNESS_PLAN_MODE,
   effortLevelsForModel,
   resolveDefaultModel,
+  resolveDefaultEffort,
   type EffortLevel,
   type HarnessId,
   type ModelOption,
@@ -27,6 +28,7 @@ export {
   HARNESS_PLAN_MODE,
   effortLevelsForModel,
   resolveDefaultModel,
+  resolveDefaultEffort,
 };
 export type { EffortLevel, HarnessId, ModelOption };
 

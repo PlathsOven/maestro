@@ -1,7 +1,8 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { ArrowDown, Bot, Check, ChevronDown, ChevronRight, Copy, KeyRound, Pencil, User, Waypoints } from 'lucide-react';
+import { ArrowDown, Check, ChevronDown, ChevronRight, Copy, KeyRound, Pencil, ShieldAlert, Waypoints } from 'lucide-react';
+import { HarnessLogo } from './brandIcons';
 import type { AgentBlock, ChatMessage } from '../types';
 import { formatDuration, timeAgo } from './format';
 import { BlockList, AttachmentChip, answerStart } from './blocks';
@@ -66,7 +67,10 @@ export function CopyResponse({ blocks }: { blocks: AgentBlock[] }) {
   if (!text) return null;
   return (
     <button
-      className="ml-0.5 rounded p-0.5 opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+      className={clsx(
+        'ml-0.5 rounded-full p-1 transition-[opacity,background-color,color] hover:bg-accent-soft hover:text-fg',
+        !host.isTouch && 'opacity-0 group-hover:opacity-100'
+      )}
       title="Copy response"
       onClick={() => {
         void host.copyText(text);
@@ -80,8 +84,13 @@ export function CopyResponse({ blocks }: { blocks: AgentBlock[] }) {
 }
 
 function originVia(origin: string | undefined) {
-  if (origin === 'claude-code') return <span className="text-accent">· via Claude Code</span>;
-  if (origin === 'codex') return <span className="text-accent">· via Codex</span>;
+  if (origin === 'claude-code' || origin === 'codex')
+    return (
+      <span className="inline-flex items-center gap-1 text-muted">
+        · via <HarnessLogo harness={origin} size={11} />
+        {origin === 'codex' ? 'Codex' : 'Claude Code'}
+      </span>
+    );
   return null;
 }
 
@@ -118,12 +127,11 @@ export function AgentMessageView({ message, subagentSlot }: { message: ChatMessa
   if (collapsed) {
     return (
       <button
-        className="fade-in group flex w-full items-center gap-1.5 rounded-ctl px-1 py-1 text-left transition-colors hover:bg-accent-soft/40"
+        className="fade-in group flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left transition-colors hover:bg-accent-soft"
         onClick={() => setCollapsed(false)}
         title="Expand agent message"
       >
         <ChevronRight size={12} className="shrink-0 text-faint" />
-        <Bot size={11} className="shrink-0 text-faint" />
         <span className={clsx('min-w-0 flex-1 truncate text-xs', failed ? 'text-err' : 'text-muted')}>{preview}</span>
         <span className="shrink-0 text-2xs text-faint">{timeAgo(message.ts)}</span>
       </button>
@@ -132,14 +140,13 @@ export function AgentMessageView({ message, subagentSlot }: { message: ChatMessa
 
   return (
     <div className="fade-in group">
-      <div className="mb-1 flex select-none items-center gap-1.5 text-2xs text-faint">
+      <div className="mb-1.5 flex select-none items-center gap-1.5 text-2xs text-faint">
         <button
-          className="flex items-center gap-1.5 transition-colors hover:text-muted"
+          className="-ml-1 flex items-center gap-1 rounded-full py-0.5 pl-1 pr-1.5 font-medium text-muted transition-colors hover:bg-accent-soft hover:text-fg"
           onClick={() => setCollapsed(true)}
           title="Collapse agent message"
         >
           <ChevronDown size={11} className="text-faint" />
-          <Bot size={11} />
           Agent
         </button>
         <span>· {timeAgo(message.ts)}</span>
@@ -149,7 +156,7 @@ export function AgentMessageView({ message, subagentSlot }: { message: ChatMessa
       </div>
       {subagentSlot ??
         ((message.meta?.subagents ?? 0) > 0 ? (
-          <div className="mb-1.5 flex items-center gap-1.5 px-1 text-xs text-faint">
+          <div className="mb-2 flex items-center gap-1.5 px-1 text-xs text-faint">
             <Waypoints size={11} className="shrink-0" />
             {message.meta!.subagents} subagent{message.meta!.subagents === 1 ? '' : 's'}
           </div>
@@ -200,37 +207,13 @@ export function UserMessageView({ message, onResend }: { message: ChatMessage; o
     onResend?.(text);
   };
 
+  const iconBtn = 'rounded-full p-1 transition-colors hover:bg-accent-soft hover:text-fg';
   return (
-    // data-user-msg: anchor for the desktop floating-prompt overlay.
-    <div className="fade-in group" data-user-msg={message.id}>
-      <div className="mb-1 flex select-none items-center gap-1.5 text-2xs text-faint">
-        <User size={11} />
-        You
-        <span>· {timeAgo(message.ts)}</span>
-        {message.meta?.origin === 'web' && <span className="text-accent">· from Maestro Web</span>}
-        {originVia(message.meta?.origin)}
-        {!editing && (
-          <span className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-            <button className="rounded p-0.5 hover:text-fg" title="Copy message" onClick={copy}>
-              {copied ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
-            </button>
-            {onResend && (
-              <button
-                className="rounded p-0.5 hover:text-fg"
-                title="Edit & resend"
-                onClick={() => {
-                  setDraft(message.content);
-                  setEditing(true);
-                }}
-              >
-                <Pencil size={12} />
-              </button>
-            )}
-          </span>
-        )}
-      </div>
+    // data-user-msg: anchor for the desktop floating-prompt overlay. The bubble
+    // sits right-aligned; its meta line (time, origin, hover actions) trails it.
+    <div className="fade-in group flex flex-col items-end" data-user-msg={message.id}>
       {editing ? (
-        <div className="rounded-card border border-accent/50 bg-user-msg px-3 py-2.5">
+        <div className="w-full rounded-[20px] bg-user-msg px-4 py-3 ring-1 ring-inset ring-accent/40">
           <textarea
             ref={taRef}
             className="w-full resize-none bg-transparent text-body leading-relaxed outline-none"
@@ -249,16 +232,16 @@ export function UserMessageView({ message, onResend }: { message: ChatMessage; o
           />
           <div className="mt-2 flex items-center gap-1.5">
             <span className="mr-auto text-2xs text-faint">Sends a revised message · ↵ send · esc cancel</span>
-            <button className="btn h-6 px-2 text-xs" onClick={() => setEditing(false)}>
+            <button className="btn btn-ghost h-7 px-3 text-xs" onClick={() => setEditing(false)}>
               Cancel
             </button>
-            <button className="btn btn-accent h-6 px-2 text-xs" disabled={!draft.trim()} onClick={submit}>
+            <button className="btn btn-accent h-7 px-3 text-xs" disabled={!draft.trim()} onClick={submit}>
               Send
             </button>
           </div>
         </div>
       ) : (
-        <div className="rounded-card border bg-user-msg px-3.5 py-2.5">
+        <div className="min-w-0 max-w-[85%] rounded-[20px] bg-user-msg px-4 py-2.5">
           <Markdown text={message.content} />
           {message.attachments.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -269,6 +252,42 @@ export function UserMessageView({ message, onResend }: { message: ChatMessage; o
           )}
         </div>
       )}
+      <div className="mt-1 flex min-h-[22px] select-none items-center gap-1.5 px-1 text-2xs text-faint">
+        {!editing && (
+          <span
+            className={clsx(
+              'flex items-center gap-0.5 transition-opacity',
+              !host.isTouch && 'opacity-0 group-hover:opacity-100'
+            )}
+          >
+            <button className={iconBtn} title="Copy message" onClick={copy}>
+              {copied ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+            </button>
+            {onResend && (
+              <button
+                className={iconBtn}
+                title="Edit & resend"
+                onClick={() => {
+                  setDraft(message.content);
+                  setEditing(true);
+                }}
+              >
+                <Pencil size={12} />
+              </button>
+            )}
+          </span>
+        )}
+        {message.meta?.modelLabel && (
+          <span>
+            {message.meta.modelLabel}
+            {message.meta.effortLabel && ` · ${message.meta.effortLabel}`} ·
+          </span>
+        )}
+        <span>{timeAgo(message.ts)}</span>
+        {message.meta?.origin === 'web' && <span className="text-muted">· from Maestro Web</span>}
+        {message.meta?.origin === 'agent' && <span className="text-muted">· from another agent</span>}
+        {originVia(message.meta?.origin)}
+      </div>
     </div>
   );
 }
@@ -291,13 +310,23 @@ export function SystemMessageView({
 }) {
   const fix = message.meta?.fix as Pfix;
   const [report, setReport] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  // Something Maestro did on the user's behalf while the turn ran (the memory
+  // guard stopping a runaway process) — an account of an action, not a failure:
+  // no error colour, nothing to report.
+  if (message.meta?.midTurn)
+    return (
+      <div className="fade-in flex gap-2.5 rounded-card bg-surface px-3.5 py-3">
+        <ShieldAlert size={13} className="mt-0.5 shrink-0 text-warn" />
+        <Markdown text={message.content} className="min-w-0 flex-1 text-xs" />
+      </div>
+    );
   if (!fix)
     return (
       <div className="fade-in flex items-start gap-2 px-1 text-xs text-err">
         <span className="min-w-0 flex-1 break-words">{message.content}</span>
         {onReport && (
           <button
-            className="shrink-0 text-2xs text-muted hover:text-fg disabled:opacity-60"
+            className="shrink-0 rounded-full px-2 py-0.5 text-2xs text-muted transition-colors hover:bg-accent-soft hover:text-fg disabled:opacity-60"
             disabled={report === 'sending' || report === 'sent'}
             title="Send this error to the developer"
             onClick={async () => {
@@ -312,8 +341,8 @@ export function SystemMessageView({
       </div>
     );
   return (
-    <div className="fade-in space-y-2 rounded-card border bg-surface px-3 py-2.5">
-      <div className="flex gap-2">
+    <div className="fade-in space-y-2.5 rounded-card border bg-surface px-3.5 py-3">
+      <div className="flex gap-2.5">
         <KeyRound size={13} className="mt-0.5 shrink-0 text-warn" />
         <Markdown text={message.content} className="min-w-0 flex-1 text-xs" />
       </div>
@@ -322,29 +351,43 @@ export function SystemMessageView({
   );
 }
 
-/** A live, streaming turn: the blocks so far + a trailing spinner and elapsed
- *  timer, or "Thinking…" before the first block. */
-export function LiveTurnView({ blocks, running, startedAt }: { blocks: AgentBlock[]; running: boolean; startedAt: number }) {
+/**
+ * A live, streaming turn: the blocks so far + a trailing spinner and elapsed
+ * timer, or "Thinking…" before the first block. All blocks render as ONE list
+ * so a block keeps its DOM from the moment it streams in until the turn ends —
+ * text the user is selecting mid-turn isn't rebuilt out from under them. Per
+ * token only the changed rows re-render: BlockList memoises each row on its
+ * block's identity, which the desktop store keeps stable for settled blocks
+ * (structural sharing, perf-cpu-ram §4.9.4).
+ */
+export function LiveTurnView({
+  blocks,
+  running,
+  startedAt,
+}: {
+  blocks: AgentBlock[];
+  running: boolean;
+  startedAt: number;
+}) {
+  const empty = blocks.length === 0;
   return (
     <div className="fade-in">
-      <div className="mb-1 flex select-none items-center gap-1.5 text-2xs text-faint">
-        <Bot size={11} />
-        Agent
-      </div>
-      {blocks.length === 0 && running ? (
-        <div className="flex items-center gap-2 px-1 text-xs text-muted">
+      <div className="mb-1.5 flex select-none items-center gap-1.5 text-2xs font-medium text-muted">Agent</div>
+      {empty && running ? (
+        <div className="flex items-center gap-2 px-1 text-xs text-faint">
           <Spinner className="!h-3 !w-3" /> Thinking…
           <ElapsedTime startedAt={startedAt} />
         </div>
+      ) : !running ? (
+        // Finished but not yet replaced by its persisted message: one folded pass.
+        <BlockList blocks={blocks} folded />
       ) : (
         <>
-          <BlockList blocks={blocks} streaming={running} folded={!running} />
-          {running && (
-            <div className="mt-1.5 flex items-center gap-2 px-1">
-              <Spinner className="!h-3.5 !w-3.5" />
-              <ElapsedTime startedAt={startedAt} />
-            </div>
-          )}
+          <BlockList blocks={blocks} streaming />
+          <div className="mt-2 flex items-center gap-2 px-1">
+            <Spinner className="!h-3.5 !w-3.5" />
+            <ElapsedTime startedAt={startedAt} />
+          </div>
         </>
       )}
     </div>
@@ -382,6 +425,7 @@ export function TranscriptColumn({
   onReport,
   onNearTop,
   className,
+  bottomInset,
 }: {
   messages: ChatMessage[];
   live?: { blocks: AgentBlock[]; startedAt: number } | null;
@@ -391,6 +435,9 @@ export function TranscriptColumn({
   /** Fired when the user scrolls within 200px of the top (load older history). */
   onNearTop?: () => void;
   className?: string;
+  /** CSS length of whatever floats over the column's bottom edge (the glass
+   *  composer): the scroller pads by it and the jump pill sits above it. */
+  bottomInset?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -418,8 +465,13 @@ export function TranscriptColumn({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} onScroll={onScroll} className={clsx('min-h-0 flex-1 overflow-y-auto px-3 py-4', className)}>
-        <div className="mx-auto max-w-3xl space-y-4">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className={clsx('min-h-0 flex-1 overflow-y-auto px-3 py-4', className)}
+        style={bottomInset ? { paddingBottom: `calc(${bottomInset} + 1rem)` } : undefined}
+      >
+        <div className="mx-auto max-w-3xl space-y-5">
           {messages.map((m) => (
             <MessageView
               key={m.id}
@@ -435,6 +487,7 @@ export function TranscriptColumn({
       {!pinned && (
         <button
           className="btn glass absolute bottom-3 right-3 z-10 gap-1"
+          style={bottomInset ? { bottom: `calc(${bottomInset} + 0.75rem)` } : undefined}
           title="Jump to latest"
           onClick={jump}
         >

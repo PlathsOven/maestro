@@ -25,8 +25,8 @@ export function RunView({
 }) {
   const scripts = ws.runScripts ?? [];
   return (
-    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
-      <div className="label">Run scripts</div>
+    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+      <div className="label px-1">Run scripts</div>
       {scripts.length === 0 ? (
         <div className="space-y-2">
           <div className="text-xs text-muted">Run tests or a development server to try changes in this workspace.</div>
@@ -39,24 +39,24 @@ export function RunView({
         scripts.map((s) => {
           const running = s.state === 'running';
           return (
-            <div key={s.id} className="rounded-card border bg-surface p-2.5">
+            <div key={s.id} className="rounded-card border bg-raised px-3 py-2.5">
               <div className="flex items-center gap-2">
-                {s.kind === 'test' ? <FlaskConical size={12} className="text-muted" /> : <Play size={12} className="text-muted" />}
+                {s.kind === 'test' ? <FlaskConical size={12} className="text-faint" /> : <Play size={12} className="text-faint" />}
                 <span className="text-xs font-medium">{s.name}</span>
-                <span className={clsx('rounded px-1 py-0.5 text-[9px]', s.kind === 'test' ? 'bg-accent-soft text-accent' : 'bg-border text-muted')}>
+                <span className={clsx('rounded-full bg-accent-soft px-1.5 py-px text-[10px]', s.kind === 'test' ? 'text-fg' : 'text-muted')}>
                   {s.kind}
                 </span>
                 <span className="flex-1" />
                 <ExitBadge s={s} />
                 <button
-                  className="btn btn-ghost h-6 w-6 !px-0"
+                  className={clsx('btn h-7 w-7 !px-0', running ? 'btn-ghost' : 'btn-accent')}
                   title={running ? 'Stop' : `Run in a terminal here (WORKSPACE_PORT=${port ?? '—'})`}
                   onClick={() => (running ? onStop(s.id) : onRun(s.id))}
                 >
-                  {running ? <Square size={11} className="text-err" /> : <Play size={12} />}
+                  {running ? <Square size={11} className="text-err" /> : <Play size={11} className="fill-current" />}
                 </button>
               </div>
-              <div className="mt-1 truncate font-mono text-2xs text-muted">{s.command}</div>
+              <div className="mt-1.5 truncate font-mono text-2xs text-faint">{s.command}</div>
             </div>
           );
         })

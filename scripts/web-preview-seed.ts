@@ -21,12 +21,15 @@ import {
 
 const U = 'dev';
 const ago = (m: number) => new Date(Date.now() - m * 60_000);
+// Presence is `Date.now() - lastSeenAt < 60s`; a near-future stamp keeps the
+// linked desktop/box reading as "online" for the length of a screenshot run.
+const soon = () => new Date(Date.now() + 60 * 60_000);
 
 async function main() {
   const db = await getDb();
   await db.insert(users).values({ id: U, githubId: 'dev', login: 'octocat', name: 'Octo Cat', avatarUrl: 'https://avatars.githubusercontent.com/octocat?s=64' }).onConflictDoNothing();
-  await db.insert(devices).values({ id: 'd1', userId: U, kind: 'desktop', name: 'MacBook Pro', platform: 'darwin', tokenHash: 'seed-d1', lastSeenAt: new Date() }).onConflictDoNothing();
-  await db.insert(boxes).values({ id: 'box1', userId: U, label: 'hayabusa', tokenHash: 'seed-box1', lastSeenAt: new Date() }).onConflictDoNothing();
+  await db.insert(devices).values({ id: 'd1', userId: U, kind: 'desktop', name: 'MacBook Pro', platform: 'darwin', tokenHash: 'seed-d1', lastSeenAt: soon() }).onConflictDoNothing();
+  await db.insert(boxes).values({ id: 'box1', userId: U, label: 'hayabusa', tokenHash: 'seed-box1', lastSeenAt: soon() }).onConflictDoNothing();
 
   await db.insert(workspaces).values([
     {
@@ -53,6 +56,31 @@ async function main() {
       liveActivity: 'Tool · auth.ts', todos: [], comments: [], updatedAt: ago(1), lastUserMessageAt: ago(2),
     },
     {
+      id: 'wsD', userId: U, deviceId: 'd1', projectId: 'p1', projectName: 'visual-conductor', projectKind: 'git', repoOwner: 'octocat',
+      name: 'onboarding', title: 'Fix onboarding redirect loop', subtitle: 'Working…', branch: 'fix/redirect-loop', baseBranch: 'main', wsKind: 'worktree',
+      isCloud: false, harness: 'cursor', status: 'running', archived: false, port: 4175,
+      prNumber: null, prState: null, diffAdd: 7, diffDel: 3, changedFiles: 1,
+      git: { ahead: 0, behind: 0, staged: 0, unstaged: 1, untracked: 0, dirty: true, files: [] },
+      liveActivity: 'Editing router.tsx', todos: [], comments: [], updatedAt: ago(0), lastUserMessageAt: ago(1),
+    },
+    {
+      id: 'wsE', userId: U, deviceId: 'd1', projectId: 'p1', projectName: 'visual-conductor', projectKind: 'git', repoOwner: 'octocat',
+      name: 'rate-limit', title: 'Add API rate limiting', branch: 'feat/rate-limit', baseBranch: 'main', wsKind: 'worktree',
+      isCloud: false, harness: 'claude-code', status: 'idle', archived: false, port: 4176,
+      prNumber: 131, prUrl: 'https://github.com/octocat/visual-conductor/pull/131', prState: 'MERGED', prTitle: 'Add API rate limiting', prDraft: false,
+      prChecks: 'pass', prMergeable: 'clean', prReview: 'APPROVED', diffAdd: 88, diffDel: 12, changedFiles: 5,
+      git: { ahead: 0, behind: 0, staged: 0, unstaged: 0, untracked: 0, dirty: false, files: [] },
+      todos: [], comments: [], updatedAt: ago(42), lastUserMessageAt: ago(50),
+    },
+    {
+      id: 'wsF', userId: U, deviceId: 'd1', projectId: 'p2', projectName: 'web-relay', projectKind: 'git', repoOwner: 'octocat',
+      name: 'nav-polish', title: 'Polish mobile navigation', subtitle: 'Waiting on you', branch: 'feat/nav-polish', baseBranch: 'main', wsKind: 'worktree',
+      isCloud: true, boxId: 'box1', hostLabel: 'hayabusa', harness: 'codex', status: 'needs-attention', archived: false, port: 4177,
+      prNumber: null, prState: null, diffAdd: 24, diffDel: 9, changedFiles: 2,
+      git: { ahead: 1, behind: 0, staged: 0, unstaged: 2, untracked: 0, dirty: true, files: [] },
+      todos: [], comments: [], updatedAt: ago(8), lastUserMessageAt: ago(12),
+    },
+    {
       id: 'wsC', userId: U, deviceId: 'd1', projectId: 'p1', projectName: 'visual-conductor', projectKind: 'git', repoOwner: 'octocat',
       name: 'old-thing', title: 'Bump dependencies', branch: 'chore/deps', baseBranch: 'main', wsKind: 'worktree',
       isCloud: false, harness: 'claude-code', status: 'archived', archived: true, diffAdd: 0, diffDel: 0, changedFiles: 0, git: null, updatedAt: ago(4000),
@@ -63,13 +91,16 @@ async function main() {
     { id: 'wsA:1', userId: U, workspaceId: 'wsA', agentId: 1, title: 'Add dark mode toggle', harness: 'claude-code', state: 'needs-attention', hasRun: true, model: 'claude-sonnet-5', effort: 'high', planMode: false, running: false, attention: true, lastAgentAt: ago(3), closed: false, titleCustom: false },
     { id: 'wsA:2', userId: U, workspaceId: 'wsA', agentId: 2, title: 'Fix flaky test', harness: 'claude-code', hasRun: true, model: 'claude-opus-5', effort: 'medium', running: false, attention: false, lastAgentAt: ago(60), closed: false },
     { id: 'wsB:1', userId: U, workspaceId: 'wsB', agentId: 1, title: 'Refactor auth service', harness: 'codex', boxId: 'box1', hasRun: true, model: 'gpt-5.6-sol', effort: 'high', running: true, attention: false, lastAgentAt: ago(1), closed: false },
+    { id: 'wsD:1', userId: U, workspaceId: 'wsD', agentId: 1, title: 'Fix onboarding redirect loop', harness: 'cursor', hasRun: true, model: 'claude-sonnet-5', effort: 'medium', running: true, attention: false, lastAgentAt: ago(0), closed: false },
+    { id: 'wsE:1', userId: U, workspaceId: 'wsE', agentId: 1, title: 'Add API rate limiting', harness: 'claude-code', hasRun: true, model: 'claude-opus-5', effort: 'high', running: false, attention: false, lastAgentAt: ago(42), closed: false },
+    { id: 'wsF:1', userId: U, workspaceId: 'wsF', agentId: 1, title: 'Polish mobile navigation', harness: 'codex', boxId: 'box1', hasRun: true, model: 'gpt-5.6-sol', effort: 'high', running: false, attention: true, lastAgentAt: ago(8), closed: false },
   ]).onConflictDoNothing();
 
   const blocksDone = [
     { type: 'text', text: "I'll add a dark mode toggle to the settings panel and persist the choice." },
     { type: 'tool', id: 'x1', name: 'Read', input: { file_path: 'src/Settings.tsx' }, result: { ok: true, summary: 'read 120 lines' } },
     { type: 'tool', id: 'x2', name: 'Edit', input: { file_path: 'src/theme.ts', old_string: "export const theme = 'light';", new_string: "export type Theme = 'light' | 'dark';\nexport const theme: Theme = 'light';" }, result: { ok: true, summary: 'updated' } },
-    { type: 'text', text: 'Done — the toggle switches themes and persists to `localStorage`.\n\n```ts\nlocalStorage.setItem("theme", next);\n```\n\n- Added `theme.ts`\n- Wired the toggle in **Settings**' },
+    { type: 'text', text: 'Done. The toggle switches themes and persists to `localStorage`.\n\n```ts\nlocalStorage.setItem("theme", next);\n```\n\n- Added `theme.ts`\n- Wired the toggle in **Settings**' },
   ];
   await db.insert(turns).values([
     { id: 'wsA1-turn1', conversationId: 'wsA:1', status: 'done', blocks: blocksDone as any, meta: { costUsd: 0.04, durationMs: 42000 }, startedAt: ago(6), endedAt: ago(5) },

@@ -1,9 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
   Check,
-  ChevronDown,
-  ChevronRight,
   FileDiff,
   MessageSquarePlus,
   RefreshCw,
@@ -14,7 +12,9 @@ import { tryInvoke } from '../lib/api';
 import { highlightLine, langForPath } from '../lib/format';
 import { EMPTY_ARR, useApp } from '../store/app';
 import { EmptyHint, Segmented, Spinner } from './common';
+import ChangedFileTree, { StatusGlyph } from './ChangedFileTree';
 import type { DiffComment, DiffFile, DiffLine, Workspace } from '../../shared/types';
+import { Chevron } from '../../shared/ui/primitives';
 
 type ViewMode = 'unified' | 'split';
 
@@ -56,41 +56,34 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
     <div className="flex h-full">
       {/* file tree */}
       <div className="flex w-60 shrink-0 flex-col border-r">
-        <div className="flex items-center justify-between border-b px-3 py-2">
-          <span className="text-xs font-medium">
+        <div className="flex items-center justify-between px-4 pb-1.5 pt-3">
+          <span className="text-xs font-medium text-muted">
             {files.length} file{files.length === 1 ? '' : 's'}
           </span>
           <span className="font-mono text-2xs">
             <span className="text-ok">+{totalAdd}</span> <span className="text-err">−{totalDel}</span>
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto py-1">
-          {files.map((f) => (
-            <button
-              key={f.path}
-              className={clsx(
-                'flex w-full items-center gap-1.5 px-3 py-1 text-left',
-                selected === f.path ? 'bg-accent-soft' : 'hover:bg-accent-soft/50'
-              )}
-              onClick={() => scrollToFile(f.path)}
-              title={f.path}
-            >
-              <StatusGlyph status={f.status} />
-              <span className="min-w-0 flex-1 truncate font-mono text-2xs">{f.path}</span>
-              {commentsFor(comments, f).length > 0 && (
-                <span className="shrink-0 rounded-full bg-accent-soft px-1 text-2xs text-accent">
+        <div className="flex-1 space-y-px overflow-y-auto px-2 pb-2">
+          <ChangedFileTree
+            files={files}
+            selected={selected}
+            onSelect={(f) => scrollToFile(f.path)}
+            trailing={(f) =>
+              commentsFor(comments, f).length > 0 && (
+                <span className="shrink-0 rounded-full bg-accent-tint px-1.5 text-2xs font-medium text-accent">
                   {commentsFor(comments, f).length}
                 </span>
-              )}
-            </button>
-          ))}
-          {files.length === 0 && !loading && <div className="px-3 py-2 text-xs text-faint">No changes vs {diff?.base}</div>}
+              )
+            }
+          />
+          {files.length === 0 && !loading && <div className="px-2.5 py-2 text-xs text-faint">No changes vs {diff?.base}</div>}
         </div>
       </div>
 
       {/* diff content */}
       <div className="flex min-w-0 flex-1 flex-col bg-canvas">
-        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-2.5">
           <Segmented<ViewMode>
             value={mode}
             onChange={setMode}
@@ -102,7 +95,7 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
           <div className="flex-1" />
           {unresolved.length > 0 && (
             <button
-              className="btn h-6 text-2xs"
+              className="btn h-7 px-3 text-2xs"
               title="Attach unresolved comments to the composer"
               onClick={() => useApp.getState().sendCommentsToAgent(workspace.id)}
             >
@@ -110,7 +103,7 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
               Send {unresolved.length} comment{unresolved.length > 1 ? 's' : ''} to agent
             </button>
           )}
-          <button className="btn btn-ghost h-6 px-1.5" title="Refresh diff" onClick={() => void refresh()}>
+          <button className="btn btn-ghost h-7 w-7 !px-0" title="Refresh diff" onClick={() => void refresh()}>
             {loading ? <Spinner /> : <RefreshCw size={12} className="text-muted" />}
           </button>
         </div>
@@ -128,16 +121,9 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
               body={`No differences between this workspace and ${diff.base}.`}
             />
           )}
-          <div className="space-y-4 p-4">
+          <div className="space-y-3 px-4 pb-6 pt-2">
             {files.map((f) => (
-              <FileDiffCard
-                key={f.path + f.status}
-                file={f}
-                mode={mode}
-                workspace={workspace}
-                comments={commentsFor(comments, f)}
-                refCb={(el) => (fileRefs.current[f.path] = el)}
-              />
+              <FileDiffCard key={f.path + f.status} file={f} mode={mode} workspace={workspace} comments={comments} cardRefs={fileRefs} />
             ))}
           </div>
         </div>
@@ -150,46 +136,49 @@ function commentsFor(comments: DiffComment[], f: DiffFile): DiffComment[] {
   return comments.filter((c) => c.file === f.path);
 }
 
-function StatusGlyph({ status }: { status: DiffFile['status'] }) {
-  const map: Record<DiffFile['status'], [string, string]> = {
-    modified: ['M', 'text-warn'],
-    added: ['A', 'text-ok'],
-    untracked: ['U', 'text-ok'],
-    deleted: ['D', 'text-err'],
-    renamed: ['R', 'text-st-running'],
-    binary: ['B', 'text-muted'],
-  };
-  const [ch, cls] = map[status];
-  return <span className={clsx('w-3 shrink-0 text-center font-mono text-2xs font-bold', cls)}>{ch}</span>;
-}
-
 const COLLAPSE_THRESHOLD = 1500;
 
-function FileDiffCard({
+/**
+ * One file's diff, memoised (perf spec §4.9.7): rendering a card highlights every
+ * line in it, and the parent re-renders for things no card depends on — picking a
+ * file in the tree, the refresh spinner, the unified/split toggle. Its props are
+ * kept stable for that: the workspace's whole comment list (narrowed here) and
+ * the shared ref map, rather than a fresh array and closure per file.
+ */
+const FileDiffCard = React.memo(function FileDiffCard({
   file,
   mode,
   workspace,
   comments,
-  refCb,
+  cardRefs,
 }: {
   file: DiffFile;
   mode: ViewMode;
   workspace: Workspace;
+  /** every comment in the workspace — this file's are selected below */
   comments: DiffComment[];
-  refCb: (el: HTMLDivElement | null) => void;
+  /** shared path → element map the file tree scrolls through */
+  cardRefs: React.RefObject<Record<string, HTMLDivElement | null>>;
 }) {
+  const mine = useMemo(() => commentsFor(comments, file), [comments, file]);
   const lineCount = file.hunks.reduce((n, h) => n + h.lines.length, 0);
   const [open, setOpen] = useState(lineCount < COLLAPSE_THRESHOLD);
   const [draft, setDraft] = useState<{ line: number; side: 'old' | 'new' } | null>(null);
   const lang = langForPath(file.path);
 
   return (
-    <div ref={refCb} className="card overflow-hidden" style={{ scrollMarginTop: 8 }}>
+    <div
+      ref={(el) => {
+        cardRefs.current[file.path] = el;
+      }}
+      className="card overflow-hidden"
+      style={{ scrollMarginTop: 8 }}
+    >
       <button
-        className="flex w-full items-center gap-2 border-b bg-surface px-3 py-2 text-left"
+        className={clsx('flex w-full items-center gap-2 px-3.5 py-2.5 text-left transition-colors hover:bg-accent-soft/60', open && 'border-b')}
         onClick={() => setOpen(!open)}
       >
-        {open ? <ChevronDown size={13} className="text-muted" /> : <ChevronRight size={13} className="text-muted" />}
+        <Chevron open={open} size={13} className="text-muted" />
         <StatusGlyph status={file.status} />
         <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium">
           {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
@@ -198,22 +187,25 @@ function FileDiffCard({
           <span className="text-ok">+{file.additions}</span> <span className="text-err">−{file.deletions}</span>
         </span>
       </button>
-      {open &&
-        (file.status === 'binary' || file.hunks.length === 0 ? (
+      {open && (
+        <div data-motion="collapse">
+        {file.status === 'binary' || file.hunks.length === 0 ? (
           <div className="px-4 py-3 text-xs text-faint">
             {file.status === 'binary' ? 'Binary file' : 'No text diff available'}
           </div>
         ) : mode === 'unified' ? (
-          <UnifiedDiff file={file} lang={lang} workspace={workspace} comments={comments} draft={draft} setDraft={setDraft} />
+          <UnifiedDiff file={file} lang={lang} workspace={workspace} comments={mine} draft={draft} setDraft={setDraft} />
         ) : (
-          <SplitDiff file={file} lang={lang} workspace={workspace} comments={comments} draft={draft} setDraft={setDraft} />
-        ))}
+          <SplitDiff file={file} lang={lang} workspace={workspace} comments={mine} draft={draft} setDraft={setDraft} />
+        )}
+        </div>
+      )}
       {!open && lineCount >= COLLAPSE_THRESHOLD && (
         <div className="px-4 py-2 text-2xs text-faint">Large diff collapsed ({lineCount} lines) — click to expand</div>
       )}
     </div>
   );
-}
+});
 
 interface CommentCtx {
   workspace: Workspace;
@@ -415,15 +407,15 @@ function CommentThread({ ctx, line, showDraft }: { ctx: CommentCtx; line: DiffLi
   };
 
   return (
-    <div className="border-y bg-bg px-4 py-2 font-sans">
+    <div className="mx-2 my-1.5 rounded-ctl bg-accent-soft px-3.5 py-2.5 font-sans">
       {cs.map((c) => (
         <div key={c.id} className={clsx('mb-1.5 flex items-start gap-2 text-xs', c.resolved && 'opacity-50')}>
-          <MessageSquarePlus size={12} className="mt-0.5 shrink-0 text-accent" />
+          <MessageSquarePlus size={12} className="mt-0.5 shrink-0 text-muted" />
           <div className="min-w-0 flex-1">
             <span className={clsx(c.resolved && 'line-through')}>{c.body}</span>
           </div>
           <button
-            className="shrink-0 text-faint hover:text-ok"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-ok"
             title={c.resolved ? 'Unresolve' : 'Resolve'}
             onClick={async () => {
               await tryInvoke('comment:resolve', { commentId: c.id, resolved: !c.resolved });
@@ -433,7 +425,7 @@ function CommentThread({ ctx, line, showDraft }: { ctx: CommentCtx; line: DiffLi
             <Check size={12} className={c.resolved ? 'text-ok' : ''} />
           </button>
           <button
-            className="shrink-0 text-faint hover:text-err"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-err"
             title="Delete comment"
             onClick={async () => {
               await tryInvoke('comment:delete', { commentId: c.id });
@@ -461,7 +453,7 @@ function CommentThread({ ctx, line, showDraft }: { ctx: CommentCtx; line: DiffLi
             <button className="btn btn-accent h-6 text-2xs" onClick={() => void submit()} disabled={!text.trim()}>
               Comment
             </button>
-            <button className="btn h-6 text-2xs" onClick={() => ctx.setDraft(null)}>
+            <button className="btn btn-ghost h-6 text-2xs" onClick={() => ctx.setDraft(null)}>
               Cancel
             </button>
           </div>

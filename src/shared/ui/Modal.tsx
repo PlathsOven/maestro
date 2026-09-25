@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { X } from 'lucide-react';
 import { MenuDivider, MenuItem } from './primitives';
+import { LiquidGlass } from './LiquidGlass';
 
 /**
  * Centered modal shell (desktop). Moved verbatim from the renderer's common.tsx
@@ -44,30 +45,41 @@ export function Modal({
   }, [onClose, onCmdEnter]);
   return (
     <div
-      className="glass-scrim fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh]"
+      data-motion="modal"
+      className="glass-scrim fixed inset-0 z-50 flex items-start justify-center bg-black/15 pt-[12vh]"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div ref={ref} className="glass glass-panel fade-in flex max-h-[78vh] flex-col overflow-hidden" style={{ width }}>
+      <LiquidGlass
+        ref={ref}
+        radius={20}
+        bezel={20}
+        thickness={80}
+        strength={0.5}
+        blur={4}
+        tint="panel"
+        className="flex max-h-[78vh] flex-col overflow-hidden"
+        style={{ width }}
+      >
         {!plain && (
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <div className="text-body font-semibold">{title}</div>
-            <button className="btn btn-ghost h-6 w-6 !px-0" onClick={onClose}>
+          <div className="flex items-center justify-between px-5 pb-1 pt-4">
+            <div className="text-[15px] font-semibold tracking-tight">{title}</div>
+            <button className="btn btn-ghost h-7 w-7 !px-0 text-muted hover:text-fg" onClick={onClose}>
               <X size={14} />
             </button>
           </div>
         )}
-        <div className={plain ? 'overflow-y-auto p-5' : 'overflow-y-auto px-4 py-4'}>
+        <div className={plain ? 'overflow-y-auto p-6' : 'overflow-y-auto px-5 py-4'}>
           {plain && title && <div className="mb-1 text-lg font-semibold tracking-tight">{title}</div>}
           {children}
         </div>
         {footer && (
-          <div className={plain ? 'flex items-center justify-end gap-2 px-5 pb-5' : 'flex items-center justify-end gap-2 border-t px-4 py-3'}>
+          <div className={plain ? 'flex items-center justify-end gap-2 px-6 pb-6' : 'flex items-center justify-end gap-2 px-5 pb-5 pt-2'}>
             {footer}
           </div>
         )}
-      </div>
+      </LiquidGlass>
     </div>
   );
 }
@@ -92,6 +104,15 @@ export function Sheet({
   footer?: React.ReactNode;
 }) {
   const [dragY, setDragY] = useState(0);
+  // Match the visible (visual) viewport rect. iOS places a `position: fixed`
+  // overlay against the *layout* viewport, so whenever the visual viewport is
+  // inset from it — the soft keyboard eating the bottom, or the blank band at
+  // the top before Safari's address bar settles — the overlay is painted and
+  // hit-tested at different places and a tap lands on the wrong, higher-in-the-
+  // list row. Sizing + translating the scrim to the visual viewport keeps paint
+  // and hit-testing aligned in every state (a transform moves both together);
+  // the panel then sits at the scrim's bottom via flex.
+  const [vv, setVv] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -103,6 +124,23 @@ export function Sheet({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+  useEffect(() => {
+    if (!open) return;
+    // The sheet has no text input, so drop the soft keyboard if one is up.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+    const view = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!view) return;
+    const sync = () => setVv({ x: view.offsetLeft, y: view.offsetTop, w: view.width, h: view.height });
+    sync();
+    view.addEventListener('resize', sync);
+    view.addEventListener('scroll', sync);
+    return () => {
+      view.removeEventListener('resize', sync);
+      view.removeEventListener('scroll', sync);
+      setVv(null);
+    };
+  }, [open]);
   if (!open) return null;
 
   // Swipe-down-to-dismiss on the grab handle / header.
@@ -120,9 +158,14 @@ export function Sheet({
   };
 
   return (
-    <div className="fixed inset-0 z-[90] glass-scrim bg-black/40" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      data-motion="sheet"
+      className="fixed z-[90] flex flex-col justify-end glass-scrim bg-black/25"
+      style={vv ? { top: 0, left: 0, width: vv.w, height: vv.h, transform: `translate(${vv.x}px, ${vv.y}px)` } : { inset: 0 }}
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div
-        className="glass glass-panel fade-in safe-b fixed inset-x-0 bottom-0 z-[91] flex max-h-[85dvh] flex-col rounded-t-[12px]"
+        className="glass glass-panel safe-b z-[91] flex max-h-[85%] w-full flex-col rounded-t-[24px]"
         style={dragY ? { transform: `translateY(${dragY}px)` } : undefined}
       >
         <div className="flex shrink-0 cursor-grab touch-none justify-center pt-2 active:cursor-grabbing" onPointerDown={onHandlePointerDown}>

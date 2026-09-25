@@ -312,6 +312,11 @@ function putCache(file: string, stat: fs.Stats, session: HarnessSession) {
  *  origin/prompts. */
 export function scanHarnessSessions(): HarnessSession[] {
   const all = [...scanClaude(), ...scanCodex()];
+  // A full sweep saw every transcript that still exists, so anything else in the
+  // cache is gone (deleted / rotated away) and can never be hit again — dropping
+  // it here is what bounds the map over a long-running app (perf-cpu-ram §4.5.4).
+  const live = new Set(all.map((s) => s.file));
+  for (const file of cache.keys()) if (!live.has(file)) cache.delete(file);
   all.sort((a, b) => b.modifiedAt - a.modifiedAt);
   return all;
 }
@@ -350,6 +355,7 @@ function findProjectByRoot(repoRoot: string): { id: string; kind: 'git' | 'folde
 // Placement runs 3 git subprocesses per distinct cwd; many sessions share one
 // repo, so memoize briefly (§9 large histories). Cleared after an import mutates
 // the project/workspace set.
+const PLACE_TTL_MS = 10_000;
 const placeCache = new Map<string, { at: number; result: Placement }>();
 export function clearPlaceCache(): void {
   placeCache.clear();
@@ -358,8 +364,11 @@ export function clearPlaceCache(): void {
 /** Map a session's cwd to a Maestro placement (§5.4). Async: consults git. */
 export async function placeCwd(cwd: string): Promise<Placement> {
   const hit = placeCache.get(cwd);
-  if (hit && Date.now() - hit.at < 10_000) return hit.result;
+  if (hit && Date.now() - hit.at < PLACE_TTL_MS) return hit.result;
   const result = await placeCwdUncached(cwd);
+  // Entries are only ever read inside their TTL, so sweeping the expired ones
+  // bounds the map by the number of *active* cwds.
+  if (placeCache.size > 256) for (const [k, v] of placeCache) if (Date.now() - v.at >= PLACE_TTL_MS) placeCache.delete(k);
   placeCache.set(cwd, { at: Date.now(), result });
   return result;
 }

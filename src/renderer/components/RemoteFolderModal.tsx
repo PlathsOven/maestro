@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronRight, Folder, Plug, Plus, Server, Sparkles, Stethoscope, Trash2 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
-import { DoctorRowLine, Modal, Spinner } from './common';
+import { DoctorRowLine, Modal, Segmented, Spinner } from './common';
 import type { DoctorRow, FsEntry, SshConfigHost, SshHostConfig } from '../../shared/types';
 
 /** uuid-ish id for a new host (main also backfills one). */
@@ -170,16 +170,16 @@ export default function RemoteFolderModal() {
 
   return (
     <Modal title="Open remote folder" onClose={() => setModal(null)} width={620}>
-      <div className="flex min-h-[380px] gap-3">
+      <div className="flex min-h-[380px] gap-5">
         {/* host list */}
-        <div className="w-52 shrink-0 space-y-1 border-r pr-3">
-          <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-faint">SSH hosts</div>
+        <div className="w-52 shrink-0 space-y-0.5">
+          <div className="mb-1.5 px-2 text-xs font-medium text-faint">SSH hosts</div>
           {hosts.map((h) => (
             <div
               key={h.id}
               className={
-                'group flex items-center gap-2 rounded-ctl px-2 py-1.5 text-xs ' +
-                (hostId === h.id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-accent-soft/50')
+                'group flex items-center gap-2 rounded-ctl px-2.5 py-2 text-xs ' +
+                (hostId === h.id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-accent-soft/60 hover:text-fg')
               }
             >
               <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => void testAndBrowse(h.id)}>
@@ -198,7 +198,7 @@ export default function RemoteFolderModal() {
             </div>
           ))}
           <button
-            className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-xs text-muted hover:bg-accent-soft/50 hover:text-fg"
+            className="flex w-full items-center gap-2 rounded-ctl px-2.5 py-2 text-xs text-muted hover:bg-accent-soft/60 hover:text-fg"
             onClick={() => {
               setCreating(true);
               setHostId(null);
@@ -211,14 +211,14 @@ export default function RemoteFolderModal() {
 
           {/* One-click hosts detected from ~/.ssh/config (VS Code / Cursor / etc.). */}
           {suggestions.length > 0 && (
-            <div className="pt-2">
-              <div className="mb-1 flex items-center gap-1 text-2xs font-medium uppercase tracking-wide text-faint">
+            <div className="pt-4">
+              <div className="mb-1.5 flex items-center gap-1 px-2 text-xs font-medium text-faint">
                 <Sparkles size={11} /> From ~/.ssh/config
               </div>
               {suggestions.map((d) => (
                 <button
                   key={d.alias}
-                  className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-xs text-muted hover:bg-accent-soft/50 hover:text-fg"
+                  className="flex w-full items-center gap-2 rounded-ctl px-2.5 py-2 text-left text-xs text-muted hover:bg-accent-soft/60 hover:text-fg"
                   title={`Connect to ${d.user ? d.user + '@' : ''}${d.hostname}${d.port && d.port !== 22 ? ':' + d.port : ''}`}
                   onClick={() => void connectDetected(d)}
                 >
@@ -239,9 +239,9 @@ export default function RemoteFolderModal() {
         {/* right pane: new-host form OR browse */}
         <div className="min-w-0 flex-1">
           {creating ? (
-            <div className="space-y-2.5">
-              <div className="text-[13px] font-medium">New SSH host</div>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-3.5">
+              <div className="text-[14px] font-semibold tracking-tight">New SSH host</div>
+              <div className="grid grid-cols-2 gap-3">
                 <Field label="Label" value={form.label} onChange={(v) => setForm({ ...form, label: v })} placeholder="my server" />
                 <Field label="Host / alias" value={form.host} onChange={(v) => setForm({ ...form, host: v })} placeholder="example.com" />
                 <Field label="User" value={form.user} onChange={(v) => setForm({ ...form, user: v })} placeholder="ubuntu" />
@@ -249,17 +249,14 @@ export default function RemoteFolderModal() {
               </div>
               <div>
                 <label className="label">Auth</label>
-                <div className="flex gap-2">
-                  {(['agent', 'key'] as const).map((a) => (
-                    <button
-                      key={a}
-                      className={'btn h-7 text-xs ' + (form.auth === a ? 'btn-accent' : '')}
-                      onClick={() => setForm({ ...form, auth: a })}
-                    >
-                      {a === 'agent' ? 'SSH agent' : 'Key file'}
-                    </button>
-                  ))}
-                </div>
+                <Segmented
+                  value={form.auth}
+                  options={[
+                    { value: 'agent', label: 'SSH agent' },
+                    { value: 'key', label: 'Key file' },
+                  ]}
+                  onChange={(a) => setForm({ ...form, auth: a })}
+                />
               </div>
               {form.auth === 'key' && (
                 <>
@@ -268,24 +265,24 @@ export default function RemoteFolderModal() {
                 </>
               )}
               <div className="flex justify-end gap-2 pt-1">
-                <button className="btn text-xs" onClick={() => setCreating(false)}>
+                <button className="btn btn-ghost h-8 px-3.5 text-muted hover:text-fg" onClick={() => setCreating(false)}>
                   Cancel
                 </button>
-                <button className="btn btn-accent gap-1.5 text-xs" onClick={() => void saveNewHost()}>
+                <button className="btn btn-accent h-8 gap-1.5 px-3.5" onClick={() => void saveNewHost()}>
                   <Plug size={12} /> Save &amp; connect
                 </button>
               </div>
             </div>
           ) : activeHost ? (
             <div className="flex h-full flex-col">
-              <div className="mb-2 flex items-center gap-1.5 text-2xs text-faint">
+              <div className="mb-2 flex items-center gap-1.5 px-1 text-2xs text-faint">
                 <button className="hover:text-fg" onClick={() => void browse(activeHost.id, '')}>
                   {activeHost.user}@{activeHost.host}
                 </button>
                 {cwd && <ChevronRight size={11} />}
                 <span className="truncate font-mono text-muted">{cwd}</span>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto rounded-ctl border">
+              <div className="min-h-0 flex-1 overflow-y-auto rounded-card border border-border/70 bg-raised p-1">
                 {busy && (
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-faint">
                     <Spinner /> {busy}
@@ -293,7 +290,7 @@ export default function RemoteFolderModal() {
                 )}
                 {!busy && cwd && cwd !== '/' && (
                   <button
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted hover:bg-accent-soft/50"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-muted hover:bg-accent-soft"
                     onClick={() => void browse(activeHost.id, cwd.replace(/\/[^/]+$/, '') || '/')}
                   >
                     <Folder size={13} /> ..
@@ -303,7 +300,7 @@ export default function RemoteFolderModal() {
                   entries?.map((e) => (
                     <button
                       key={e.name}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent-soft/50"
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-accent-soft"
                       onClick={() => void browse(activeHost.id, cwd.replace(/\/$/, '') + '/' + e.name)}
                     >
                       <Folder size={13} className="text-muted" /> {e.name}
@@ -311,22 +308,22 @@ export default function RemoteFolderModal() {
                   ))}
                 {entries && entries.length === 0 && !busy && <div className="px-3 py-2 text-xs text-faint">No subfolders.</div>}
               </div>
-              <div className="mt-2 flex items-center justify-between">
-                <span className="truncate font-mono text-2xs text-faint">{cwd || 'home'}</span>
-                <button className="btn btn-accent gap-1.5 text-xs" disabled={!cwd || opening} onClick={() => void openFolder()}>
-                  {opening ? <Spinner className="!text-white" /> : <Folder size={12} />}
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <span className="truncate px-1 font-mono text-2xs text-faint">{cwd || 'home'}</span>
+                <button className="btn btn-accent h-8 shrink-0 gap-1.5 px-3.5" disabled={!cwd || opening} onClick={() => void openFolder()}>
+                  {opening ? <Spinner className="!text-on-ink" /> : <Folder size={12} />}
                   {opening ? 'Opening…' : 'Open this folder'}
                 </button>
               </div>
 
               {/* Read-only remote diagnostics — env/tool/harness state to paste into a bug report. */}
-              <div className="mt-3 border-t pt-2">
-                <button className="btn btn-ghost gap-1.5 text-xs" disabled={doctoring} onClick={() => void runDoctor()}>
+              <div className="mt-3">
+                <button className="btn btn-ghost -ml-1 gap-1.5 text-muted hover:text-fg" disabled={doctoring} onClick={() => void runDoctor()}>
                   {doctoring ? <Spinner /> : <Stethoscope size={12} />}
                   {doctoring ? 'Running diagnostics…' : 'Run diagnostics'}
                 </button>
                 {doctorRows && (
-                  <div className="mt-2 overflow-hidden rounded-ctl border">
+                  <div className="mt-2 overflow-hidden rounded-ctl border border-border/70">
                     {doctorRows.map((r) => (
                       <DoctorRowLine key={r.label} row={r} />
                     ))}
@@ -335,7 +332,7 @@ export default function RemoteFolderModal() {
               </div>
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center text-center text-xs text-faint">
+            <div className="flex h-full items-center justify-center rounded-card bg-accent-soft/60 px-8 text-center text-xs leading-relaxed text-muted">
               Pick a host to browse, or add one. Agents will run on that server.
             </div>
           )}
@@ -361,7 +358,7 @@ function Field({
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="input text-xs" type={type ?? 'text'} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      <input className="input h-8 text-xs" type={type ?? 'text'} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }

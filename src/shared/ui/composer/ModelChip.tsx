@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Asterisk } from 'lucide-react';
+import clsx from 'clsx';
+import { HarnessLogo } from '../brandIcons';
 import { PickerOption } from '../primitives';
 import { Sheet } from '../Modal';
 import { useUiHost } from '../host';
@@ -17,12 +18,18 @@ export function ModelChip({
   models,
   onChange,
   disabledReason,
+  defaults,
+  onSetDefault,
 }: {
   harness: HarnessId;
   value: string;
   models?: EffectiveModels;
   onChange: (modelId: string) => void;
   disabledReason?: string;
+  /** Per-harness default model ids. With `onSetDefault`, each row gets the
+   *  desktop's star to pin it as the default for new chats. */
+  defaults?: Partial<Record<HarnessId, string>>;
+  onSetDefault?: (harness: HarnessId, modelId: string) => void;
 }) {
   const { isTouch } = useUiHost();
   const [open, setOpen] = useState(false);
@@ -47,20 +54,28 @@ export function ModelChip({
         if (opts.length === 0) return null;
         return (
           <div key={h}>
-            <div className="px-3 pt-2 text-2xs font-semibold uppercase tracking-wide text-muted">{HARNESS_DISPLAY[h]}</div>
+            <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-2 text-xs font-medium text-faint">
+              <HarnessLogo harness={h} size={12} />
+              {HARNESS_DISPLAY[h]}
+            </div>
             {opts.map((m) => (
               <PickerOption
                 key={m.id}
                 label={m.label}
                 selected={h === harness && m.id === value}
-                isDefault={false}
-                showStar={false}
+                isDefault={!!onSetDefault && defaults?.[h] === m.id}
+                showStar={!!onSetDefault}
                 disabled={!!disabledReason}
                 onSelect={() => {
                   setOpen(false);
                   onChange(m.id);
                 }}
-                onSetDefault={() => {}}
+                onSetDefault={() => {
+                  // "Set as default and select", like the desktop picker.
+                  onSetDefault?.(h, m.id);
+                  setOpen(false);
+                  onChange(m.id);
+                }}
               />
             ))}
           </div>
@@ -71,15 +86,15 @@ export function ModelChip({
 
   return (
     <div ref={ref} className="relative">
-      <button className="btn btn-ghost h-6 gap-1 px-1.5 text-xs" onClick={() => setOpen(true)}>
-        <Asterisk size={13} className="text-accent" /> {label || 'Default'}
+      <button className={clsx('btn btn-ghost h-7 gap-1.5 px-2.5 text-xs text-muted hover:text-fg', open && 'bg-accent-soft text-fg')} onClick={() => setOpen(true)}>
+        <HarnessLogo harness={harness} size={13} /> {label || 'Default'}
       </button>
       {isTouch ? (
         <Sheet title="Model" open={open} onClose={() => setOpen(false)}>
           {body}
         </Sheet>
       ) : (
-        open && <div className="glass absolute bottom-full left-0 z-40 mb-1 max-h-80 w-64 overflow-y-auto py-1">{body}</div>
+        open && <div data-motion="pop-up" className="glass absolute bottom-full left-0 z-40 mb-2 max-h-80 w-64 overflow-y-auto py-1">{body}</div>
       )}
     </div>
   );

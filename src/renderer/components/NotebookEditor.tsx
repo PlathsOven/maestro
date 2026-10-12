@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import DOMPurify from 'dompurify';
 import { ArrowDown, ArrowUp, Eraser, Pencil, Play, Plus, RotateCcw, Square, Trash2, Zap } from 'lucide-react';
 import { invoke, on, tryInvoke } from '../lib/api';
-import { highlightLine, renderMarkdown, stripAnsi } from '../lib/format';
+import { highlightLine, renderMarkdown, stripAnsi } from '../../shared/ui/format';
 import { monaco, ensureEditorTheme } from '../lib/monaco';
 import { getBuffer } from '../lib/editorBuffers';
 import { cellText, newCell, notebookLanguage, setCellText, type NotebookCell, type NotebookOutput } from '../lib/nbformat';

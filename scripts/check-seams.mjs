@@ -1,6 +1,19 @@
 import fs from 'fs';
 import path from 'path';
 
+/** Every .ts/.tsx file under `dir` (if it exists), as a forward-slash path. */
+function* tsFiles(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) yield* tsFiles(p);
+    else if (/\.tsx?$/.test(entry.name)) yield p.split(path.sep).join('/');
+  }
+}
+
+const NODE_BUILTINS =
+  /from ['"](?:node:)?(?:fs|os|path|crypto|child_process|net|http|https|stream|util|events|electron)['"]|require\(['"]/;
+
 /**
  * Guards the process-launching seam. Everything the app starts goes through a
  * host (src/main/hosts) so the Windows shim resolution in src/main/launch.ts
@@ -18,21 +31,11 @@ const ALLOWED = new Set([
 ]);
 
 const offenders = [];
-
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(p);
-    else if (/\.tsx?$/.test(entry.name)) {
-      const rel = p.split(path.sep).join('/');
-      if (ALLOWED.has(rel)) continue;
-      const src = fs.readFileSync(p, 'utf8');
-      if (/from ['"]child_process['"]|require\(['"]child_process['"]\)/.test(src)) offenders.push(rel);
-    }
-  }
+for (const rel of tsFiles('src')) {
+  if (ALLOWED.has(rel)) continue;
+  const src = fs.readFileSync(rel, 'utf8');
+  if (/from ['"]child_process['"]|require\(['"]child_process['"]\)/.test(src)) offenders.push(rel);
 }
-
-walk('src');
 
 if (offenders.length) {
   console.error(
@@ -52,28 +55,18 @@ if (offenders.length) {
  * main-process modules. If it drifts, the "one parse implementation" guarantee
  * (and the relay build) breaks. Only `../types` and sibling `./` files allowed.
  */
-const NODE_BUILTINS =
-  /from ['"](?:node:)?(?:fs|os|path|crypto|child_process|net|http|https|stream|util|events|electron)['"]|require\(['"]/;
 const sharedOffenders = [];
-function walkShared(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkShared(p);
-    else if (/\.tsx?$/.test(entry.name)) {
-      const rel = p.split(path.sep).join('/');
-      const src = fs.readFileSync(p, 'utf8');
-      if (NODE_BUILTINS.test(src)) sharedOffenders.push(`${rel} (node builtin / electron)`);
-      // Must not reach back into the main process (only shared/types + siblings).
-      for (const m of src.matchAll(/from ['"]([^'"]+)['"]/g)) {
-        const spec = m[1];
-        if (spec.startsWith('.') && !/^\.\.\/types$|^\.\/[\w-]+$|^\.\.\/harness/.test(spec)) {
-          sharedOffenders.push(`${rel} → ${spec} (only ../types and siblings allowed)`);
-        }
-      }
+for (const rel of tsFiles('src/shared/harness')) {
+  const src = fs.readFileSync(rel, 'utf8');
+  if (NODE_BUILTINS.test(src)) sharedOffenders.push(`${rel} (node builtin / electron)`);
+  // Must not reach back into the main process (only shared/types + siblings).
+  for (const m of src.matchAll(/from ['"]([^'"]+)['"]/g)) {
+    const spec = m[1];
+    if (spec.startsWith('.') && !/^\.\.\/types$|^\.\/[\w-]+$|^\.\.\/harness/.test(spec)) {
+      sharedOffenders.push(`${rel} → ${spec} (only ../types and siblings allowed)`);
     }
   }
 }
-if (fs.existsSync('src/shared/harness')) walkShared('src/shared/harness');
 if (sharedOffenders.length) {
   console.error(
     `${sharedOffenders.length} impurity in src/shared/harness (must be node-free, main-process-free):\n` +
@@ -102,36 +95,26 @@ const UI_BARE_ALLOWED = new Set([
   'dompurify',
   'katex',
 ]);
-const UI_NODE_BUILTINS =
-  /from ['"](?:node:)?(?:fs|os|path|crypto|child_process|net|http|https|stream|util|events|electron)['"]|require\(['"]/;
 const uiOffenders = [];
-function walkUi(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkUi(p);
-    else if (/\.tsx?$/.test(entry.name)) {
-      const rel = p.split(path.sep).join('/');
-      const src = fs.readFileSync(p, 'utf8');
-      if (UI_NODE_BUILTINS.test(src)) uiOffenders.push(`${rel} (node builtin / electron)`);
-      if (/window\s*\.\s*maestro/.test(src)) uiOffenders.push(`${rel} (window.maestro — inject via UiHost instead)`);
-      for (const m of src.matchAll(/from ['"]([^'"]+)['"]/g)) {
-        const spec = m[1];
-        if (spec.startsWith('.')) {
-          // Relative import: must not reach into the renderer or main process, or
-          // escape the shared tree. (../types and ../harness/* stay inside shared.)
-          if (/(^|\/)(renderer|main)(\/|$)/.test(spec)) {
-            uiOffenders.push(`${rel} → ${spec} (must not import renderer/main)`);
-          }
-        } else if (/^highlight\.js(\/.*)?$/.test(spec)) {
-          // allowed: highlight.js and highlight.js/lib/*
-        } else if (!UI_BARE_ALLOWED.has(spec)) {
-          uiOffenders.push(`${rel} → ${spec} (not in the shared-UI allow-list)`);
-        }
+for (const rel of tsFiles('src/shared/ui')) {
+  const src = fs.readFileSync(rel, 'utf8');
+  if (NODE_BUILTINS.test(src)) uiOffenders.push(`${rel} (node builtin / electron)`);
+  if (/window\s*\.\s*maestro/.test(src)) uiOffenders.push(`${rel} (window.maestro — inject via UiHost instead)`);
+  for (const m of src.matchAll(/from ['"]([^'"]+)['"]/g)) {
+    const spec = m[1];
+    if (spec.startsWith('.')) {
+      // Relative import: must not reach into the renderer or main process, or
+      // escape the shared tree. (../types and ../harness/* stay inside shared.)
+      if (/(^|\/)(renderer|main)(\/|$)/.test(spec)) {
+        uiOffenders.push(`${rel} → ${spec} (must not import renderer/main)`);
       }
+    } else if (/^highlight\.js(\/.*)?$/.test(spec)) {
+      // allowed: highlight.js and highlight.js/lib/*
+    } else if (!UI_BARE_ALLOWED.has(spec)) {
+      uiOffenders.push(`${rel} → ${spec} (not in the shared-UI allow-list)`);
     }
   }
 }
-if (fs.existsSync('src/shared/ui')) walkUi('src/shared/ui');
 if (uiOffenders.length) {
   console.error(
     `${uiOffenders.length} impurity in src/shared/ui (must be presentational, host-agnostic):\n` +

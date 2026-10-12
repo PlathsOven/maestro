@@ -102,25 +102,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     if (pathName === '/preview') {
       // `maestro-preview` drives the embedded browser pane (§8). Local Node CLIs
       // send `{ workspaceId, agentId, argv }`; remote curl shims send workspace/
-      // agent as x-maestro-* headers and the argv as newline-delimited body.
+      // agent as x-maestro-* headers and the argv as newline-delimited body. The
+      // pane is per workspace, so the agent id is accepted but not needed.
       let workspaceId: string | undefined;
-      let agentId: string | undefined;
       let argv: string[] = [];
       if (headerMode) {
         workspaceId = hWorkspace;
-        agentId = header(req, 'x-maestro-agent');
         const trimmed = body.endsWith('\n') ? body.slice(0, -1) : body;
         argv = trimmed.length ? trimmed.split('\n') : [];
       } else {
         const j = tryParse(body);
         if (j === undefined) return send(400, { ok: false, text: 'bad json' });
         workspaceId = j?.workspaceId != null ? String(j.workspaceId) : undefined;
-        agentId = j?.agentId != null ? String(j.agentId) : undefined;
         argv = Array.isArray(j?.argv) ? j.argv.map(String) : [];
       }
       if (!workspaceId) return send(400, { ok: false, text: 'missing workspaceId' });
       try {
-        const result = await runPreviewCommand(workspaceId, Number(agentId) || 1, argv);
+        const result = await runPreviewCommand(workspaceId, argv);
         return send(200, result);
       } catch (e: any) {
         return send(200, { ok: false, text: String(e?.message ?? e) });

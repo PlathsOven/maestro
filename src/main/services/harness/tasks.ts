@@ -122,11 +122,6 @@ export function clearFinishedTasks(wsId: string, agentId: number) {
   publish(wsId, agentId);
 }
 
-export function dropBackgroundTasks(wsId: string, agentId: number) {
-  if (!tasks.delete(key(wsId, agentId))) return;
-  publish(wsId, agentId);
-}
-
 /** Drop every chat's ledger for a workspace that no longer exists (delete /
  *  remove project). No broadcast: there is nothing left to render it, and the
  *  renderer drops the workspace on `ws:removed` (perf-cpu-ram §3.8). */

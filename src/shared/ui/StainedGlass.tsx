@@ -2,6 +2,7 @@
 import React, { forwardRef, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import clsx from 'clsx';
 import { computeGlassMaps, imageDataUrl, supportsRefraction } from './liquidGlassMaps';
+import { useFullEffects } from './effects';
 import { subscribeTheme } from '../themes';
 
 /**
@@ -23,6 +24,7 @@ import { subscribeTheme } from '../themes';
  */
 
 export type GlassTone =
+  | 'asking'
   | 'running'
   | 'unread'
   | 'waiting'
@@ -35,6 +37,7 @@ export type GlassTone =
   | 'ink';
 
 const TONE_VAR: Record<GlassTone, string> = {
+  asking: '--st-asking',
   running: '--st-running',
   unread: '--st-unread',
   waiting: '--st-attention',
@@ -209,13 +212,15 @@ export const StainedGlass = forwardRef<HTMLElement, StainedGlassProps>(function 
   const ref = useRef<HTMLElement | null>(null);
   const theme = useThemeKey();
   const dark = theme.startsWith('dark');
-  const [refract, setRefract] = useState(false);
+  const [supported, setSupported] = useState(false);
+  // Reduced effects (older GPUs) skip the SVG filter chain entirely.
+  const refract = useFullEffects() && supported;
   const [measured, setMeasured] = useState<Size | null>(null);
   const [filters, setFilters] = useState<{ body: string; ring: string } | null>(null);
   const [presses, setPresses] = useState<number[]>([]);
   const sz: Size | null = size ? { w: size, h: size } : measured;
 
-  useEffect(() => setRefract(supportsRefraction()), []);
+  useEffect(() => setSupported(supportsRefraction()), []);
 
   useLayoutEffect(() => {
     const el = ref.current;

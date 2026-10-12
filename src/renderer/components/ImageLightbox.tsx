@@ -140,7 +140,7 @@ export default function ImageLightbox() {
         onDoubleClick={toggleFit}
       >
         <div
-          className="flex min-h-full min-w-full items-center justify-center p-4"
+          className="flex min-h-full w-max min-w-full items-center justify-center p-4"
           onMouseDown={(e) => e.target === e.currentTarget && close()}
         >
           {load.src ? (

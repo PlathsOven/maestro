@@ -6,10 +6,10 @@
 
 ### Run a fleet of coding agents. Steer it from your phone.
 
-Claude Code, Codex, and more in parallel, each in its own git worktree.<br />
-Free on macOS, Windows, and Linux, with **[Maestro Web](https://app.maestro-build.com)** in your pocket.
+A free desktop app that runs Claude Code, Codex, Cursor, and other CLI coding agents in parallel,<br />
+each in its own git worktree, on macOS, Windows, and Linux, with **[Maestro Web](https://app.maestro-build.com)** in your pocket.
 
-**[Download](https://maestro-build.com)** &nbsp;·&nbsp; [Open Maestro Web](https://app.maestro-build.com) &nbsp;·&nbsp; [Maestro vs Conductor](https://maestro-build.com/maestro-vs-conductor)
+**[Download](https://maestro-build.com)** &nbsp;·&nbsp; [Windows](https://maestro-build.com/windows) &nbsp;·&nbsp; [Linux](https://maestro-build.com/linux) &nbsp;·&nbsp; [Open Maestro Web](https://app.maestro-build.com) &nbsp;·&nbsp; [Maestro vs Conductor](https://maestro-build.com/maestro-vs-conductor)
 
 <br />
 
@@ -52,6 +52,37 @@ each other's files. See who is working, who needs you, and what is done, at a gl
   </tr>
 </table>
 
+## Make it yours. Thirteen themes.
+
+A theme here is a mood, not a palette swap. Each one is built around a single idea and carries it through
+the whole app: the shape of every card and button, the colour of the shadows, whether surfaces are glass
+or paper, what glows behind the window, the type where it matters, even the terminal's colours. Every
+theme has a light and a dark variant and can follow the system switch. Pick one under Settings, Appearance,
+and Maestro Web on your phone follows along, textures and all.
+
+- **Classic**: warm neutrals and liquid glass, with a violet accent.
+- **Catppuccin**: a cosy pastel study, soft and round, with mauve and lavender.
+- **Nord**: arctic calm. Frosted glass, frost-blue accents, an aurora over the dark variant.
+- **Solarized**: a precision instrument. The one flat theme: no glass, near-square corners, hairline rules.
+- **Gruvbox**: a retro workshop. Paper grain, chunky keys that press into a ledge, warm lamplight.
+- **Rosé Pine**: twilight elegance, with serif headings and a rose-and-iris dusk.
+- **Tokyo Night**: a neon city after rain. A glowing rim around the work area and city light on the horizon.
+- **Everforest**: light through the canopy. The softest, roundest shapes and dappled light.
+
+Five experimental themes go further than colour:
+
+- **Synthwave**: a striped sun over a neon grid, or vaporwave pastels by day.
+- **Phosphor**: a green CRT with scanlines, or greenbar printer paper with tractor-feed holes.
+- **Brutalist**: hard edges, hard shadows, loud blocks of colour, no glass.
+- **Blueprint**: a cyanotype drafting sheet with registration marks, or pencil on graph paper.
+- **Bubblegum**: candy-coloured, bouncy and sprinkled, with a grape-soda dark variant.
+
+<div align="center">
+  <img src="docs/images/themes.gif" width="880" alt="The Maestro desktop app cycling through its themes: Classic, Catppuccin, Nord, Solarized, Gruvbox, Rosé Pine, Tokyo Night, Everforest, Synthwave, Phosphor, Brutalist, Blueprint, and Bubblegum, in light and dark" />
+  <br /><br />
+  <img src="docs/images/mobile-themes.png" width="880" alt="Maestro Web on a phone in six themes: Blueprint light, Tokyo Night dark, Phosphor light, Synthwave dark, Brutalist light, and Gruvbox dark" />
+</div>
+
 ## Then walk away. Your fleet follows you.
 
 Link the desktop to **[Maestro Web](https://app.maestro-build.com)** once and every workspace shows up on
@@ -88,6 +119,46 @@ behaves like an app. Free, with your GitHub sign-in.
 - **Works with** Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Grok Build, or a plain shell.
   Coming from [Conductor](https://conductor.build)? One-click import brings your workspaces over.
 
+## FAQ
+
+### What is Maestro?
+
+A desktop app for running several AI coding agents at once. Each task gets its own git worktree and
+branch, so parallel agents never edit the same files. You review each agent's diff, open the pull request,
+and merge from the same window.
+
+### How do I run multiple Claude Code sessions in parallel?
+
+Give each session its own git worktree, then merge the branches back. Maestro does the worktree, branch,
+and terminal setup for you. To do it by hand with `git worktree` and tmux, see the guide
+[Run multiple Claude Code sessions in parallel](https://maestro-build.com/parallel-claude-code). There is a
+[Codex version](https://maestro-build.com/parallel-codex) too.
+
+### Is there a GUI for Claude Code, Codex, or the Cursor agent CLI on Windows and Linux?
+
+Yes. Maestro runs on all three platforms and puts each agent's real CLI behind a chat, a diff viewer, and a
+terminal. See the pages for [Claude Code](https://maestro-build.com/claude-code-gui),
+[Codex](https://maestro-build.com/codex-gui), [Cursor](https://maestro-build.com/cursor-agent-gui),
+[OpenCode](https://maestro-build.com/opencode-gui), [Kimi Code](https://maestro-build.com/kimi-code-gui), and
+[Grok Build](https://maestro-build.com/grok-build-gui).
+
+### Can I control Claude Code from my phone?
+
+Yes. Link the desktop to Maestro Web and every workspace shows up on your phone, where you can send the
+next task, review diffs, and get a push when an agent needs you. For other ways to do it, see
+[How to use Claude Code from your phone](https://maestro-build.com/claude-code-from-your-phone).
+
+### How does Maestro compare to Conductor?
+
+Conductor is Mac-only and caps open workspaces. Maestro runs on macOS, Windows, and Linux with no workspace
+cap, and imports your Conductor workspaces in one click. See [Maestro vs Conductor](https://maestro-build.com/maestro-vs-conductor)
+and the sourced [comparison of tools to run coding agents in parallel](https://maestro-build.com/alternatives).
+
+### Is Maestro free and open source?
+
+It is free, and the source is available under the Business Source License 1.1 (see below). Each version
+becomes Apache 2.0 four years after it ships.
+
 <br />
 
 <details>
@@ -109,7 +180,7 @@ Every workspace has a diff, a terminal, an editor, a preview, and checks behind 
   merge, archive.
 - **Sessions**: several chats per workspace, split side by side; run a second agent to review the first, or
   delegate scoped work to sub-agents.
-- **Also**: light, dark, and system themes; in-app GitHub sign-in (a device flow that hands the token to
+- **Also**: thirteen themes, each light and dark or following the system; in-app GitHub sign-in (a device flow that hands the token to
   `gh`); remote projects over SSH, where every exec, pty, and file op runs on the host; plain folders with
   no branches; dictation on macOS; background auto-update; and `maestro-ask`, so an agent can pause and ask
   you a multiple-choice question inline.
@@ -143,7 +214,8 @@ Scripts, terminals, and agents get `WORKSPACE_PORT`, `MAESTRO_WORKSPACE_NAME`, `
 <br />
 
 ```bash
-npm install       # also rebuilds better-sqlite3 + node-pty for Electron
+npm install
+npm run rebuild   # rebuild better-sqlite3 + node-pty for Electron
 npm run dev       # vite dev server + electron with HMR
 npm start         # launch a production build
 npm run dist:dmg  # macOS .dmg   (dist:win / dist:linux for the others)
@@ -161,7 +233,8 @@ call):
 
 ```bash
 npx esbuild scripts/e2e.ts --bundle --platform=node --format=cjs \
-  --external:electron --external:better-sqlite3 --external:node-pty --outfile=dist/e2e.cjs
+  --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater \
+  --external:ssh2 --outfile=dist/e2e.cjs
 ELECTRON_RUN_AS_NODE=1 npx electron dist/e2e.cjs
 ```
 

@@ -167,6 +167,7 @@ export async function refreshPr(workspaceId: string, force = false) {
   // — otherwise a transient blip makes a real PR flicker away on the desktop
   // and on Maestro Web. A transient failure with nothing cached: leave as-is.
   if (!pr && gh.cachedPrStatus(ws.worktreePath) !== null) return pr;
+  const status = fresh.status;
   const changed = pr
     ? fresh.prNumber !== pr.number || fresh.prUrl !== pr.url || fresh.prState !== pr.state
     : fresh.prNumber !== null || fresh.prState !== null;
@@ -182,7 +183,9 @@ export async function refreshPr(workspaceId: string, force = false) {
     fresh.prState = null;
     if (fresh.status === 'reviewing') fresh.status = 'idle';
   }
-  if (changed) {
+  // Status too: the turn end may have set 'idle' from a row read before a
+  // mid-turn refresh recorded the PR.
+  if (changed || fresh.status !== status) {
     Workspaces.update(fresh);
     broadcast('ws:updated', fresh);
   }

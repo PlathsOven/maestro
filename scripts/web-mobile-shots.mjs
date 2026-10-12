@@ -4,6 +4,9 @@
  *
  *   # 1. seed + boot next dev on :4300 first (see landing/README.md)
  *   # 2. node scripts/web-mobile-shots.mjs <baseUrl> <outDir>
+ *
+ * SHOT_THEMES=nord:light,synthwave:dark,… also captures the chat screen in those
+ * colour families (as chat-<family>-<mode>.png) for the themes showcase.
  */
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -165,6 +168,18 @@ async function main() {
       await capture(`${key}-${theme}.png`, url, ready);
     }
   }
+
+  // Colour families: the web boot script reads the family from localStorage, so
+  // set it on the current (same-origin) page and let the next navigation apply it.
+  const families = (process.env.SHOT_THEMES ?? '').split(',').filter(Boolean);
+  for (const item of families) {
+    const [family, mode = 'light'] = item.split(':');
+    await setTheme(mode);
+    await evaluate(`localStorage.setItem('maestro.colorTheme', ${JSON.stringify(family)})`);
+    const [, url, ready] = shots[1];
+    await capture(`chat-${family}-${mode}.png`, url, ready);
+  }
+  if (families.length) await evaluate(`localStorage.removeItem('maestro.colorTheme')`);
 
   cdp.close();
   chrome.kill();

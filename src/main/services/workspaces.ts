@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { broadcast } from '../bus';
 import { maestroHome } from '../env';
-import { Hosts, Messages, Projects, Settings, Workspaces, now, uid } from '../db';
+import { Hosts, Messages, Projects, Settings, Workspaces, mustProject, mustWorkspace, now, uid } from '../db';
 import { generateWorkspaceName, slugify } from '../names';
 import * as git from './git';
 import * as gh from './github';
@@ -177,8 +177,7 @@ export async function removeProject(projectId: string, deleteWorkspaces: boolean
 // ---------- workspaces ----------
 
 export async function createWorkspace(opts: CreateWorkspaceOpts): Promise<Workspace> {
-  const project = Projects.get(opts.projectId);
-  if (!project) throw new Error('Project not found');
+  const project = mustProject(opts.projectId);
 
   // Conductor import adopts an existing directory as an in-place workspace on a
   // *local git* project (§6.3): open it as-is on its own branch, no worktree add
@@ -298,8 +297,7 @@ function provisionAsync(project: Project, ws: Workspace, opts: CreateWorkspaceOp
  * reconciliation here.)
  */
 export function setWorkspaceHarness(workspaceId: string, harness: HarnessId): Workspace {
-  const ws = Workspaces.get(workspaceId);
-  if (!ws) throw new Error('Workspace not found');
+  const ws = mustWorkspace(workspaceId);
   if (ws.harness !== harness) {
     ws.harness = harness;
     Workspaces.update(ws);
@@ -517,10 +515,8 @@ export function archiveWorkspace(workspaceId: string) {
 }
 
 export async function restoreWorkspace(workspaceId: string): Promise<{ workspace: Workspace; warning?: string }> {
-  const ws = Workspaces.get(workspaceId);
-  if (!ws) throw new Error('Workspace not found');
-  const project = Projects.get(ws.projectId);
-  if (!project) throw new Error('Project not found');
+  const ws = mustWorkspace(workspaceId);
+  const project = mustProject(ws.projectId);
   // ws.hostId wins over project.hostId (src/main/hosts/index.ts) — a cloud
   // workspace of a local project resolves to the box, not this Mac.
   const host = hostForWorkspace(ws);
@@ -610,7 +606,7 @@ function destroyWorktree(project: Project, ws: Workspace): Promise<void> {
 }
 
 /** Offload an archived workspace's worktree (snapshot + keep local files + remove). */
-export function freeArchivedFiles(workspaceId: string): Promise<void> {
+function freeArchivedFiles(workspaceId: string): Promise<void> {
   return withDiskLock(workspaceId, async () => {
     // Re-checked under the lock: it may have been restored or deleted since.
     const ws = Workspaces.get(workspaceId);
@@ -755,8 +751,7 @@ export async function switchBranch(
   branch: string,
   create: boolean
 ): Promise<{ ok: boolean; conflict?: string; workspace?: Workspace }> {
-  const ws = Workspaces.get(workspaceId);
-  if (!ws) throw new Error('Workspace not found');
+  const ws = mustWorkspace(workspaceId);
   const host = hostForProject(Projects.get(ws.projectId)!);
   const res = await git.checkout(ws.worktreePath, branch, create, host);
   if (!res.ok) return { ok: false, conflict: res.conflict };
@@ -892,8 +887,7 @@ export async function continueOnNewBranch(
 }
 
 export async function renameWorkspaceBranch(workspaceId: string, branch: string): Promise<Workspace> {
-  const ws = Workspaces.get(workspaceId);
-  if (!ws) throw new Error('Workspace not found');
+  const ws = mustWorkspace(workspaceId);
   await git.renameBranch(ws.worktreePath, branch, hostForProject(Projects.get(ws.projectId)!));
   ws.branch = branch;
   Workspaces.update(ws);

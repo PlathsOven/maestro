@@ -5,6 +5,8 @@ declare global {
     maestro: {
       invoke: (channel: string, payload?: unknown) => Promise<unknown>;
       on: (channel: string, callback: (data: unknown) => void) => () => void;
+      /** Absolute path of an OS-dropped File ('' if none). Absent outside Electron. */
+      pathForFile?: (file: File) => string;
     };
   }
 }

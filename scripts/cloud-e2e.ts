@@ -12,7 +12,7 @@
  *
  *   npx esbuild scripts/cloud-e2e.ts --bundle --platform=node --format=cjs \
  *     --external:electron --external:better-sqlite3 --external:node-pty \
- *     --external:electron-updater --external:ssh2 --external:cpu-features \
+ *     --external:electron-updater --external:ssh2 \
  *     --outfile=dist/cloud-e2e.cjs && ELECTRON_RUN_AS_NODE=1 npx electron dist/cloud-e2e.cjs
  */
 import fs from 'fs';
@@ -113,6 +113,7 @@ async function main() {
   initDb(path.join(ROOT, 'db.sqlite'));
   const events: { channel: string; payload: any }[] = [];
   setWindow({
+    on: () => {},
     isDestroyed: () => false,
     isFocused: () => true,
     webContents: { send: (channel: string, payload: any) => events.push({ channel, payload }) },

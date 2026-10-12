@@ -38,16 +38,16 @@ export interface MemState {
 export type Pressure = 'ok' | 'watch' | 'critical';
 
 /** Below this share of headroom the guard probes quickly instead of lazily. */
-export const WATCH_FREE = 0.25;
+const WATCH_FREE = 0.25;
 /** Below this share of headroom it acts. Measured: the machine in the spec was
  *  still standing at 7 % and gone minutes later, and a runaway at ~20 GB/min
  *  crosses the last 8 % of a 72 GB limit in about 17 s — several fast probes. */
-export const CRITICAL_FREE = 0.08;
+const CRITICAL_FREE = 0.08;
 /** A victim must hold at least this share of physical RAM … */
-export const VICTIM_SHARE = 0.25;
+const VICTIM_SHARE = 0.25;
 /** … and never less than this, so a small machine's ordinary processes are
  *  never candidates. */
-export const VICTIM_MIN_BYTES = 2 * 1024 ** 3;
+const VICTIM_MIN_BYTES = 2 * 1024 ** 3;
 
 export function pressure(s: MemState): Pressure {
   if (!(s.limit > 0)) return 'ok'; // a failed probe must never read as an emergency

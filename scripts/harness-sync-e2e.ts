@@ -8,7 +8,7 @@
  *
  *   npx esbuild scripts/harness-sync-e2e.ts --bundle --platform=node --format=cjs \
  *     --external:electron --external:better-sqlite3 --external:node-pty \
- *     --external:electron-updater --external:ssh2 --external:cpu-features \
+ *     --external:electron-updater --external:ssh2 \
  *     --outfile=dist/harness-sync-e2e.cjs && node dist/harness-sync-e2e.cjs
  */
 import fs from 'fs';
@@ -114,7 +114,7 @@ function cxItem(type: string, payload: any, dt = 0) {
 
 async function main() {
   const sent: { channel: string; payload: any }[] = [];
-  setWindow({ isDestroyed: () => false, webContents: { send: (c: string, p: any) => sent.push({ channel: c, payload: p }) } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, webContents: { send: (c: string, p: any) => sent.push({ channel: c, payload: p }) } } as any);
 
   fs.mkdirSync(ROOT, { recursive: true });
   fs.mkdirSync(CLAUDE_HOME, { recursive: true });

@@ -1,6 +1,7 @@
 import { Projects } from '../db';
 import { localHost } from './local';
-import type { ExecHost } from './types';
+import pathMod from 'path';
+import type { ExecHost, ExecResult, HostChild, HostPty } from './types';
 import type { Project, Workspace } from '../../shared/types';
 
 export { localHost } from './local';
@@ -36,9 +37,64 @@ export function hostById(hostId: string | null | undefined): ExecHost {
     cache.set(hostId, created);
     return created;
   }
-  // No factory / unknown host: fall back to local so callers never crash. Remote
-  // features simply stay unavailable until the ssh layer is wired.
-  return localHost;
+  // No such host row (removed, or the ssh layer isn't wired yet). Never fall
+  // back to this machine: the paths are the remote's, so git/fs/scripts would
+  // run against whatever happens to live at them locally. Every operation
+  // fails with an explanation instead. Not cached, so a re-added row resolves.
+  return unavailableHost(hostId);
+}
+
+const warnedMissing = new Set<string>();
+
+/** A host whose row is gone: every exec/spawn/pty/fs call fails with `why`. */
+function unavailableHost(hostId: string): ExecHost {
+  const why = `This workspace's remote host (${hostId}) is no longer set up in Maestro. Add the host again, or move the workspace to another host.`;
+  if (!warnedMissing.has(hostId)) {
+    warnedMissing.add(hostId);
+    console.warn(`[hosts] unknown host ${hostId}; operations on it will fail`);
+  }
+  const failed: ExecResult = { ok: false, stdout: '', stderr: why, exitCode: 1 };
+  const reject = async (): Promise<never> => {
+    throw new Error(why);
+  };
+  const child = (): HostChild => {
+    const onErr: ((c: string) => void)[] = [];
+    const onClose: ((code: number | null) => void)[] = [];
+    // Report after the caller has attached its listeners.
+    setTimeout(() => {
+      onErr.forEach((cb) => cb(why));
+      onClose.forEach((cb) => cb(1));
+    }, 0);
+    return {
+      onStdoutLine() {},
+      onStdout() {},
+      onStderr: (cb) => void onErr.push(cb),
+      onClose: (cb) => void onClose.push(cb),
+      onError() {},
+      writeStdin() {},
+      endStdin() {},
+      kill() {},
+    };
+  };
+  const pty = (): HostPty => {
+    const onData: ((c: string) => void)[] = [];
+    const onExit: ((code: number) => void)[] = [];
+    setTimeout(() => {
+      onData.forEach((cb) => cb(`\r\n[maestro] ${why}\r\n`));
+      onExit.forEach((cb) => cb(1));
+    }, 0);
+    return { onData: (cb) => void onData.push(cb), onExit: (cb) => void onExit.push(cb), write() {}, resize() {}, kill() {} };
+  };
+  return {
+    id: hostId,
+    platform: 'linux',
+    exec: async () => failed,
+    spawnStream: child,
+    pty,
+    fs: { read: reject, write: reject, mkdirp: reject, exists: async () => false, stat: reject, readdir: reject, rm: reject, chmod: reject },
+    watch: () => () => {},
+    path: pathMod.posix,
+  };
 }
 
 export function hostForProject(project: Project): ExecHost {

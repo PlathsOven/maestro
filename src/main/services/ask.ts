@@ -1,5 +1,7 @@
+import { app } from 'electron';
 import { broadcast } from '../bus';
-import { uid } from '../db';
+import { Workspaces, uid } from '../db';
+import { notify } from '../notify';
 import { ASK_MAX_OPTIONS, type AgentBlock, type AskAnswer, type AskQuestion, type AskResult } from '../../shared/types';
 
 /**
@@ -61,8 +63,27 @@ export function createAsk(req: {
   const result = new Promise<AskResult>((resolve) => {
     pending.set(askId, { workspaceId: req.workspaceId, agentId: req.agentId, questions, resolve });
     broadcast('ask:question', { workspaceId: req.workspaceId, agentId: req.agentId, askId, questions });
+    notifyAsk(req.workspaceId, req.agentId, questions);
   });
   return { askId, result };
+}
+
+/** When Maestro is in the background, a blocked agent would otherwise sit
+ *  unnoticed until the user happens to look: raise an OS notification with the
+ *  question and bounce the dock (the renderer plays the question sound). */
+function notifyAsk(workspaceId: string, agentId: number, questions: AskQuestion[]): void {
+  try {
+    const ws = Workspaces.get(workspaceId);
+    const shown = notify({
+      title: `${ws?.title ?? ws?.name ?? 'Agent'} · has a question`,
+      body: questions[0].question + (questions.length > 1 ? ` (+${questions.length - 1} more)` : ''),
+      workspaceId,
+      agentId,
+    });
+    if (shown) app.dock?.bounce('informational');
+  } catch {
+    /* a missed notification must never break the ask itself */
+  }
 }
 
 /** Resolve one pending ask and tell the renderer to clear its picker. No-op if

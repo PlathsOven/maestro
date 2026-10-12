@@ -25,7 +25,7 @@
 /skills-lock.json
 
 # --- hosted-service surfaces: your infrastructure, not "the app" ---
-# The desktop app is AGPL and public; the servers that back the paid/hosted
+# The desktop app is source-available and public; the servers that back the paid/hosted
 # service are kept private by default. Delete a line to publish that surface.
 /server/
 /web/

@@ -9,26 +9,33 @@ import type { ContextUsage } from '../../types';
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
 const fmtWindow = (n: number) => (n >= 1_000_000 ? `${n / 1_000_000}M` : `${n / 1000}k`);
 
-export function ContextRing({ tokens, usage, window }: { tokens: number; usage?: ContextUsage; window: number }) {
-  const pct = Math.min(0.97, tokens / window);
+/** The 17px progress donut the composer rings share: `pct` of the circle in `color`. */
+export function Donut({ pct, color }: { pct: number; color: string }) {
   const r = 7;
   const c = 2 * Math.PI * r;
   return (
+    <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
+      <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
+      <circle
+        cx="9"
+        cy="9"
+        r={r}
+        fill="none"
+        stroke={color}
+        strokeWidth="2.4"
+        strokeDasharray={c}
+        strokeDashoffset={c * (1 - pct)}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function ContextRing({ tokens, usage, window }: { tokens: number; usage?: ContextUsage; window: number }) {
+  const pct = Math.min(0.97, tokens / window);
+  return (
     <span className="group relative flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-accent-soft">
-      <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
-        <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          stroke={pct > 0.8 ? 'var(--warn)' : 'var(--muted)'}
-          strokeWidth="2.4"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - pct)}
-          strokeLinecap="round"
-        />
-      </svg>
+      <Donut pct={pct} color={pct > 0.8 ? 'var(--warn)' : 'var(--muted)'} />
       {/* hover details card */}
       <span className="glass pointer-events-none absolute bottom-full right-0 z-40 mb-2 hidden w-60 p-3 text-left group-hover:block">
         {tokens > 0 ? (

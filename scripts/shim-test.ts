@@ -23,6 +23,7 @@ import path from 'path';
 import { execSync, spawn, type ChildProcess } from 'child_process';
 
 import { SYNC_SH, SYNC_HASH } from '../src/main/services/cloudsync';
+import { homeFor } from '../src/main/hosts/posix';
 
 const ROOT = path.join(fs.realpathSync.native(os.tmpdir()), `maestro-shim-test-${process.pid}`);
 const SHIM = path.join(ROOT, 'maestro-sync');
@@ -91,12 +92,18 @@ interface Mock {
   /** The status the git route answers with — flip to 404 to play "this workspace
    *  is gone or archived" and watch the shim drop its marker. `revoked` tokens get
    *  a 401 on poll, and `pollTokens` records the bearer each poll carried. */
-  state: { gitCode: number; revoked: Set<string>; pollTokens: string[] };
+  state: { gitCode: number; revoked: Set<string>; pollTokens: string[]; journalGone: Set<string>; journals: { conv: string; code: number }[] };
 }
 
 function startMock(job: { id: string; conv: string; turnId: string; text: string } | null): Promise<Mock> {
   const seen = { delivered: 0, acked: [] as string[], qd: [] as string[], git: [] as { ws: string; hash: string }[] };
-  const state = { gitCode: 200, revoked: new Set<string>(), pollTokens: [] as string[] };
+  const state = {
+    gitCode: 200,
+    revoked: new Set<string>(),
+    pollTokens: [] as string[],
+    journalGone: new Set<string>(),
+    journals: [] as { conv: string; code: number }[],
+  };
   const server = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
@@ -109,6 +116,14 @@ function startMock(job: { id: string; conv: string; turnId: string; text: string
       seen.git.push({ ws: url.pathname.split('/')[4], hash });
       res.writeHead(state.gitCode, { 'content-type': 'application/json' });
       return res.end(state.gitCode === 404 ? '{"error":"unknown workspace for this box"}' : '{"ok":true}');
+    }
+    if (url.pathname === '/api/box/journal') {
+      const conv = String(req.headers['maestro-conversation'] ?? '');
+      const from = Number(req.headers['maestro-from-offset'] ?? 0);
+      const code = state.journalGone.has(conv) ? 404 : 200;
+      state.journals.push({ conv, code });
+      res.writeHead(code, { 'content-type': 'application/json' });
+      return res.end(code === 404 ? '{"error":"unknown conversation for this box"}' : JSON.stringify({ nextOffset: from + Buffer.concat(chunks).length }));
     }
     if (url.pathname === '/api/box/poll') {
       const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
@@ -292,9 +307,56 @@ async function main() {
   relinked.child.kill('SIGTERM');
   await waitExit(relinked.child, 2_000);
 
+  // ---- Test 9: a journal 404 parks that chat, not the loop (neon-idle-compute) ----
+  // An archived chat's journal 404'd, which failed the whole cycle: every chat
+  // after it stopped syncing, and the retry (once a minute, forever) was a
+  // Postgres read each time — enough to keep Neon awake all night by itself.
+  mock.state.revoked.clear();
+  mock.state.journalGone.add('wsA:1');
+  const jHome = path.join(ROOT, 'home-journal');
+  const jDir = (c: string) => path.join(jHome, 'maestro', 'cloud', c, '1');
+  for (const c of ['wsA', 'wsB']) {
+    fs.mkdirSync(jDir(c), { recursive: true });
+    fs.writeFileSync(path.join(jDir(c), 'journal.jsonl'), '{"type":"system"}\n');
+  }
+  const jRun = launch(jHome, mock.url);
+  const jFor = (conv: string) => mock.state.journals.filter((j) => j.conv === conv);
+  check('journal 404: the chat after it still syncs', await until(() => jFor('wsB:1').some((j) => j.code === 200), 15_000), JSON.stringify(mock.state.journals));
+  const jCycles = cycles(jRun.trace);
+  // MIN_CYCLE=3s allows 3+ cycles in 10s; the failure backoff (5s, then 10s, plus
+  // jitter) allows at most 2.
+  await sleep(10_000);
+  check('journal 404: the loop does not back off', cycles(jRun.trace) - jCycles >= 3, `${cycles(jRun.trace) - jCycles} cycles in 10s`);
+  check('journal 404: an unchanged journal is not retried', jFor('wsA:1').length === 1, `${jFor('wsA:1').length} attempts`);
+  // Published after all: the next write retries it, from the offset it never left.
+  mock.state.journalGone.clear();
+  fs.appendFileSync(path.join(jDir('wsA'), 'journal.jsonl'), '{"type":"result"}\n');
+  check('journal 404: a growing journal is retried', await until(() => jFor('wsA:1').some((j) => j.code === 200), 15_000), JSON.stringify(jFor('wsA:1')));
+  check('journal 404: from the start, so nothing is lost', await until(() => fs.readFileSync(path.join(jDir('wsA'), 'sync.offset'), 'utf8').trim() === '36', 5_000));
+  check('journal 404: the park marker is cleared', !fs.existsSync(path.join(jDir('wsA'), '.nf')));
+  jRun.child.kill('SIGTERM');
+  await waitExit(jRun.child, 2_000);
+
   mock.server.close();
   killAll();
   fs.rmSync(ROOT, { recursive: true, force: true });
+
+  // ---- the shim's install dir: a failed $HOME probe must not stick ----
+  let probes = 0;
+  let down = true;
+  const flaky = {
+    id: 'flaky-box',
+    exec: async () => {
+      probes++;
+      if (down) throw new Error('connection reset');
+      return { ok: true, stdout: '/home/box', stderr: '', code: 0 };
+    },
+  } as unknown as Parameters<typeof homeFor>[0];
+  check('home: an unreachable box reads as "."', (await homeFor(flaky)) === '.');
+  down = false;
+  check('home: the next call asks again and gets the real $HOME', (await homeFor(flaky)) === '/home/box');
+  check('home: a good answer is cached', (await homeFor(flaky)) === '/home/box' && probes === 2, `probes=${probes}`);
+
   console.log(failures ? `\n${failures} SHIM TEST FAILURE(S)` : '\nALL SHIM CHECKS PASSED');
   process.exit(failures ? 1 : 0);
 }

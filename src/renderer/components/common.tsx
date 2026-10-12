@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import clsx from 'clsx';
-import { Check, Circle } from 'lucide-react';
+import { Check, Circle, Pencil } from 'lucide-react';
 import type { DoctorRow } from '../../shared/types';
 import { tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
@@ -25,8 +26,9 @@ export {
   MenuItem,
   MenuDivider,
   CountBadge,
+  RenameInput,
 } from '../../shared/ui/primitives';
-export { Modal, Sheet, ActionSheet } from '../../shared/ui/Modal';
+export { Modal } from '../../shared/ui/Modal';
 
 /** Pointer-drag scaffolding: set the body cursor + suppress selection, stream
  *  pointermove to `onMove`, then on pointerup restore, detach, and run `onEnd`.
@@ -160,6 +162,18 @@ export function useDismissFromParent(onClose: () => void, ref: React.RefObject<H
   }, [onClose, ref]);
 }
 
+/** Per-file cap for anything attached to a message or an answer. */
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** A file's bytes as base64 (no `data:` prefix). */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+    reader.readAsDataURL(file);
+  });
+}
+
 /** Read up to 10 files (each ≤ 25 MB) as base64 → `onFile(name, b64, kind)`;
  *  `onOversize(name)` fires for files over the cap. */
 export function readFilesAsBase64(
@@ -168,16 +182,8 @@ export function readFilesAsBase64(
   onOversize: (name: string) => void
 ): void {
   for (const file of list.slice(0, 10)) {
-    if (file.size > 25 * 1024 * 1024) {
-      onOversize(file.name);
-      continue;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const b64 = String(reader.result).split(',')[1] ?? '';
-      onFile(file.name, b64, file.type.startsWith('image/') ? 'image' : 'file');
-    };
-    reader.readAsDataURL(file);
+    if (file.size > MAX_ATTACHMENT_BYTES) onOversize(file.name);
+    else void fileToBase64(file).then((b64) => onFile(file.name, b64, file.type.startsWith('image/') ? 'image' : 'file'));
   }
 }
 
@@ -203,40 +209,49 @@ export function useFileDrop(onFiles: (files: File[]) => void) {
 /**
  * A right-click context menu anchored at viewport coordinates. Renders a fixed
  * glass panel that dismisses on outside-click / Escape (via `useDismiss`) and is
- * clamped to stay on screen. Fill it with `ContextMenuItem` rows.
+ * clamped to stay on screen. Fill it with `ContextMenuItem`/`MenuItem` rows.
  */
 export function ContextMenu({
   x,
   y,
   onClose,
   zIndex = 60,
+  width = 200,
   children,
 }: {
   x: number;
   y: number;
   onClose: () => void;
   zIndex?: number;
+  width?: number;
   children: React.ReactNode;
 }) {
-  const width = 200;
   const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(y);
   useDismiss(true, onClose, ref);
+  // Clamp to the viewport once the real height is known.
+  useLayoutEffect(() => setTop(Math.max(8, Math.min(y, window.innerHeight - (ref.current?.offsetHeight ?? 0) - 8))), [y]);
   const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
-  const top = Math.max(8, Math.min(y, window.innerHeight - 120));
-  return (
+  // Portaled to <body>: a glass (backdrop-filtered) ancestor would otherwise be
+  // the containing block for `fixed`, offsetting the menu and clipping it away.
+  return createPortal(
     <div
       ref={ref}
       style={{ position: 'fixed', left, top, zIndex, width }}
       data-motion="pop"
       className="glass origin-top-left overflow-hidden py-1"
-      // Keep clicks inside the menu from bubbling to the row underneath (whose
-      // onClick would re-select the chat and undo a "Mark as unread").
+      // React events still bubble through the portal: keep clicks and right-
+      // clicks inside the menu from reaching the row/pane that opened it.
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
     >
       {children}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -272,6 +287,7 @@ export function ReadUnreadMenu({
   unread,
   onRead,
   onUnread,
+  onRename,
   onClose,
 }: {
   x: number;
@@ -279,10 +295,17 @@ export function ReadUnreadMenu({
   unread: boolean;
   onRead: () => void;
   onUnread: () => void;
+  /** adds a "Rename…" item (session rows). */
+  onRename?: () => void;
   onClose: () => void;
 }) {
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
+      {onRename && (
+        <ContextMenuItem onClick={() => { onClose(); onRename(); }}>
+          <Pencil size={14} className="text-muted" /> Rename…
+        </ContextMenuItem>
+      )}
       {unread ? (
         <ContextMenuItem onClick={() => { onClose(); onRead(); }}>
           <Check size={14} className="text-muted" /> Mark as read
@@ -330,6 +353,17 @@ export function useHoverDetail() {
   };
 }
 
+/** Hide the preview's native view while `open` — it's composited above the DOM,
+ *  so any popover reaching over the center surface would otherwise render under it. */
+export function useCoversPreview(open: boolean) {
+  useEffect(() => {
+    if (!open) return;
+    const { trackPopover } = useApp.getState();
+    trackPopover(1);
+    return () => trackPopover(-1);
+  }, [open]);
+}
+
 /**
  * A floating, non-interactive info card anchored beside the hovered row's
  * `rect`. Placed to the row's right, flipping to the left and clamping
@@ -342,16 +376,21 @@ export function DetailCard({
   rect: DOMRect | null;
   children: React.ReactNode;
 }) {
+  useCoversPreview(!!rect);
   if (!rect) return null;
   const width = 268;
   const m = 8;
   let left = rect.right + m;
   if (left + width > window.innerWidth - m) left = Math.max(m, rect.left - width - m);
   const top = Math.max(m, Math.min(rect.top, window.innerHeight - 220));
-  return (
+  // Portaled to <body>: `rect` is in viewport coordinates, but a transformed or
+  // backdrop-filtered ancestor (glass panels) becomes the containing block for
+  // `position: fixed` and would offset the card far from its row.
+  return createPortal(
     <div data-motion="fade" className="glass pointer-events-none fixed z-50 p-3" style={{ left, top, width }}>
       {children}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -362,59 +401,6 @@ export function DetailRow({ label, value }: { label: string; value: React.ReactN
       <span className="shrink-0 text-faint">{label}</span>
       <span className="min-w-0 truncate text-right text-muted">{value}</span>
     </div>
-  );
-}
-
-/**
- * Inline single-line rename field: autofocuses and selects its text, commits on
- * Enter or blur, cancels on Escape, and swallows pointer events so the row
- * underneath doesn't navigate. commit/cancel fire exactly once.
- */
-export function RenameInput({
-  initial,
-  onCommit,
-  onCancel,
-  mono,
-}: {
-  initial: string;
-  onCommit: (value: string) => void;
-  onCancel: () => void;
-  mono?: boolean;
-}) {
-  const [value, setValue] = useState(initial);
-  const ref = useRef<HTMLInputElement>(null);
-  const done = useRef(false);
-  useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
-  }, []);
-  const finish = (commit: boolean) => {
-    if (done.current) return;
-    done.current = true;
-    if (commit) onCommit(value.trim());
-    else onCancel();
-  };
-  return (
-    <input
-      ref={ref}
-      value={value}
-      spellCheck={false}
-      className={clsx('input h-6 w-full min-w-0 flex-1 px-1.5 py-0 text-[13px]', mono && 'font-mono')}
-      onChange={(e) => setValue(e.target.value)}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          finish(true);
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          finish(false);
-        }
-      }}
-      onBlur={() => finish(true)}
-    />
   );
 }
 

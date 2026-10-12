@@ -1,5 +1,6 @@
 'use client';
 import type { SubUsage } from '../../types';
+import { Donut } from './ContextRing';
 
 /**
  * The subscription-limit usage vocabulary (Claude session/weekly windows, etc.),
@@ -17,12 +18,14 @@ export function usageColor(w: { pct: number; severity?: string }, normal: string
   return w.pct > 95 ? 'var(--err)' : w.pct > 80 ? 'var(--warn)' : normal;
 }
 
-/** How far off `ts` is, coarsely: "45m", "1h", "3h 12m", "2d 4h". '' once past. */
-const fmtDelta = (ts: number): string => {
+/** How far off `ts` is, coarsely: "45m", "1h", "3h 12m", "2d 4h". '' once past.
+ *  Rounds to whole minutes FIRST, so an instant an eyelash under the hour reads
+ *  "1h" rather than "60m". */
+export const fmtDelta = (ts: number): string => {
   const ms = ts - Date.now();
   if (!isFinite(ms) || ms <= 0) return '';
   const mins = Math.round(ms / 60_000);
-  if (mins < 1) return '<1m';
+  if (mins < 1) return '<1m'; // about to fire — "0m" reads like it's stuck
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
@@ -84,24 +87,9 @@ export function UsageRing({ usage }: { usage: SubUsage | null }) {
   const top = usage.windows.reduce((a, b) => (b.pct > a.pct ? b : a));
   const pct = Math.min(1, top.pct / 100);
   const color = usageColor(top, 'var(--muted)');
-  const r = 7;
-  const c = 2 * Math.PI * r;
   return (
     <span className="group relative flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-accent-soft" aria-label="Plan usage">
-      <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
-        <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="2.4"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - pct)}
-          strokeLinecap="round"
-        />
-      </svg>
+      <Donut pct={pct} color={color} />
       {/* hover breakdown card */}
       <span className="glass pointer-events-none absolute bottom-full right-0 z-40 mb-2 hidden w-60 p-3 text-left group-hover:block">
         <span className="mb-2 flex items-baseline justify-between text-xs">

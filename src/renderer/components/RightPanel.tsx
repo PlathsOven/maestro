@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
   Activity,
@@ -6,7 +6,9 @@ import {
   Braces,
   ChevronDown,
   ChevronRight,
+  ClipboardPaste,
   Copy,
+  CopyPlus,
   ExternalLink,
   FastForward,
   File,
@@ -17,31 +19,36 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   GitCompare,
   GitMerge,
   GitPullRequest,
   History,
+  Link2,
   MessageSquare,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Play,
   Plus,
+  Scissors,
   Sparkles,
   Square,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react';
-import { MenuDivider, MenuItem } from './Sidebar';
-import { useDismiss } from './common';
 import { invoke, tryInvoke } from '../lib/api';
-import { timeAgo, fmtStat } from '../lib/format';
-import { mergeabilityUnknown, mergeFailureMessage } from '../lib/resolveConflicts';
-import { DEFAULT_TERM_IDS, EMPTY_ARR, useApp, useCaps, useShowPr, LAYOUT_LIMITS, DEFAULT_LAYOUT } from '../store/app';
+import { useEditors } from '../lib/editors';
+import { timeAgo, fmtStat } from '../../shared/ui/format';
+import { mergeabilityUnknown } from '../lib/resolveConflicts';
+import { DEFAULT_TERM_IDS, EMPTY_ARR, useApp, useCaps, useShowPr } from '../store/app';
+import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
 import { TodoSection } from './TodoSection';
-import { CountBadge, Resizer, Segmented, Spinner } from './common';
+import { ContextMenu, CountBadge, MenuDivider, MenuItem, Resizer, Segmented, Spinner } from './common';
 import { VSCodeMark } from '../../shared/ui/brandIcons';
-import { StainedDot, StainedGlass } from '../../shared/ui/StainedGlass';
+import { StainedDot, StainedGlass, type GlassTone } from '../../shared/ui/StainedGlass';
 import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import RunPanel from './RunPanel';
 import SkillsPanel from './SkillsPanel';
@@ -49,6 +56,7 @@ import StatusPanel from './StatusPanel';
 import ChangedFileTree from './ChangedFileTree';
 import PtyView from './TerminalPanel';
 import type { ContextFile, FsEntry, PrStatus, Workspace } from '../../shared/types';
+import { copyText } from '../lib/clipboard';
 
 export default function RightPanel({ workspace }: { workspace: Workspace }) {
   const rightTab = useApp((s) => s.rightTab[workspace.id] ?? 'status');
@@ -109,7 +117,7 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
       {/* Floating glass header over the tab content: the PR lifecycle action
           (Create PR → Merge → Continue/Archive) in the title-bar row, washed with
           the PR state color once a PR exists, then the tabs. */}
-      <div ref={headRef} className="scroll-edge-top absolute inset-x-0 top-0 z-20">
+      <div ref={headRef} className="panel-head scroll-edge-top absolute inset-x-0 top-0 z-20">
         <div className="drag-region flex h-11 shrink-0 items-center justify-end gap-2 overflow-hidden px-2.5">
           {/* .wco-safe keeps these clear of the Windows window-control overlay,
               which is painted over this exact corner of the window. The PR-state
@@ -456,25 +464,29 @@ function ResolveConflictsButton({ workspace, pr }: { workspace: Workspace; pr: P
   );
 }
 
+/** A PR's state as a label + colour: text class for the pill, glass tone for the rail dot. */
+function prState(pr: PrStatus): { label: string; cls: string; tone: GlassTone } {
+  return pr.state === 'MERGED'
+    ? { label: 'Merged', cls: 'text-st-merged', tone: 'merged' }
+    : pr.state === 'CLOSED'
+      ? { label: 'Closed', cls: 'text-err', tone: 'err' }
+      : pr.isDraft
+        ? { label: 'Draft', cls: 'text-muted', tone: 'idle' }
+        : pr.mergeable === 'CONFLICTING'
+          ? { label: 'Conflicts', cls: 'text-warn', tone: 'warn' }
+          : // GitHub hasn't finished computing mergeability — say so rather than
+            // claim the clean-and-open green it hasn't earned yet.
+            mergeabilityUnknown(pr.mergeable)
+            ? { label: 'Checking…', cls: 'text-muted', tone: 'idle' }
+            : { label: 'Open', cls: 'text-ok', tone: 'ok' };
+}
+
 /** Clickable PR pill: number + external link + colored state label. */
 function PrBadge({ pr }: { pr: PrStatus }) {
-  const { label, cls } =
-    pr.state === 'MERGED'
-      ? { label: 'Merged', cls: 'text-st-merged' }
-      : pr.state === 'CLOSED'
-        ? { label: 'Closed', cls: 'text-err' }
-        : pr.isDraft
-          ? { label: 'Draft', cls: 'text-muted' }
-          : pr.mergeable === 'CONFLICTING'
-            ? { label: 'Conflicts', cls: 'text-warn' }
-            : // GitHub hasn't finished computing mergeability — say so rather than
-              // claim the clean-and-open green it hasn't earned yet.
-              mergeabilityUnknown(pr.mergeable)
-              ? { label: 'Checking…', cls: 'text-muted' }
-              : { label: 'Open', cls: 'text-ok' };
+  const { label, cls } = prState(pr);
   return (
     <a
-      className="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-raised/80 px-2.5 text-xs shadow-[0_0_0_1px_var(--border)] transition-colors hover:bg-raised"
+      className="flex h-7 min-w-0 items-center gap-1.5 rounded-full bg-raised/80 px-2.5 text-xs shadow-[0_0_0_1px_var(--border)] transition-colors hover:bg-raised"
       href={pr.url}
       target="_blank"
       rel="noreferrer"
@@ -482,7 +494,7 @@ function PrBadge({ pr }: { pr: PrStatus }) {
     >
       <span className="font-mono text-muted">#{pr.number}</span>
       <ExternalLink size={11} className="text-faint" />
-      <span className={clsx('font-medium', cls)}>{label}</span>
+      <span className={clsx('truncate font-medium', cls)}>{label}</span>
     </a>
   );
 }
@@ -491,17 +503,8 @@ function MergeButton({ workspace, pr }: { workspace: Workspace; pr: PrStatus }) 
   const [merging, setMerging] = useState(false);
   const merge = async () => {
     setMerging(true);
-    const res = await tryInvoke('github:prMerge', { workspaceId: workspace.id, method: 'squash' });
+    await useApp.getState().squashMergePr(workspace.id, pr.number);
     setMerging(false);
-    if (res.error || !res.data?.ok) {
-      useApp.getState().toast('error', mergeFailureMessage(res.error ?? res.data?.error, pr.baseRefName));
-      // GitHub just told us more than our cached mergeability knew — re-ask, so
-      // this button becomes Resolve conflicts instead of inviting a second try.
-      void useApp.getState().refreshPr(workspace.id, true);
-      return;
-    }
-    useApp.getState().toast('success', `PR #${pr.number} merged`);
-    void useApp.getState().refreshPr(workspace.id, true);
   };
   return (
     <StainedGlass
@@ -542,52 +545,84 @@ function ContinueButton({ workspace }: { workspace: Workspace }) {
 }
 
 /**
- * Collapsed-rail version of the PR action: a single icon button. With no PR it's
- * Create PR — dimmed with no dot when there's nothing to ship, an accent dot when
- * there is. Once a PR exists it becomes a state-colored icon that expands the
- * panel to reveal the full Merge / Continue / Archive actions.
+ * Collapsed-rail version of the PR action: a stained-glass icon button in the
+ * same tone as the expanded panel's action (ink Create PR, green Merge, amber
+ * Resolve conflicts, violet merged), with a status dot top-right carrying the PR
+ * state (the PrBadge colours). Hovering shows a glass card with the state and
+ * the `+adds −dels` diff summary. With no PR a click creates one; once a PR
+ * exists it expands the panel to reveal the full actions.
  */
 function CollapsedPrButton({ workspace }: { workspace: Workspace }) {
   const pr = useApp((s) => s.prStatus[workspace.id]);
   const creatingPr = useApp((s) => s.creatingPr[workspace.id] ?? false);
+  const resolving = useApp((s) => !!s.resolvingPr[workspace.id]);
+  const stat = useApp((s) => s.diffStats[workspace.id]);
   const hasChanges = useHasChanges(workspace.id);
 
-  if (!pr) {
-    const disabled = creatingPr || !hasChanges;
-    return (
-      <button
-        className={clsx(
-          'no-drag relative grid h-8 w-8 place-items-center rounded-full transition-colors',
-          disabled ? 'text-faint' : 'text-muted hover:bg-accent-soft hover:text-fg'
-        )}
-        title={hasChanges ? 'Create pull request (⌘⇧P)' : 'No changes yet — nothing to open a pull request for'}
-        disabled={disabled}
-        onClick={() => void useApp.getState().createPr(workspace.id)}
-      >
-        {creatingPr ? <Spinner /> : <GitPullRequest size={15} />}
-        {hasChanges && !creatingPr && (
-          <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent" />
-        )}
-      </button>
-    );
-  }
+  const conflicting = pr?.state === 'OPEN' && pr.mergeable === 'CONFLICTING';
+  // Body tone mirrors the expanded action button; the dot carries the status.
+  const body: GlassTone = !pr || pr.state === 'CLOSED' ? 'ink' : pr.state === 'MERGED' ? 'merged' : conflicting ? 'warn' : 'ok';
+  const status = pr
+    ? { ...prState(pr), ...(resolving && { label: 'Resolving conflicts…' }) }
+    : creatingPr
+      ? { tone: 'running' as const, label: 'Creating PR…', cls: 'text-st-running' }
+      : hasChanges
+        ? { tone: 'running' as const, label: 'Ready to open a PR', cls: 'text-st-running' }
+        : null;
+  const busy = creatingPr || resolving;
+  const heading = pr ? `PR #${pr.number}` : 'Create PR';
 
-  const tone =
-    pr.state === 'MERGED'
-      ? 'text-st-merged'
-      : pr.state === 'CLOSED'
-        ? 'text-err'
-        : pr.mergeable === 'CONFLICTING'
-          ? 'text-warn'
-          : 'text-ok';
   return (
-    <button
-      className={clsx('no-drag grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-accent-soft', tone)}
-      title={`PR #${pr.number} · ${pr.state.toLowerCase()} — expand for actions`}
-      onClick={() => void useApp.getState().saveSettings({ rightPanelCollapsed: false })}
-    >
-      {pr.state === 'MERGED' ? <GitMerge size={15} /> : <GitPullRequest size={15} />}
-    </button>
+    <div className="group relative mb-1 mt-0.5">
+      <StainedGlass
+        as="button"
+        tone={body}
+        ripple={busy}
+        className="no-drag grid h-8 w-8 place-items-center"
+        aria-label={pr ? `${heading} · ${status?.label ?? ''} — expand for actions` : 'Create pull request (⌘⇧P)'}
+        disabled={!pr && (creatingPr || !hasChanges)}
+        onClick={() =>
+          void (pr ? useApp.getState().saveSettings({ rightPanelCollapsed: false }) : useApp.getState().createPr(workspace.id))
+        }
+      >
+        {creatingPr ? (
+          <Spinner className="!text-on-ink" />
+        ) : pr?.state === 'MERGED' || conflicting ? (
+          <GitMerge size={14} />
+        ) : (
+          <GitPullRequest size={14} />
+        )}
+      </StainedGlass>
+      {status && (
+        <StainedDot
+          tone={status.tone}
+          size={9}
+          ripple={busy}
+          className="pointer-events-none absolute -right-0.5 -top-0.5 shadow-[0_0_0_1.5px_var(--bg)]"
+        />
+      )}
+      {/* hover card: floats left of the rail, over the chat column */}
+      <div
+        role="tooltip"
+        className="glass pointer-events-none absolute right-full top-1/2 z-50 mr-2.5 -translate-y-1/2 translate-x-1 whitespace-nowrap px-3 py-2 opacity-0 transition-[opacity,transform] duration-150 group-hover:translate-x-0 group-hover:opacity-100"
+      >
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="font-medium text-fg">{heading}</span>
+          {status && <span className={clsx('font-medium', status.cls)}>· {status.label}</span>}
+        </div>
+        <div className="mt-0.5 font-mono text-2xs">
+          {stat && stat.additions + stat.deletions > 0 ? (
+            <>
+              <span className="text-ok">+{fmtStat(stat.additions)}</span>{' '}
+              <span className="text-err">−{fmtStat(stat.deletions)}</span>
+              <span className="font-sans text-faint"> vs base</span>
+            </>
+          ) : (
+            <span className="font-sans text-faint">{hasChanges ? 'Uncommitted changes' : 'No changes yet'}</span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -675,7 +710,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         {files.length === 0 && <div className="px-3 py-6 text-center text-xs text-faint">No changes yet.</div>}
         <ChangedFileTree
           files={files.slice(0, 100)}
-          onSelect={() => useApp.getState().setTab(workspace.id, 'diff')}
+          onSelect={(f) => useApp.getState().revealDiffFile(workspace.id, f.path)}
           trailing={(f) => (
             <span className="shrink-0 font-mono text-2xs">
               <span className="text-ok">+{f.additions}</span> <span className="text-err">−{f.deletions}</span>
@@ -729,32 +764,70 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
 
 // ---------------- All files tab: lazy working-tree browser ----------------
 
+const IS_MAC = navigator.userAgent.includes('Macintosh');
+const IS_WIN = navigator.userAgent.includes('Windows');
+const REVEAL_LABEL = IS_MAC ? 'Reveal in Finder' : IS_WIN ? 'Reveal in Explorer' : 'Reveal in file manager';
+const TRASH_LABEL = IS_MAC ? 'Trash' : IS_WIN ? 'Recycle Bin' : 'trash';
+const MOD = IS_MAC ? '⌘' : 'Ctrl+';
+/** Hovering a collapsed folder this long mid-drag springs it open. */
+const SPRING_MS = 600;
+
+type TreeRow = { full: string; entry: FsEntry; depth: number };
+type ClipKind = 'copy' | 'cut' | 'paste';
+
+const parentOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf('/')));
+const baseOf = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+const joinPath = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
+const isUnder = (p: string, dir: string) => p === dir || p.startsWith(dir + '/');
+/** Drop paths covered by another path in the list — a folder carries its contents. */
+const topLevel = (paths: string[]) => paths.filter((p) => !paths.some((q) => q !== p && isUnder(p, q)));
+
 /**
  * The real on-disk working tree (including ignored/untracked files), browsed
  * one directory at a time. Directories load their children on first expand;
  * everything already loaded is quietly re-fetched as the agent edits files, so
  * the tree stays in sync without a manual refresh. Clicking a file opens it in
  * the in-app editor (center Editor surface).
+ *
+ * Local workspaces also get file management: ⌘/⇧-click multi-select and arrow
+ * keys, inline rename (F2, or Enter on macOS), delete to the OS trash,
+ * duplicate, cut/copy/paste, and drag-and-drop (⌥ copies; collapsed folders
+ * spring open; files dropped from the OS are copied in). Open editor tabs
+ * follow renames and moves.
  */
 function FilesTab({ workspace }: { workspace: Workspace }) {
-  const wsVersion = useApp((s) => s.wsVersion[workspace.id] ?? 0);
-  // The "open on this device" actions are local-only; remote workspaces get the
-  // plain tree with no right-click menu (their files can't reach the local shell).
+  const wsId = workspace.id;
+  const wsVersion = useApp((s) => s.wsVersion[wsId] ?? 0);
+  // The "open on this device" and file-management actions are local-only; remote
+  // workspaces get the plain tree (their files can't reach the local shell/disk).
   const isRemote = useApp((s) => !!s.projects.find((p) => p.id === workspace.projectId)?.hostId);
   const [tree, setTree] = useState<Record<string, FsEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
-  const [ctx, setCtx] = useState<{ x: number; y: number; entry: FsEntry; path: string } | null>(null);
-  // "+" → inline path input; the value is the initial text (a folder prefix
-  // when started from a folder's right-click menu), null when closed.
-  const [creating, setCreating] = useState<string | null>(null);
+  // `path: null` = right-click on the empty area (acts on the root).
+  const [ctx, setCtx] = useState<{ x: number; y: number; path: string | null } | null>(null);
+  // Inline "new file/folder" input: `initial` is its starting text (a folder
+  // prefix when started from a folder), null when closed.
+  const [creating, setCreating] = useState<{ initial: string; folder: boolean } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [lead, setLead] = useState<string | null>(null); // keyboard cursor
+  const [anchor, setAnchor] = useState<string | null>(null); // ⇧-range origin
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [clip, setClip] = useState<{ cut: boolean; paths: string[] } | null>(null);
+  // Folder under the pointer mid-drag ('' = root), highlighted as the drop target.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const dragRef = useRef<string[] | null>(null); // our own rows being dragged (null = OS files)
+  const springRef = useRef<{ path: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const treeElRef = useRef<HTMLDivElement>(null);
   const treeRef = useRef(tree);
   treeRef.current = tree;
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
 
   const load = useCallback(
     async (dir: string, silent = false) => {
       if (!silent) setLoading((s) => new Set(s).add(dir));
-      const { data } = await tryInvoke('fs:list', { workspaceId: workspace.id, path: dir });
+      const { data } = await tryInvoke('fs:list', { workspaceId: wsId, path: dir });
       setTree((t) => ({ ...t, [dir]: data ?? [] }));
       if (!silent)
         setLoading((s) => {
@@ -763,15 +836,18 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
           return n;
         });
     },
-    [workspace.id]
+    [wsId]
   );
 
   // Load the root fresh whenever the workspace changes.
   useEffect(() => {
     setTree({});
     setExpanded(new Set());
+    setSelected(new Set());
+    setRenaming(null);
+    setClip(null);
     void load('', false);
-  }, [workspace.id, load]);
+  }, [wsId, load]);
 
   // Keep already-loaded directories in sync as the working tree changes.
   useEffect(() => {
@@ -781,8 +857,9 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
     return () => clearTimeout(t);
   }, [wsVersion, load]);
 
-  const toggle = (full: string) => {
+  const toggle = (full: string, open?: boolean) => {
     setExpanded((s) => {
+      if (open !== undefined && s.has(full) === open) return s;
       const n = new Set(s);
       if (n.has(full)) n.delete(full);
       else {
@@ -793,49 +870,329 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
     });
   };
 
+  // Visible rows in display order — drives rendering, arrow keys and ⇧-ranges.
+  const rows: TreeRow[] = [];
+  const walk = (dir: string, depth: number) => {
+    for (const e of tree[dir] ?? []) {
+      const full = joinPath(dir, e.name);
+      rows.push({ full, entry: e, depth });
+      if (e.dir && expanded.has(full)) walk(full, depth + 1);
+    }
+  };
+  walk('', 0);
+  const rowIndex = new Map(rows.map((r, i) => [r.full, i]));
+  const selection = topLevel([...selected].sort((a, b) => (rowIndex.get(a) ?? 1e9) - (rowIndex.get(b) ?? 1e9)));
+
+  const toast = (kind: 'error' | 'success', msg: string) => useApp.getState().toast(kind, msg);
+  const focusTree = () => treeElRef.current?.focus({ preventScroll: true });
+  const scrollTo = (full: string) =>
+    treeElRef.current?.querySelector(`[data-path="${CSS.escape(full)}"]`)?.scrollIntoView({ block: 'nearest' });
+  const select = (paths: string[], cursor = paths[paths.length - 1] ?? null) => {
+    setSelected(new Set(paths));
+    setLead(cursor);
+    setAnchor(cursor);
+  };
+  /** ⇧-click / ⇧-arrow: select anchor…`full`, keeping the anchor. */
+  const extendTo = (full: string) => {
+    const [a, b] = [rowIndex.get(anchor ?? full) ?? 0, rowIndex.get(full)!].sort((x, y) => x - y);
+    setSelected(new Set(rows.slice(a, b + 1).map((r) => r.full)));
+    setLead(full);
+  };
+  /** Where Paste / New file land: the folder itself, a file's folder, or the root. */
+  const dirOf = (p: string | null) => (p === null ? '' : tree[parentOf(p)]?.find((e) => e.name === baseOf(p))?.dir ? p : parentOf(p));
+
+  /** An open editor tab with unsaved edits at or under any of `paths`. */
+  const dirtyIn = (paths: string[]) => {
+    const dirty = useApp.getState().dirtyFiles[wsId] ?? {};
+    return Object.keys(dirty).find((f) => dirty[f] && paths.some((p) => isUnder(f, p)));
+  };
+
+  /**
+   * After entries moved (`moves` = [from, to]) or appeared: carry expansion and
+   * cached listings to the new paths, expand the ancestors of `reveal`, select
+   * it, and re-list every loaded folder.
+   */
+  const afterChange = async (moves: [string, string][], reveal: string[]) => {
+    const map = (p: string) => {
+      for (const [f, t] of moves) if (isUnder(p, f)) return t + p.slice(f.length);
+      return p;
+    };
+    const ancestors = reveal.flatMap((p) => {
+      const out: string[] = [];
+      for (let d = parentOf(p); d; d = parentOf(d)) out.push(d);
+      return out;
+    });
+    setExpanded(new Set([...[...expandedRef.current].map(map), ...ancestors]));
+    setTree((t) => Object.fromEntries(Object.entries(t).map(([k, v]) => [map(k), v])));
+    select(reveal);
+    const dirs = new Set(['', ...Object.keys(treeRef.current).map(map), ...ancestors]);
+    await Promise.all([...dirs].map((d) => load(d, true)));
+    if (reveal.length) requestAnimationFrame(() => scrollTo(reveal[reveal.length - 1]));
+  };
+
   // Create the file (or folder, for a trailing '/'), reveal it in the tree, and
   // open a new file in the editor. Returns an error message to keep the input open.
   const create = async (raw: string): Promise<string | null> => {
     const dir = raw.trim().endsWith('/');
     const rel = raw.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
     if (!rel) return 'Enter a file name';
-    const r = await tryInvoke('fs:create', { workspaceId: workspace.id, path: rel, dir });
+    const r = await tryInvoke('fs:create', { workspaceId: wsId, path: rel, dir });
     if (r.error) return r.error;
     setCreating(null);
-    const parts = rel.split('/');
-    const ancestors = parts.slice(0, dir ? parts.length : -1).map((_, i) => parts.slice(0, i + 1).join('/'));
-    setExpanded((s) => new Set([...s, ...ancestors]));
-    await Promise.all(['', ...ancestors].map((d) => load(d, true)));
-    if (!dir) useApp.getState().openFile(workspace.id, rel);
+    await afterChange([], [rel]);
+    if (dir) focusTree();
+    else useApp.getState().openFile(wsId, rel);
     return null;
   };
 
-  const rows: React.ReactNode[] = [];
-  const walk = (dir: string, depth: number) => {
-    for (const e of tree[dir] ?? []) {
-      const full = dir ? `${dir}/${e.name}` : e.name;
-      const open = expanded.has(full);
-      rows.push(
-        <FileTreeRow
-          key={full}
-          entry={e}
-          depth={depth}
-          open={open}
-          busy={loading.has(full)}
-          onClick={() => (e.dir ? toggle(full) : useApp.getState().openFile(workspace.id, full))}
-          onContext={
-            isRemote ? undefined : (x, y) => setCtx({ x, y, entry: e, path: full })
-          }
-        />
-      );
-      if (e.dir && open) walk(full, depth + 1);
+  // Move entries by renaming each; editor tabs follow. Returns an error message.
+  const move = async (pairs: [string, string][]): Promise<string | null> => {
+    const dirty = dirtyIn(pairs.map(([from]) => from));
+    if (dirty) return `Save ${baseOf(dirty)} before moving or renaming it`;
+    const done: [string, string][] = [];
+    let error: string | null = null;
+    for (const [from, to] of pairs) {
+      error = (await tryInvoke('fs:rename', { workspaceId: wsId, from, to })).error ?? null;
+      if (error) break;
+      useApp.getState().renameOpenFiles(wsId, from, to);
+      done.push([from, to]);
+    }
+    if (done.length) await afterChange(done, done.map(([, to]) => to));
+    return error;
+  };
+
+  // Inline rename. A name containing '/' moves the entry into (new) subfolders.
+  const rename = async (from: string, raw: string): Promise<string | null> => {
+    const name = raw.trim().replace(/^\/+|\/+$/g, '');
+    if (name.split('/').some((seg) => !seg || seg === '.' || seg === '..')) return 'Not a valid name';
+    const err = name === baseOf(from) ? null : await move([[from, joinPath(parentOf(from), name)]]);
+    if (err) return err;
+    setRenaming(null);
+    focusTree();
+    return null;
+  };
+
+  const copy = async (paths: string[], toDir: string) => {
+    const r = await tryInvoke('fs:copy', { workspaceId: wsId, paths, toDir });
+    if (r.error) toast('error', r.error);
+    else if (r.data) await afterChange([], r.data);
+  };
+
+  // Drag-and-drop and Cut/Copy → Paste into `dir`.
+  const transfer = async (paths: string[], dir: string, asCopy: boolean) => {
+    if (asCopy) return copy(paths, dir);
+    const pairs = paths.filter((p) => parentOf(p) !== dir).map((p): [string, string] => [p, joinPath(dir, baseOf(p))]);
+    const err = pairs.length ? await move(pairs) : null;
+    if (err) toast('error', err);
+  };
+
+  const duplicate = async (paths: string[]) => {
+    for (const p of paths) await copy([p], parentOf(p));
+  };
+
+  const remove = (paths: string[]) => {
+    const one = paths.length === 1;
+    const dirty = dirtyIn(paths);
+    // Land the cursor on the first surviving row after (or else before) the deleted ones.
+    const gone = (r: TreeRow) => paths.some((p) => isUnder(r.full, p));
+    const idx = rowIndex.get(paths[0]) ?? 0;
+    const next = rows.slice(idx).find((r) => !gone(r)) ?? rows.slice(0, idx).reverse().find((r) => !gone(r));
+    useApp.getState().setModal({
+      kind: 'confirm',
+      title: one ? `Delete “${baseOf(paths[0])}”?` : `Delete ${paths.length} items?`,
+      body:
+        `${one ? 'It' : 'They'} will be moved to the ${TRASH_LABEL}, where you can restore ${one ? 'it' : 'them'}.` +
+        (dirty ? ` Unsaved changes in ${baseOf(dirty)} will be lost.` : ''),
+      confirmLabel: IS_MAC ? 'Move to Trash' : 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        const r = await tryInvoke('fs:trash', { workspaceId: wsId, paths });
+        if (r.error) return toast('error', r.error);
+        const st = useApp.getState();
+        for (const f of st.openFiles[wsId] ?? EMPTY_ARR) if (paths.some((p) => isUnder(f, p))) st.closeFile(wsId, f);
+        await afterChange([], next ? [next.full] : []);
+        focusTree();
+      },
+    });
+  };
+
+  // Cut/Copy the selection, or Paste into the selected folder (or file's folder).
+  const clipboard = (kind: ClipKind, paths = selection, dir = dirOf(lead !== null && selected.has(lead) ? lead : null)) => {
+    if (kind !== 'paste') {
+      if (paths.length) setClip({ cut: kind === 'cut', paths });
+    } else if (clip) {
+      void transfer(clip.paths, dir, !clip.cut);
+      if (clip.cut) setClip(null);
     }
   };
-  walk('', 0);
+  // macOS routes ⌘C/⌘X/⌘V through the Edit menu, so the keydown never reaches
+  // us — but the menu role's copy/cut/paste DOM event does, while the tree has focus.
+  const clipboardRef = useRef(clipboard);
+  clipboardRef.current = clipboard;
+  useEffect(() => {
+    if (isRemote) return;
+    const kinds: ClipKind[] = ['copy', 'cut', 'paste'];
+    const handlers = kinds.map((kind) => (e: Event) => {
+      if (document.activeElement !== treeElRef.current) return;
+      e.preventDefault();
+      clipboardRef.current(kind);
+    });
+    kinds.forEach((k, i) => document.addEventListener(k, handlers[i]));
+    return () => kinds.forEach((k, i) => document.removeEventListener(k, handlers[i]));
+  }, [isRemote]);
 
+  const copyPaths = async (paths: string[]) => {
+    const abs = await Promise.all(paths.map((p) => tryInvoke('fs:absPath', { workspaceId: wsId, path: p })));
+    const text = abs.flatMap((r) => (r.data?.path ? [r.data.path] : [])).join('\n');
+    if (!text) return;
+    await copyText(text);
+    toast('success', paths.length > 1 ? `${paths.length} paths copied` : 'Path copied');
+  };
+
+  const openRow = (row: TreeRow) => (row.entry.dir ? toggle(row.full) : useApp.getState().openFile(wsId, row.full));
+
+  const onRowClick = (e: React.MouseEvent, row: TreeRow) => {
+    focusTree();
+    if (!isRemote && e.shiftKey) return extendTo(row.full);
+    if (!isRemote && (IS_MAC ? e.metaKey : e.ctrlKey)) {
+      const n = new Set(selected);
+      if (!n.delete(row.full)) n.add(row.full);
+      setSelected(n);
+      setLead(row.full);
+      setAnchor(row.full);
+      return;
+    }
+    select([row.full]);
+    openRow(row);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return; // inline inputs handle their own keys
+    const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+    const idx = lead === null ? -1 : rowIndex.get(lead) ?? -1;
+    const cur = rows[idx];
+    const go = (i: number) => {
+      const row = rows[Math.max(0, Math.min(rows.length - 1, i))];
+      if (!row) return;
+      if (e.shiftKey && !isRemote) extendTo(row.full);
+      else select([row.full]);
+      scrollTo(row.full);
+    };
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (key === 'ArrowDown' && mod && IS_MAC) {
+      if (cur) openRow(cur); // ⌘↓ opens, as in Finder
+    } else if (key === 'ArrowDown') go(idx + 1);
+    else if (key === 'ArrowUp') go(idx < 0 ? rows.length - 1 : idx - 1);
+    else if (key === 'Home') go(0);
+    else if (key === 'End') go(rows.length - 1);
+    else if (key === 'ArrowRight' && cur?.entry.dir) {
+      if (expanded.has(cur.full)) go(idx + 1);
+      else toggle(cur.full, true);
+    } else if (key === 'ArrowLeft' && cur) {
+      if (cur.entry.dir && expanded.has(cur.full)) toggle(cur.full, false);
+      else if (parentOf(cur.full)) go(rowIndex.get(parentOf(cur.full)) ?? idx);
+    } else if (key === 'Escape') {
+      if (clip?.cut) setClip(null);
+      else select([]);
+    } else if (key === 'Enter' && cur && IS_MAC && !isRemote) setRenaming(cur.full);
+    else if ((key === 'Enter' || key === ' ') && cur) openRow(cur);
+    else if (isRemote) return;
+    else if (key === 'F2' && cur) setRenaming(cur.full);
+    else if ((key === 'Delete' || (key === 'Backspace' && mod)) && selection.length) remove(selection);
+    else if (mod && key === 'c') clipboard('copy');
+    else if (mod && key === 'x') clipboard('cut');
+    else if (mod && key === 'v') clipboard('paste');
+    else if (mod && key === 'd' && selection.length) void duplicate(selection);
+    else return;
+    e.preventDefault();
+  };
+
+  // ---- drag and drop ----
+  const clearSpring = () => {
+    if (springRef.current) clearTimeout(springRef.current.timer);
+    springRef.current = null;
+  };
+  const endDrag = () => {
+    dragRef.current = null;
+    setDropTarget(null);
+    clearSpring();
+  };
+
+  const onDragStart = (e: React.DragEvent, row: TreeRow) => {
+    const paths = selected.has(row.full) ? selection : [row.full];
+    if (!selected.has(row.full)) select([row.full]);
+    dragRef.current = paths;
+    e.dataTransfer.effectAllowed = 'copyMove';
+    e.dataTransfer.setData('text/plain', paths.join('\n')); // dropping on a text field inserts the paths
+    if (paths.length > 1) {
+      const ghost = Object.assign(document.createElement('div'), {
+        textContent: `${paths.length} items`,
+        className: 'glass fixed -left-full rounded-full px-3 py-1 text-xs',
+      });
+      document.body.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, -8, -8);
+      setTimeout(() => ghost.remove());
+    }
+  };
+
+  // `row` null = the empty area (root).
+  const onDragOver = (e: React.DragEvent, row: TreeRow | null) => {
+    const paths = dragRef.current;
+    if (!paths && !e.dataTransfer.types.includes('Files')) return;
+    e.stopPropagation();
+    const dest = row ? (row.entry.dir ? row.full : parentOf(row.full)) : '';
+    const asCopy = !paths || e.altKey;
+    // Never into itself; a move must actually move something.
+    if (paths && (paths.some((p) => isUnder(dest, p)) || (!asCopy && paths.every((p) => parentOf(p) === dest)))) {
+      setDropTarget(null);
+      return clearSpring();
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = asCopy ? 'copy' : 'move';
+    setDropTarget(dest);
+    if (!row?.entry.dir || expandedRef.current.has(row.full)) clearSpring();
+    else if (springRef.current?.path !== row.full) {
+      clearSpring();
+      springRef.current = { path: row.full, timer: setTimeout(() => toggle(row.full, true), SPRING_MS) };
+    }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const [dest, paths] = [dropTarget, dragRef.current];
+    endDrag();
+    if (dest === null) return;
+    if (paths) return void transfer(paths, dest, e.altKey);
+    const sources = [...e.dataTransfer.files].map((f) => window.maestro.pathForFile?.(f) ?? '').filter(Boolean);
+    if (sources.length) void copy(sources, dest);
+  };
+
+  const dnd = !isRemote && renaming === null;
   const rootLoaded = tree[''] !== undefined;
+  const ctxPaths = ctx?.path == null ? [] : selected.has(ctx.path) ? selection : [ctx.path];
+  const newEntry = (dir: string, folder: boolean) => setCreating({ initial: dir && `${dir}/`, folder });
   return (
-    <div className="space-y-px px-2 py-2">
+    <div
+      className={clsx(
+        'flex min-h-full flex-col px-2 py-2',
+        dropTarget === '' && 'rounded-xl bg-accent-tint outline outline-1 -outline-offset-2 outline-accent/40'
+      )}
+      onDragOver={dnd ? (e) => onDragOver(e, null) : undefined}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) endDrag();
+      }}
+      onDrop={dnd ? onDrop : undefined}
+      onContextMenu={
+        isRemote
+          ? undefined
+          : (e) => {
+              e.preventDefault();
+              select([]);
+              setCtx({ x: e.clientX, y: e.clientY, path: null });
+            }
+      }
+    >
       {/* New file needs the local editor + filesystem, so remote workspaces skip it. */}
       {!isRemote && (
         <div className="flex items-center justify-between pb-1 pl-2.5 pr-1">
@@ -843,40 +1200,105 @@ function FilesTab({ workspace }: { workspace: Workspace }) {
           <button
             className="rounded-full p-1 text-muted transition-colors hover:bg-accent-soft hover:text-fg"
             title="New file (end with / for a folder)"
-            onClick={() => setCreating((c) => (c === null ? '' : c))}
+            onClick={() => setCreating((c) => c ?? { initial: '', folder: false })}
           >
             <Plus size={14} />
           </button>
         </div>
       )}
       {creating !== null && (
-        <NewEntryInput key={creating} initial={creating} onSubmit={create} onCancel={() => setCreating(null)} />
+        <NewEntryInput
+          key={`${creating.initial}:${creating.folder}`}
+          {...creating}
+          onSubmit={create}
+          onCancel={() => setCreating(null)}
+        />
       )}
       {!rootLoaded && <div className="px-2.5 py-3 text-xs text-faint">Loading…</div>}
       {rootLoaded && rows.length === 0 && <div className="px-2.5 py-3 text-xs text-faint">Empty working tree.</div>}
-      {rows}
+      <div
+        ref={treeElRef}
+        role="tree"
+        aria-multiselectable={!isRemote}
+        tabIndex={0}
+        className="space-y-px outline-none"
+        onKeyDown={onKeyDown}
+      >
+        {rows.map((row) =>
+          renaming === row.full ? (
+            <RenameRow
+              key={row.full}
+              row={row}
+              onSubmit={(name) => rename(row.full, name)}
+              onCancel={() => {
+                setRenaming(null);
+                focusTree();
+              }}
+            />
+          ) : (
+            <FileTreeRow
+              key={row.full}
+              row={row}
+              open={expanded.has(row.full)}
+              busy={loading.has(row.full)}
+              selected={selected.has(row.full)}
+              dropTarget={!!dropTarget && isUnder(row.full, dropTarget)}
+              dimmed={!!clip?.cut && clip.paths.some((p) => isUnder(row.full, p))}
+              onClick={(e) => onRowClick(e, row)}
+              onContextMenu={
+                isRemote
+                  ? undefined
+                  : (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Right-clicking outside the selection retargets it, like Finder / VS Code.
+                      if (!selected.has(row.full)) select([row.full]);
+                      setCtx({ x: e.clientX, y: e.clientY, path: row.full });
+                    }
+              }
+              {...(dnd && {
+                draggable: true,
+                onDragStart: (e: React.DragEvent) => onDragStart(e, row),
+                onDragEnd: endDrag,
+                onDragOver: (e: React.DragEvent) => onDragOver(e, row),
+                onDrop,
+              })}
+            />
+          )
+        )}
+      </div>
+      {/* Empty space below the rows: root drop zone + root context menu. */}
+      <div className="min-h-8 flex-1" onClick={() => select([])} />
       {ctx && (
         <FileTreeContextMenu
           x={ctx.x}
           y={ctx.y}
-          entry={ctx.entry}
-          workspaceId={workspace.id}
-          path={ctx.path}
+          workspaceId={wsId}
+          entry={ctx.path === null ? null : { path: ctx.path, dir: dirOf(ctx.path) === ctx.path }}
+          paths={ctxPaths}
+          canPaste={!!clip}
           onClose={() => setCtx(null)}
-          onNewFile={(dir) => setCreating(dir ? `${dir}/` : '')}
+          onNew={(folder) => newEntry(dirOf(ctx.path), folder)}
+          onRename={() => ctx.path && setRenaming(ctx.path)}
+          onDuplicate={() => void duplicate(ctxPaths)}
+          onDelete={() => remove(ctxPaths)}
+          onClipboard={(kind) => clipboard(kind, ctxPaths, dirOf(ctx.path))}
+          onCopyPaths={() => void copyPaths(ctxPaths)}
         />
       )}
     </div>
   );
 }
 
-/** Inline path input for the Files tab's "+" (Enter creates, Esc cancels). */
+/** Inline path input for new files/folders (Enter creates, Esc cancels). */
 function NewEntryInput({
   initial,
+  folder,
   onSubmit,
   onCancel,
 }: {
   initial: string;
+  folder: boolean;
   onSubmit: (path: string) => Promise<string | null>;
   onCancel: () => void;
 }) {
@@ -886,16 +1308,15 @@ function NewEntryInput({
   const submit = async () => {
     if (busy) return;
     setBusy(true);
-    const err = await onSubmit(value);
+    setError(await onSubmit(folder ? `${value.trim().replace(/\/+$/, '')}/` : value));
     setBusy(false);
-    setError(err);
   };
   return (
     <div className="px-1 pb-1.5">
       <input
         autoFocus
         className="input h-7 w-full font-mono text-2xs"
-        placeholder="path/to/new-file.ts"
+        placeholder={folder ? 'path/to/new-folder' : 'path/to/new-file.ts'}
         value={value}
         spellCheck={false}
         disabled={busy}
@@ -909,46 +1330,116 @@ function NewEntryInput({
           else if (e.key === 'Escape') onCancel();
         }}
         onBlur={() => {
-          if (!value.trim() && !busy) onCancel();
+          if (value.trim() === initial.trim() && !busy) onCancel();
         }}
       />
       <div className={clsx('px-1 pt-1 text-2xs', error ? 'text-err' : 'text-faint')}>
-        {error ?? 'Enter to create · end with / for a folder · Esc to cancel'}
+        {error ?? `Enter to create${folder ? ' folder' : ' · end with / for a folder'} · Esc to cancel`}
       </div>
     </div>
   );
 }
 
+/**
+ * A tree row swapped for an input during inline rename, with the stem (name
+ * before the extension) pre-selected like Finder. Enter commits and shows any
+ * error inline; clicking away commits too (an invalid name then just reverts);
+ * Esc cancels.
+ */
+function RenameRow({
+  row,
+  onSubmit,
+  onCancel,
+}: {
+  row: TreeRow;
+  onSubmit: (name: string) => Promise<string | null>;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(row.entry.name);
+  const [error, setError] = useState<string | null>(null);
+  const settled = useRef(false); // busy or finished — ignore further commits
+  const inputRef = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    const dot = row.entry.dir ? -1 : row.entry.name.lastIndexOf('.');
+    inputRef.current?.focus();
+    inputRef.current?.setSelectionRange(0, dot > 0 ? dot : row.entry.name.length);
+  }, [row.entry]);
+  const commit = async (fromBlur: boolean) => {
+    if (settled.current) return;
+    settled.current = true;
+    const err = await onSubmit(value);
+    if (!err) return;
+    if (fromBlur) {
+      useApp.getState().toast('error', err);
+      onCancel();
+    } else {
+      settled.current = false;
+      setError(err);
+    }
+  };
+  return (
+    <div style={{ paddingLeft: row.depth * 14 + 8 }} className="py-0.5 pr-1">
+      <div className="flex items-center gap-1.5">
+        <span className="w-[13px] shrink-0" />
+        {row.entry.dir ? <Folder size={14} className="shrink-0 text-muted" /> : fileGlyph(row.entry.name)}
+        <input
+          ref={inputRef}
+          aria-label={`Rename ${row.entry.name}`}
+          className={clsx('input h-6 min-w-0 flex-1 px-1.5 text-[13px]', error && '!border-err')}
+          value={value}
+          spellCheck={false}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') void commit(false);
+            else if (e.key === 'Escape') {
+              settled.current = true;
+              onCancel();
+            }
+          }}
+          onBlur={() => void commit(true)}
+        />
+      </div>
+      {error && <div className="pl-[34px] pt-0.5 text-2xs text-err">{error}</div>}
+    </div>
+  );
+}
+
 function FileTreeRow({
-  entry,
-  depth,
+  row,
   open,
   busy,
-  onClick,
-  onContext,
+  selected,
+  dropTarget,
+  dimmed,
+  ...rest
 }: {
-  entry: FsEntry;
-  depth: number;
+  row: TreeRow;
   open: boolean;
   busy: boolean;
-  onClick: () => void;
-  onContext?: (x: number, y: number) => void;
-}) {
+  selected: boolean;
+  dropTarget: boolean;
+  dimmed: boolean;
+} & React.HTMLAttributes<HTMLDivElement>) {
+  const { entry } = row;
   return (
-    <button
+    <div
+      {...rest}
+      role="treeitem"
+      aria-selected={selected}
+      aria-expanded={entry.dir ? open : undefined}
+      data-path={row.full}
       data-motion="row"
-      className="flex w-full items-center gap-1.5 rounded-lg py-1 pr-2 text-left text-[13px] transition-colors hover:bg-accent-soft"
-      style={{ paddingLeft: depth * 14 + 8 }}
+      className={clsx(
+        'flex w-full cursor-default select-none items-center gap-1.5 rounded-lg py-1 pr-2 text-[13px] transition-colors',
+        dropTarget ? 'bg-accent-tint' : selected ? 'bg-accent-soft text-fg' : 'hover:bg-accent-soft',
+        dimmed && 'opacity-50'
+      )}
+      style={{ paddingLeft: row.depth * 14 + 8 }}
       title={entry.name}
-      onClick={onClick}
-      onContextMenu={
-        onContext
-          ? (e) => {
-              e.preventDefault();
-              onContext(e.clientX, e.clientY);
-            }
-          : undefined
-      }
     >
       {entry.dir ? (
         busy ? (
@@ -961,103 +1452,101 @@ function FileTreeRow({
       )}
       {entry.dir ? <Folder size={14} className="shrink-0 text-muted" /> : fileGlyph(entry.name)}
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-    </button>
+    </div>
   );
 }
 
-const IS_MAC = navigator.userAgent.includes('Macintosh');
-const REVEAL_LABEL = IS_MAC ? 'Reveal in Finder' : navigator.userAgent.includes('Windows') ? 'Reveal in Explorer' : 'Reveal in file manager';
-
-/** Right-click menu for a Files-tree entry: open/reveal it on the local device. */
+/**
+ * Right-click menu for the Files tree. On one entry: open/reveal it on this
+ * device, new file/folder, cut/copy/paste, duplicate, copy path, rename,
+ * delete. With several selected it keeps only the actions that apply to all of
+ * them; on the empty area (`entry` null) it offers root-level New / Paste.
+ */
 function FileTreeContextMenu({
   x,
   y,
-  entry,
   workspaceId,
-  path,
+  entry,
+  paths,
+  canPaste,
   onClose,
-  onNewFile,
+  onNew,
+  onRename,
+  onDuplicate,
+  onDelete,
+  onClipboard,
+  onCopyPaths,
 }: {
   x: number;
   y: number;
-  entry: FsEntry;
   workspaceId: string;
-  path: string;
+  entry: { path: string; dir: boolean } | null;
+  paths: string[];
+  canPaste: boolean;
   onClose: () => void;
-  onNewFile: (dir: string) => void;
+  onNew: (folder: boolean) => void;
+  onRename: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onClipboard: (kind: ClipKind) => void;
+  onCopyPaths: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(true, onClose, ref);
-  const copyPath = async () => {
-    const { data } = await tryInvoke('fs:absPath', { workspaceId, path });
-    if (!data?.path) return;
-    try {
-      await navigator.clipboard.writeText(data.path);
-      useApp.getState().toast('success', 'Path copied');
-    } catch {
-      useApp.getState().toast('error', 'Could not copy path');
-    }
-  };
-  return (
-    <div
-      ref={ref}
-      style={{ position: 'fixed', left: Math.min(x, window.innerWidth - 224), top: Math.min(y, window.innerHeight - 180), zIndex: 60 }}
-      data-motion="pop"
-      className="glass w-56 origin-top-left overflow-hidden py-1"
+  const item = (icon: React.ReactNode, label: React.ReactNode, run: () => void, opts: { kbd?: string; danger?: boolean } = {}) => (
+    <MenuItem
+      danger={opts.danger}
+      onClick={() => {
+        onClose();
+        run();
+      }}
     >
-      <MenuItem
-        onClick={() => {
-          onClose();
-          void tryInvoke('fs:reveal', { workspaceId, path });
-        }}
-      >
-        <FolderOpen size={15} className="text-muted" /> {REVEAL_LABEL}
-      </MenuItem>
-      <MenuItem
-        onClick={async () => {
-          onClose();
-          const r = await tryInvoke('fs:openInIDE', { workspaceId, path });
-          if (r.error) useApp.getState().toast('error', r.error);
-        }}
-      >
-        <VSCodeMark size={15} className="text-muted" /> Open in IDE
-      </MenuItem>
-      <MenuItem
-        onClick={() => {
-          onClose();
-          void tryInvoke('fs:openTerminal', { workspaceId, path, dir: entry.dir });
-        }}
-      >
-        <Terminal size={15} className="text-muted" /> Open in terminal
-      </MenuItem>
-      {!entry.dir && (
-        <MenuItem
-          onClick={() => {
-            onClose();
-            void tryInvoke('fs:open', { workspaceId, path });
-          }}
-        >
-          <ExternalLink size={15} className="text-muted" /> Open with default app
-        </MenuItem>
+      {icon} {label}
+      {opts.kbd && <span className="ml-auto pl-3 text-2xs text-faint">{opts.kbd}</span>}
+    </MenuItem>
+  );
+  const icon = (I: typeof Copy) => <I size={15} className="text-muted" />;
+  const multi = paths.length > 1;
+  const { editors } = useEditors();
+  const one = !multi && entry;
+  const here = entry ? ' here' : '';
+  return (
+    <ContextMenu x={x} y={y} onClose={onClose} width={224}>
+      {one && (
+        <>
+          {item(icon(FolderOpen), REVEAL_LABEL, () => void tryInvoke('fs:reveal', { workspaceId, path: one.path }))}
+          {editors.map((ed, i) =>
+            item(i === 0 ? <VSCodeMark size={15} className="text-muted" /> : <span className="w-[15px]" />, `Open in ${ed.label}`, async () => {
+              const r = await tryInvoke('fs:openInIDE', { workspaceId, path: one.path, editor: ed.id });
+              if (r.error) useApp.getState().toast('error', r.error);
+            })
+          )}
+          {item(icon(Terminal), 'Open in terminal', () => void tryInvoke('fs:openTerminal', { workspaceId, path: one.path, dir: one.dir }))}
+          {!one.dir && item(icon(ExternalLink), 'Open with default app', () => void tryInvoke('fs:open', { workspaceId, path: one.path }))}
+          <MenuDivider />
+        </>
       )}
-      <MenuItem
-        onClick={() => {
-          onClose();
-          onNewFile(entry.dir ? path : path.slice(0, Math.max(0, path.lastIndexOf('/'))));
-        }}
-      >
-        <FilePlus size={15} className="text-muted" /> New file here…
-      </MenuItem>
-      <MenuDivider />
-      <MenuItem
-        onClick={() => {
-          onClose();
-          void copyPath();
-        }}
-      >
-        <Copy size={15} className="text-muted" /> Copy path
-      </MenuItem>
-    </div>
+      {!multi && (
+        <>
+          {item(icon(FilePlus), `New file${here}…`, () => onNew(false))}
+          {item(icon(FolderPlus), `New folder${here}…`, () => onNew(true))}
+          <MenuDivider />
+        </>
+      )}
+      {paths.length > 0 && item(icon(Scissors), 'Cut', () => onClipboard('cut'), { kbd: `${MOD}X` })}
+      {paths.length > 0 && item(icon(Copy), 'Copy', () => onClipboard('copy'), { kbd: `${MOD}C` })}
+      {canPaste && item(icon(ClipboardPaste), 'Paste', () => onClipboard('paste'), { kbd: `${MOD}V` })}
+      {paths.length > 0 && (
+        <>
+          {item(icon(CopyPlus), 'Duplicate', onDuplicate, { kbd: `${MOD}D` })}
+          {item(icon(Link2), multi ? 'Copy paths' : 'Copy path', onCopyPaths)}
+          <MenuDivider />
+          {one && item(icon(Pencil), 'Rename…', onRename, { kbd: IS_MAC ? '↩' : 'F2' })}
+          {item(<Trash2 size={15} />, multi ? `Delete ${paths.length} items` : 'Delete', onDelete, {
+            kbd: IS_MAC ? '⌘⌫' : 'Del',
+            danger: true,
+          })}
+        </>
+      )}
+    </ContextMenu>
   );
 }
 
@@ -1195,7 +1684,7 @@ function Dock({ workspace }: { workspace: Workspace }) {
                 key={t.id}
                 data-motion="tab"
                 className={clsx(
-                  'group flex h-7 shrink-0 items-center rounded-full text-xs font-medium transition-colors',
+                  'group flex h-7 min-w-0 items-center rounded-full text-xs font-medium transition-colors',
                   activeTab ? 'tab-lit text-fg' : 'text-muted hover:bg-accent-soft hover:text-fg'
                 )}
               >

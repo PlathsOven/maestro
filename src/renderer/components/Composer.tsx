@@ -1,15 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { ArrowRight, ArrowUp, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Mic, NotebookPen, Pencil, Plus, Search, Sparkles, Square, Terminal as TerminalIcon, Waypoints, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, Bookmark, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, ImagePlus, Mic, NotebookPen, Pencil, Plus, Search, Sparkles, Square, Terminal as TerminalIcon, Waypoints, X } from 'lucide-react';
 import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { invoke, on, tryInvoke } from '../lib/api';
 import { EMPTY_ARR, useApp } from '../store/app';
 import { probeDictationSupport, useDictation } from '../lib/dictation';
-import { AttachmentChip } from './ChatPanel';
+import { AttachmentChip } from './AttachmentPreviewModal';
+import { readWorktreeImage } from '../lib/worktreeImages';
 import { EffortBars, EffortOptions, PickerOption, Spinner, readFilesAsBase64, useDismissFromParent, useFileDrop } from './common';
-import { formatElapsed, RunTimer } from './RunTimer';
-import { ContextRing } from '../../shared/ui/composer/ContextRing';
-import { UsageBars, usageColor } from '../../shared/ui/composer/UsageRing';
+import { RunTimer } from './RunTimer';
+import { formatElapsed } from '../../shared/ui/transcript';
+import { ContextRing, Donut } from '../../shared/ui/composer/ContextRing';
+import { UsageBars, fmtDelta, usageColor } from '../../shared/ui/composer/UsageRing';
 import RolesMenu from './RolesMenu';
 import { contextWindowForModel, effortLevelsFor, useHarnessModels } from '../lib/harnessModels';
 import {
@@ -18,21 +20,23 @@ import {
   resolveDefaultEffort,
   resolveDefaultModel,
   resolveEffortLevel,
+  type Attachment,
   type BackgroundTask,
-  type ContextUsage,
   type HarnessId,
   type HarnessInfo,
   type RemoteHarnessStatus,
   type HarnessLogins,
-  type HarnessLoginView,
   type ScheduledMessage,
   type SkillEntry,
   type SubUsage,
   type Workspace,
 } from '../../shared/types';
 import { limitResetTarget } from '../../shared/limits';
-import { matchesShortcut } from '../../shared/shortcuts';
+import { formatShortcut, matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
+import { caretOnEdgeLine, promptHistory } from '../lib/promptRecall';
+import type { StashedPrompt } from '../lib/promptStash';
+import { timeAgo } from '../../shared/ui/format';
 import { GLASS_FIELD, LiquidGlass } from '../../shared/ui/LiquidGlass';
 
 export default function Composer({
@@ -54,12 +58,15 @@ export default function Composer({
   const [effortMenu, setEffortMenu] = useState(false);
   const [rolesMenu, setRolesMenu] = useState(false);
   const [scheduleMenu, setScheduleMenu] = useState(false);
+  const [stashMenu, setStashMenu] = useState(false);
   const [focused, setFocused] = useState(false);
   // Install + sign-in state of EVERY harness on the remote host — the single
   // source of truth for the banner, the model picker, AND send-gating, so they
   // all resolve together (null = local project, or the probe is still in flight).
   const [remoteHarnesses, setRemoteHarnesses] = useState<RemoteHarnessStatus[] | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // The prompt ↑/↓ last recalled (index into promptHistory, newest = 0).
+  const recallRef = useRef<{ idx: number; text: string } | null>(null);
 
   const focusedAgent = useApp((s) => s.composerAgent[workspace.id] ?? 1);
   const agentId = agentIdProp ?? focusedAgent;
@@ -70,6 +77,7 @@ export default function Composer({
   const text = useApp((s) => s.composerDrafts[`${workspace.id}:${agentId}`]) ?? '';
   const setText = (v: string) => useApp.getState().setComposerDraft(workspace.id, agentId, v);
   const running = useApp((s) => s.runningAgents[workspace.id]) ?? EMPTY_ARR;
+  const stash = useApp((s) => s.promptStash);
   const chatMeta = useApp((s) => s.chatsMeta[workspace.id]?.[String(agentId)]);
   const settings = useApp((s) => s.settings);
   const harnesses = useApp((s) => s.harnesses);
@@ -523,6 +531,48 @@ export default function Composer({
         return;
       }
     }
+    // ↑/↓ prompt recall. Takes over only while the box is empty or still holds
+    // an unedited recalled prompt, and only from its top/bottom visual line —
+    // anywhere else the arrows move the caret as usual.
+    const arrow = e.key === 'ArrowUp' || e.key === 'ArrowDown';
+    if (arrow && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing && !attachments.length) {
+      const up = e.key === 'ArrowUp';
+      const r = recallRef.current;
+      const recalled = !!r && text === r.text;
+      if ((recalled || (up && !text)) && caretOnEdgeLine(e.currentTarget, up ? 'first' : 'last')) {
+        const history = promptHistory(useApp.getState().messages[workspace.id], agentId);
+        const idx = up ? (recalled ? r!.idx + 1 : 0) : r!.idx - 1;
+        if (idx < history.length) {
+          e.preventDefault();
+          const next = idx < 0 ? '' : history[idx];
+          recallRef.current = idx < 0 ? null : { idx, text: next };
+          setText(next);
+          // ↑ parks the caret at the top so the next ↑ keeps walking back; ↓ at the bottom.
+          const ta = e.currentTarget;
+          const pos = up ? 0 : next.length;
+          requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
+          return;
+        }
+      }
+    }
+    // ⌘S parks the draft; on an empty box it brings one back (or picks from several).
+    if (matchesShortcut(e, keys['composer.stash'], platform)) {
+      e.preventDefault();
+      if (text.trim() || attachments.length) useApp.getState().stashDraft(workspace.id, agentId);
+      else if (stash.length === 1) useApp.getState().restoreStash(stash[0].id, workspace.id, agentId);
+      else if (stash.length) setStashMenu(true);
+      return;
+    }
+    if (matchesShortcut(e, keys['composer.paste-inline'], platform)) {
+      e.preventDefault();
+      // insertText (not setText) so the paste lands at the caret, fires onChange
+      // like typing would, and stays on the native undo stack.
+      void navigator.clipboard
+        .readText()
+        .then((clip) => clip && document.execCommand('insertText', false, clip))
+        .catch(() => {});
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
@@ -564,10 +614,14 @@ export default function Composer({
         return;
       }
     }
+    // A long paste (logs, a whole file) rides along as a text attachment instead
+    // of flooding the box; the paste-inline shortcut keeps it editable instead.
     const textData = e.clipboardData.getData('text/plain');
-    if (textData && textData.length > 2000) {
+    if (textData && textData.length >= LONG_PASTE_CHARS) {
       e.preventDefault();
       void saveAttachment(`pasted_text_${Date.now()}.txt`, { text: textData }, 'note');
+      const inline = formatShortcut(keys['composer.paste-inline'], platform);
+      if (inline) useApp.getState().toast('info', `Long paste attached as a file — ${inline} pastes it inline`);
     }
   };
 
@@ -600,14 +654,14 @@ export default function Composer({
     <div className="pointer-events-none relative shrink-0 px-4 pb-4 pt-1" {...dropProps}>
       <div className="pointer-events-auto mx-auto max-w-3xl">
         {chatMeta?.externalLive && (
-          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs text-warn backdrop-blur-xl">
+          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs text-warn backdrop-blur-xl fx-solid-warn">
             This chat is open in {chatMeta.externalLive.app === 'codex' ? 'Codex' : 'Claude Code'}
             {chatMeta.externalLive.pid ? ` (pid ${chatMeta.externalLive.pid})` : ''}. Close it there or wait for it to
             finish to continue here.
           </div>
         )}
         {remoteCurrent && workspace.harness !== 'shell' && (!remoteCurrent.installed || !remoteCurrent.authed) && (
-          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs backdrop-blur-xl">
+          <div className="mb-2 rounded-card border border-warn/25 bg-warn/10 px-4 py-3 text-xs backdrop-blur-xl fx-solid-warn">
             {curSetup?.phase === 'installing' ? (
               <>
                 <div className="mb-1 flex items-center gap-1.5 font-medium text-warn">
@@ -792,6 +846,7 @@ export default function Composer({
           )}
           <textarea
             ref={taRef}
+            data-composer
             className="w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[13px] leading-relaxed outline-none placeholder:text-faint"
             rows={2}
             placeholder={
@@ -811,7 +866,7 @@ export default function Composer({
             onBlur={() => setFocused(false)}
           />
 
-          <div className="flex items-center gap-1 px-2.5 pb-2.5 pt-1">
+          <div className="composer-bar flex flex-wrap items-center justify-end gap-1 px-2.5 pb-2.5 pt-1">
             {/* model chip — popover opens upward, never clipped */}
             <div className="relative">
               <button
@@ -1027,6 +1082,31 @@ export default function Composer({
 
             <div className="flex-1" />
 
+            {stash.length > 0 && (
+              <div className="relative">
+                <button
+                  className={clsx(CHIP, 'px-2', stashMenu && 'bg-accent-soft text-fg')}
+                  title={`Stashed prompts (${formatShortcut(keys['composer.stash'], platform)} stashes / restores)`}
+                  onClick={() => setStashMenu((v) => !v)}
+                >
+                  <Bookmark size={12} />
+                  {stash.length}
+                </button>
+                {stashMenu && (
+                  <StashPopover
+                    stash={stash}
+                    workspaceId={workspace.id}
+                    onRestore={(id) => {
+                      setStashMenu(false);
+                      useApp.getState().restoreStash(id, workspace.id, agentId);
+                      taRef.current?.focus();
+                    }}
+                    onClose={() => setStashMenu(false)}
+                  />
+                )}
+              </div>
+            )}
+
             <UsageRing harness={workspace.harness} logins={logins} onReload={reloadLogins} />
             <ContextRing tokens={contextTokens} usage={chatMeta?.usage} window={contextWindowForModel(model, HM)} />
 
@@ -1123,6 +1203,10 @@ export default function Composer({
   );
 }
 
+/** Pastes this long become a text attachment (~32 KiB — a real log or file, not
+ *  a paragraph someone wants to edit). */
+const LONG_PASTE_CHARS = 32_000;
+
 const NO_HITS: number[] = [];
 const range = (start: number, end: number): number[] => {
   const out: number[] = [];
@@ -1211,21 +1295,6 @@ function UpMenu({
 }
 
 
-/** How far off `ts` is, coarsely: "45m", "1h", "3h 12m", "2d 4h". '' once past.
- *  Rounds to whole minutes FIRST, so an instant an eyelash under the hour reads
- *  "1h" rather than "60m". */
-const fmtDelta = (ts: number): string => {
-  const ms = ts - Date.now();
-  if (!isFinite(ms) || ms <= 0) return '';
-  const mins = Math.round(ms / 60_000);
-  if (mins < 1) return '<1m'; // about to fire — "0m" reads like it's stuck
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  const m = mins % 60;
-  return m ? `${h}h ${m}m` : `${h}h`;
-};
-
 /** Wall-clock label for a scheduled instant: "6:00 PM", "Tomorrow 9:00 AM",
  *  or "Aug 15, 6:00 PM" once it's further out than that. */
 const fmtClock = (ts: number): string => {
@@ -1273,6 +1342,48 @@ function quickTimes(): { label: string; at: number }[] {
  * moment of choosing, so nothing downstream ever has to reason about "6 PM",
  * DST, or which timezone the user was in when they scheduled it.
  */
+/** The stash, newest first: click a row to restore it into this chat's box. */
+function StashPopover({
+  stash,
+  workspaceId,
+  onRestore,
+  onClose,
+}: {
+  stash: StashedPrompt[];
+  workspaceId: string;
+  onRestore: (id: number) => void;
+  onClose: () => void;
+}) {
+  const workspaces = useApp((s) => s.workspaces);
+  return (
+    <UpMenu wide tall right onClose={onClose}>
+      <div className="px-3.5 pb-1 pt-1.5 text-2xs text-faint">Stashed prompts</div>
+      {stash.map((e) => {
+        const from = e.workspaceId === workspaceId ? null : workspaces.find((w) => w.id === e.workspaceId);
+        return (
+          <div key={e.id} className={clsx(MENU_ROW, 'group items-start gap-2 !pr-1.5')}>
+            <button className="min-w-0 flex-1 text-left" onClick={() => onRestore(e.id)}>
+              <div className="line-clamp-2 break-words text-[13px]">{e.text.trim() || 'Attachments only'}</div>
+              <div className="mt-0.5 truncate text-2xs text-faint">
+                {timeAgo(e.at)}
+                {e.attachments.length > 0 && ` · ${e.attachments.length} file${e.attachments.length > 1 ? 's' : ''}`}
+                {from && ` · ${from.title ?? from.name}`}
+              </div>
+            </button>
+            <button
+              className="shrink-0 rounded-full p-0.5 text-faint opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+              title="Delete"
+              onClick={() => useApp.getState().dropStash(e.id)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        );
+      })}
+    </UpMenu>
+  );
+}
+
 function SchedulePopover({
   usage,
   remote,
@@ -1403,25 +1514,39 @@ const MENU_FOOT_ROW =
  * scheduled for a wall-clock time. Both wait before they fire, so both let you
  * reword in place: click the text (or the pencil), Enter saves, Escape cancels.
  * The subtitle and trailing actions are all that differ between the two lists.
+ *
+ * When `attachments` is passed (queued messages), the row also shows them —
+ * images as thumbnails that open the lightbox — and the editor lets you remove
+ * them or add more (picker, paste, or drop), committed with the text.
  */
 function PendingRow({
   text,
   onCommit,
   subtitle,
   actions,
+  attachments,
+  workspaceId,
 }: {
   text: string;
-  onCommit: (next: string) => void;
+  onCommit: (next: string, attachments?: Attachment[]) => void;
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
+  attachments?: Attachment[];
+  workspaceId: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
+  // null = attachments untouched by this edit (so a text-only edit doesn't resend them).
+  const [draftAtts, setDraftAtts] = useState<Attachment[] | null>(null);
+  const [saving, setSaving] = useState(0);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const cancelledRef = useRef(false);
+  const editable = attachments !== undefined;
+  const shownAtts = draftAtts ?? attachments ?? [];
 
   const startEdit = () => {
     setDraft(text);
+    setDraftAtts(null);
     cancelledRef.current = false;
     setEditing(true);
   };
@@ -1433,10 +1558,43 @@ function PendingRow({
 
   const commit = () => {
     // Escape unmounts the textarea, which fires onBlur → commit; skip that save.
-    if (cancelledRef.current) return;
+    // Also hold off while an added file is still being written into the worktree.
+    if (cancelledRef.current || saving > 0) return;
     setEditing(false);
     const next = draft.trim();
-    if (next && next !== text) onCommit(next);
+    // Nothing left to send → revert (the × removes a message outright).
+    if ((next || shownAtts.length) && (next !== text || draftAtts)) onCommit(next, draftAtts ?? undefined);
+  };
+
+  // Added files go through the same attachment:save the composer uses, so a
+  // queued message's new photo lands in .context like any other. Each counts as
+  // `saving` from the moment it's picked, so Save can't outrun the file read.
+  const addFiles = (list: File[]) => {
+    for (const file of list.slice(0, 10)) {
+      setSaving((n) => n + 1);
+      readFilesAsBase64(
+        [file],
+        async (name, b64, kind) => {
+          const { data, error } = await tryInvoke('attachment:save', { workspaceId, name, dataBase64: b64 });
+          setSaving((n) => n - 1);
+          if (error || !data) return useApp.getState().toast('error', error ?? 'Failed to save attachment');
+          setDraftAtts((cur) => [...(cur ?? attachments ?? []), { kind, path: data.path, label: name }]);
+        },
+        (name) => {
+          setSaving((n) => n - 1);
+          useApp.getState().toast('error', `${name} is larger than 25MB`);
+        }
+      );
+    }
+  };
+  const { dragDepth, dropProps } = useFileDrop(addFiles);
+
+  const pickFiles = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = () => addFiles(Array.from(input.files ?? []));
+    input.click();
   };
 
   useEffect(() => {
@@ -1449,47 +1607,174 @@ function PendingRow({
 
   if (editing) {
     return (
-      <div data-motion="row" className="mx-1 flex items-center gap-2 rounded-lg px-1.5 py-1">
-        <textarea
-          ref={taRef}
-          className="min-w-0 flex-1 resize-none rounded-lg border bg-raised px-2.5 py-1.5 text-[13px] leading-relaxed outline-none transition-colors focus:border-faint"
-          rows={Math.min(6, Math.max(1, draft.split('\n').length))}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              commit();
-            } else if (e.key === 'Escape') {
-              e.preventDefault();
-              cancel();
-            }
-          }}
-          onBlur={commit}
-        />
-        <button
-          className="shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-ok"
-          title="Save (Enter)"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={commit}
-        >
-          <Check size={13} />
-        </button>
+      <div
+        data-motion="row"
+        className={clsx('mx-1 rounded-lg px-1.5 py-1', dragDepth > 0 && 'outline-dashed outline-1 outline-accent')}
+        {...(editable ? dropProps : {})}
+      >
+        <div className="flex items-center gap-2">
+          <textarea
+            ref={taRef}
+            className="min-w-0 flex-1 resize-none rounded-lg border bg-raised px-2.5 py-1.5 text-[13px] leading-relaxed outline-none transition-colors focus:border-faint"
+            rows={Math.min(6, Math.max(1, draft.split('\n').length))}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                commit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+              }
+            }}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.files);
+              if (editable && files.length) {
+                e.preventDefault();
+                addFiles(files);
+              }
+            }}
+            // Losing focus to the OS file picker (the window blurs) isn't "done".
+            onBlur={() => document.hasFocus() && commit()}
+          />
+          {editable && (
+            <button
+              className="shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-fg"
+              title="Add images or files"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={pickFiles}
+            >
+              <ImagePlus size={13} />
+            </button>
+          )}
+          <button
+            className="shrink-0 rounded-full p-1 text-faint transition-colors hover:bg-accent-soft hover:text-ok disabled:opacity-40"
+            title="Save (Enter)"
+            disabled={saving > 0}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={commit}
+          >
+            <Check size={13} />
+          </button>
+        </div>
+        {(shownAtts.length > 0 || saving > 0) && (
+          <PendingAttachments
+            workspaceId={workspaceId}
+            attachments={shownAtts}
+            saving={saving}
+            onRemove={(i) => setDraftAtts(shownAtts.filter((_, j) => j !== i))}
+          />
+        )}
       </div>
     );
   }
 
   return (
     <div data-motion="row" className="group mx-1 flex items-center gap-1 rounded-lg py-1.5 pl-2.5 pr-1.5 transition-colors hover:bg-accent-soft">
-      <button className="min-w-0 flex-1 cursor-text text-left" title="Edit message" onClick={startEdit}>
-        <span className="block truncate text-[13px]">{text}</span>
-        {subtitle && <span className="mt-0.5 block truncate text-2xs text-faint">{subtitle}</span>}
-      </button>
+      <div className="min-w-0 flex-1">
+        <button className="block w-full min-w-0 cursor-text text-left" title="Edit message" onClick={startEdit}>
+          <span className={clsx('block truncate text-[13px]', !text && 'text-faint')}>{text || 'Attachment'}</span>
+          {subtitle && <span className="mt-0.5 block truncate text-2xs text-faint">{subtitle}</span>}
+        </button>
+        {attachments && attachments.length > 0 && <PendingAttachments workspaceId={workspaceId} attachments={attachments} />}
+      </div>
       <button className={clsx(ROW_ACTION, 'hover:text-fg')} title="Edit message" onClick={startEdit}>
         <Pencil size={13} />
       </button>
       {actions}
     </div>
+  );
+}
+
+/**
+ * A pending message's attachments: images as small thumbnails (click → the
+ * lightbox, paging through this message's images), anything else as a chip.
+ * `onRemove` (the editor) adds an × to each; `saving` shows placeholders for
+ * files still being written.
+ */
+function PendingAttachments({
+  workspaceId,
+  attachments,
+  onRemove,
+  saving = 0,
+}: {
+  workspaceId: string;
+  attachments: Attachment[];
+  onRemove?: (index: number) => void;
+  saving?: number;
+}) {
+  const images = attachments.filter((a) => a.kind === 'image' && a.path);
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {attachments.map((a, i) =>
+        a.kind === 'image' && a.path ? (
+          <ImageThumb
+            key={a.path}
+            workspaceId={workspaceId}
+            a={a}
+            onOpen={() =>
+              useApp.getState().openLightbox({
+                workspaceId,
+                images: images.map((im) => ({ path: im.path!, alt: im.label })),
+                index: images.indexOf(a),
+              })
+            }
+            onRemove={onRemove && (() => onRemove(i))}
+          />
+        ) : (
+          <AttachmentChip key={a.path ?? i} a={a} workspaceId={workspaceId} onRemove={onRemove && (() => onRemove(i))} />
+        )
+      )}
+      {Array.from({ length: saving }, (_, i) => (
+        <span key={`saving-${i}`} className="flex h-10 w-10 items-center justify-center rounded-md bg-raised ring-1 ring-inset ring-border">
+          <Spinner />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ImageThumb({
+  workspaceId,
+  a,
+  onOpen,
+  onRemove,
+}: {
+  workspaceId: string;
+  a: Attachment;
+  onOpen: () => void;
+  onRemove?: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void readWorktreeImage(workspaceId, a.path!).then((url) => alive && setSrc(url));
+    return () => {
+      alive = false;
+    };
+  }, [workspaceId, a.path]);
+  return (
+    <span className="relative block h-10 w-10 shrink-0">
+      <button
+        className="block h-full w-full overflow-hidden rounded-md bg-raised ring-1 ring-inset ring-border"
+        title={a.label}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onOpen}
+      >
+        {src && <img src={src} alt={a.label} className="h-full w-full object-cover" />}
+      </button>
+      {onRemove && (
+        <button
+          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-fg text-bg shadow transition-colors hover:bg-err"
+          title="Remove"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onRemove}
+        >
+          <X size={10} />
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -1516,6 +1801,7 @@ function ScheduledItem({
   return (
     <PendingRow
       text={item.text}
+      workspaceId={workspaceId}
       onCommit={(next) => useApp.getState().editScheduled(workspaceId, agentId, item.id, next)}
       subtitle={
         fmtClock(item.deliverAt) +
@@ -1636,8 +1922,6 @@ function UsageRing({
   const top = usage?.windows.length ? usage.windows.reduce((a, b) => (b.pct > a.pct ? b : a)) : null;
   const pct = top ? Math.min(1, top.pct / 100) : 0;
   const color = top ? usageColor(top, 'var(--muted)') : 'var(--border)';
-  const r = 7;
-  const c = 2 * Math.PI * r;
   return (
     <span
       className="relative flex h-7 w-7 items-center justify-center"
@@ -1645,20 +1929,7 @@ function UsageRing({
       onMouseLeave={leave}
     >
       <span className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-accent-soft" aria-label="Plan usage">
-        <svg width="17" height="17" viewBox="0 0 18 18" className="-rotate-90">
-          <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.4" />
-          <circle
-            cx="9"
-            cy="9"
-            r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth="2.4"
-            strokeDasharray={c}
-            strokeDashoffset={c * (1 - pct)}
-            strokeLinecap="round"
-          />
-        </svg>
+        <Donut pct={pct} color={color} />
       </span>
       {open && (
         <>
@@ -1805,12 +2076,14 @@ function QueuedItem({
 }: {
   workspaceId: string;
   agentId: number;
-  item: { id: string; text: string };
+  item: { id: string; text: string; attachments: Attachment[] };
 }) {
   return (
     <PendingRow
       text={item.text}
-      onCommit={(next) => useApp.getState().editQueued(workspaceId, agentId, item.id, next)}
+      attachments={item.attachments}
+      workspaceId={workspaceId}
+      onCommit={(next, atts) => useApp.getState().editQueued(workspaceId, agentId, item.id, next, atts)}
       actions={
         <>
           {/* Steer: interrupt the current turn so this message runs next. */}

@@ -3,11 +3,10 @@ import path from 'path';
 import { run, runOrThrow } from '../exec';
 import { localHost } from '../hosts/local';
 import type { ExecHost, ExecOpts } from '../hosts/types';
+import { parseUnifiedDiff } from '../../shared/diffparse';
 import type {
   BranchInfo,
   DiffFile,
-  DiffHunk,
-  DiffLine,
   GitStatusSummary,
   WorkspaceDiff,
 } from '../../shared/types';
@@ -606,123 +605,6 @@ export async function workspaceDiff(wtPath: string, baseRef: string, host: ExecH
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { base: baseRef, files };
-}
-
-function unquoteGitPath(p: string): string {
-  if (p.startsWith('"') && p.endsWith('"')) {
-    try {
-      return JSON.parse(p);
-    } catch {
-      return p.slice(1, -1);
-    }
-  }
-  return p;
-}
-
-function stripPrefix(p: string): string {
-  const un = unquoteGitPath(p);
-  if (un === '/dev/null') return un;
-  return un.replace(/^[ab]\//, '');
-}
-
-export function parseUnifiedDiff(text: string): DiffFile[] {
-  const files: DiffFile[] = [];
-  const lines = text.split('\n');
-  let cur: DiffFile | null = null;
-  let hunk: DiffHunk | null = null;
-  let oldLn = 0;
-  let newLn = 0;
-  let renameFrom: string | null = null;
-  let isNew = false;
-  let isDeleted = false;
-
-  const flushFile = () => {
-    if (cur) files.push(cur);
-    cur = null;
-    hunk = null;
-    renameFrom = null;
-    isNew = false;
-    isDeleted = false;
-  };
-
-  for (const raw of lines) {
-    if (raw.startsWith('diff --git ')) {
-      flushFile();
-      // "diff --git a/path b/path" (possibly quoted)
-      const m = raw.match(/^diff --git (.+) (.+)$/);
-      const bPath = m ? stripPrefix(m[2]) : 'unknown';
-      cur = { path: bPath, oldPath: null, status: 'modified', additions: 0, deletions: 0, hunks: [] };
-      continue;
-    }
-    if (!cur) continue;
-    const c: DiffFile = cur;
-    if (raw.startsWith('new file mode')) {
-      isNew = true;
-      c.status = 'added';
-      continue;
-    }
-    if (raw.startsWith('deleted file mode')) {
-      isDeleted = true;
-      c.status = 'deleted';
-      continue;
-    }
-    if (raw.startsWith('rename from ')) {
-      renameFrom = raw.slice('rename from '.length);
-      continue;
-    }
-    if (raw.startsWith('rename to ')) {
-      c.status = 'renamed';
-      c.oldPath = renameFrom ? unquoteGitPath(renameFrom) : null;
-      c.path = unquoteGitPath(raw.slice('rename to '.length));
-      continue;
-    }
-    if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
-      c.status = c.status === 'added' ? 'added' : c.status === 'deleted' ? 'deleted' : 'binary';
-      if (c.hunks.length === 0) c.hunks = [];
-      continue;
-    }
-    if (raw.startsWith('--- ')) {
-      const p = stripPrefix(raw.slice(4).trim());
-      if (p !== '/dev/null' && !c.oldPath && c.status === 'renamed') c.oldPath = p;
-      continue;
-    }
-    if (raw.startsWith('+++ ')) {
-      const p = stripPrefix(raw.slice(4).trim());
-      if (p !== '/dev/null') c.path = p;
-      continue;
-    }
-    if (raw.startsWith('@@')) {
-      const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (!m) continue;
-      oldLn = parseInt(m[1], 10);
-      newLn = parseInt(m[2], 10);
-      hunk = { header: raw, lines: [] };
-      c.hunks.push(hunk);
-      continue;
-    }
-    if (!hunk) continue;
-    if (raw.startsWith('+')) {
-      hunk.lines.push({ kind: 'add', oldLine: null, newLine: newLn++, text: raw.slice(1) });
-      c.additions++;
-    } else if (raw.startsWith('-')) {
-      hunk.lines.push({ kind: 'del', oldLine: oldLn++, newLine: null, text: raw.slice(1) });
-      c.deletions++;
-    } else if (raw.startsWith(' ')) {
-      hunk.lines.push({ kind: 'context', oldLine: oldLn++, newLine: newLn++, text: raw.slice(1) });
-    } else if (raw.startsWith('\\')) {
-      hunk.lines.push({ kind: 'meta', oldLine: null, newLine: null, text: raw });
-    }
-  }
-  flushFile();
-  // status refinement for /dev/null cases
-  for (const f of files) {
-    if (isNewFile(f) && f.status === 'modified') f.status = 'added';
-  }
-  return files;
-}
-
-function isNewFile(f: DiffFile): boolean {
-  return f.hunks.length > 0 && f.hunks.every((h) => h.lines.every((l) => l.kind !== 'del' && l.kind !== 'context'));
 }
 
 // ---------- misc workspace helpers ----------

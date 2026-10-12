@@ -122,7 +122,7 @@ async function main() {
   process.env.MAESTRO_RELAY_URL = `http://127.0.0.1:${port}`;
 
   initDb(path.join(ROOT, 'db.sqlite'));
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   const ws = seed();
   const bytes = (Messages.list(ws.id) as ChatMessage[]).reduce((n, m) => n + m.content.length, 0);
 

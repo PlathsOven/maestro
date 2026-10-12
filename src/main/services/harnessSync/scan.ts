@@ -91,6 +91,13 @@ function claudeOrigin(first: any): SessionOrigin {
   return 'unknown';
 }
 
+/** A typed user line's text, whitespace-collapsed, if it would make a title. */
+function typedPromptTitle(j: any): string {
+  const c = j.message?.content;
+  const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join(' ') : '';
+  return (promptTitle(text) ? text.trim().replace(/\s+/g, ' ') : '').slice(0, 200);
+}
+
 /** Head-read one Claude transcript. `sessionId` is the filename stem (the resume
  *  key); cwd/origin/timestamp come from the first content line. */
 function readClaudeSession(file: string, sessionId: string, stat: fs.Stats): HarnessSession | null {
@@ -108,14 +115,7 @@ function readClaudeSession(file: string, sessionId: string, stat: fs.Stats): Har
     if (j?.type === 'user' && !j.toolUseResult && j.promptSource === 'typed') {
       prompts++;
       if (!firstPrompt) {
-        const c = j.message?.content;
-        const text =
-          typeof c === 'string'
-            ? c
-            : Array.isArray(c)
-              ? c.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join(' ')
-              : '';
-        firstPrompt = (promptTitle(text) ? text.trim().replace(/\s+/g, ' ') : '').slice(0, 200);
+        firstPrompt = typedPromptTitle(j);
       }
     }
   }
@@ -129,9 +129,7 @@ function readClaudeSession(file: string, sessionId: string, stat: fs.Stats): Har
           if (j?.type === 'user' && !j.toolUseResult && j.promptSource === 'typed') {
             prompts++;
             if (!firstPrompt) {
-              const c = j.message?.content;
-              const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join(' ') : '';
-              firstPrompt = (promptTitle(text) ? text.trim().replace(/\s+/g, ' ') : '').slice(0, 200);
+              firstPrompt = typedPromptTitle(j);
             }
           }
         }
@@ -410,7 +408,8 @@ export function sessionTitle(s: HarnessSession, ordinal: number): string {
 
 // ---------- public scan (grouped) ----------
 
-function placementKey(p: Placement): string {
+/** Dedup key for sessions that land in the same place. */
+export function placementKey(p: Placement): string {
   switch (p.kind) {
     case 'workspace':
       return `ws:${p.workspaceId}`;
@@ -427,15 +426,12 @@ function placementKey(p: Placement): string {
 
 /** Build the renderer's grouped scan. `linked` maps a session id already tied to a
  *  Maestro chat → true (so it's listed greyed and unselectable). */
-export async function buildScan(linked: Set<string>): Promise<{ scan: HarnessSyncScan; sessions: Map<string, HarnessSession> }> {
+export async function buildScan(linked: Set<string>): Promise<HarnessSyncScan> {
   const sessions = scanHarnessSessions();
-  const byId = new Map<string, HarnessSession>();
   const skipped: HarnessSyncScan['skipped'] = { maestro: 0, sdk: 0, subagent: 0, 'no-prompts': 0, missing: 0 };
   const groups = new Map<string, HarnessSyncGroup>();
 
   for (const s of sessions) {
-    if (!linked.has(s.sessionId)) byId.set(s.sessionId, s); // for import lookup
-
     if (s.origin === 'maestro' || s.origin === 'sdk' || s.origin === 'subagent') {
       if (!linked.has(s.sessionId)) skipped[s.origin]++;
       continue;
@@ -452,7 +448,7 @@ export async function buildScan(linked: Set<string>): Promise<{ scan: HarnessSyn
     const key = placementKey(placement);
     let group = groups.get(key);
     if (!group) {
-      group = { key: groupKey(placement), placement: placement as HarnessSyncGroup['placement'], sessions: [] };
+      group = { key: groupKey(placement), placement, sessions: [] };
       groups.set(key, group);
     }
     const preview: HarnessSyncSessionPreview = {
@@ -472,7 +468,7 @@ export async function buildScan(linked: Set<string>): Promise<{ scan: HarnessSyn
   const list = [...groups.values()];
   for (const g of list) g.sessions.sort((a, b) => b.modifiedAt - a.modifiedAt);
   list.sort((a, b) => (b.sessions[0]?.modifiedAt ?? 0) - (a.sessions[0]?.modifiedAt ?? 0));
-  return { scan: { groups: list, skipped }, sessions: byId };
+  return { groups: list, skipped };
 }
 
 /** The group's public selection key: workspaceId for an existing workspace, else
@@ -483,11 +479,7 @@ function groupKey(p: Placement): string {
       return p.workspaceId;
     case 'adopt':
       return p.path;
-    case 'new-project':
-      return p.root;
-    case 'new-folder':
-      return p.root;
-    case 'missing':
+    default:
       return p.root;
   }
 }

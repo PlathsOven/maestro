@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import clsx from 'clsx';
 import {
   Archive,
+  Check,
   ChevronDown,
   ChevronRight,
   DownloadCloud,
@@ -19,12 +20,14 @@ import {
 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
 import { hostAddress } from '../lib/hosts';
-import { COLLAPSED_RIGHT_RAIL, EMPTY_ARR, useApp, useCaps } from '../store/app';
-import { Segmented, Spinner, StatusDot } from './common';
+import { EMPTY_ARR, useApp, useCaps } from '../store/app';
+import { COLLAPSED_RIGHT_RAIL } from '../lib/layoutPrefs';
+import { ContextMenu, ContextMenuItem, MenuDivider, MenuItem, Segmented, Spinner, StatusDot } from './common';
+import { useEditors } from '../lib/editors';
 import { VSCodeMark } from '../../shared/ui/brandIcons';
 import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { StainedDot } from '../../shared/ui/StainedGlass';
-import { Menu, MenuItem, MenuDivider } from './Sidebar';
+import { Menu } from './Sidebar';
 import type { BranchInfo, Workspace } from '../../shared/types';
 import { formatShortcut, type ShortcutId } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
@@ -121,7 +124,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
           Continue/Archive) now lives at the top of the right panel. */}
       <header
         className={clsx(
-          'drag-region flex h-11 shrink-0 items-center gap-2 px-4',
+          'ws-head drag-region flex h-11 shrink-0 items-center gap-2 px-4',
           floatHeader ? 'scroll-edge-top absolute inset-x-0 top-0 z-20' : 'border-b'
         )}
       >
@@ -130,15 +133,16 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
           {host && (
             <span
               className={clsx(
-                'flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium',
+                'flex min-w-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium',
                 hostState === 'connected' || hostState === undefined ? 'text-muted' : hostState === 'error' || hostState === 'disconnected' ? 'text-err' : 'text-warn'
               )}
               title={`${cloudConversation ? 'Cloud · ' : ''}${hostAddress(host)} — ${hostState ?? 'connecting'}`}
             >
-              <Server size={11} /> {cloudConversation ? `Cloud · ${host.label}` : hostAddress(host)}
+              <Server size={11} className="shrink-0" />
+              <span className="truncate">{cloudConversation ? `Cloud · ${host.label}` : hostAddress(host)}</span>
             </span>
           )}
-          <span className="shrink-0 text-[13px] text-muted">{project?.name}</span>
+          <span className="shrink-[0.2] truncate text-[13px] text-muted">{project?.name}</span>
           <ChevronRight size={12} className="shrink-0 text-faint" />
           {caps.git ? (
             <>
@@ -154,10 +158,11 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
             </>
           ) : (
             <span
-              className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
+              className="flex min-w-0 items-center gap-1.5 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
               title="Agents work directly in this folder — no branches or diffs. They have direct access under the current permission mode."
             >
-              <FolderOpen size={11} /> in-place · direct access
+              <FolderOpen size={11} className="shrink-0" />
+              <span className="truncate">in-place · direct access</span>
             </span>
           )}
           {workspace.setupError && (
@@ -209,15 +214,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
                 }))}
               />
               <LiquidGlass radius={999} {...GLASS_CONTROL} tint="clear" className="lg-float flex items-center p-[3px]">
-                <HeaderBtn
-                  title="Open in IDE"
-                  onClick={async () => {
-                    const r = await tryInvoke('workspace:openInIDE', { workspaceId: workspace.id });
-                    if (r.error) useApp.getState().toast('error', r.error);
-                  }}
-                >
-                  <VSCodeMark size={13} />
-                </HeaderBtn>
+                <OpenInButton workspaceId={workspace.id} />
                 <HeaderBtn title="Reveal in Finder" onClick={() => void tryInvoke('workspace:reveal', { workspaceId: workspace.id })}>
                   <FolderOpen size={13} />
                 </HeaderBtn>
@@ -366,6 +363,52 @@ function AdoptedMissing({ workspace, onGone }: { workspace: Workspace; onGone: (
         </div>
       </div>
     </div>
+  );
+}
+
+/** "Open in <editor>": a click opens the worktree in the default editor; the
+ *  chevron lists every detected editor, and picking one makes it the default. */
+function OpenInButton({ workspaceId }: { workspaceId: string }) {
+  const { editors, current } = useEditors();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const open = async (editor?: string) => {
+    const r = await tryInvoke('workspace:openInIDE', { workspaceId, editor });
+    if (r.error) useApp.getState().toast('error', r.error);
+  };
+  return (
+    <>
+      <HeaderBtn title={`Open in ${current.label}`} onClick={() => void open()}>
+        <VSCodeMark size={13} />
+      </HeaderBtn>
+      {editors.length > 1 && (
+        <button
+          className="-ml-1.5 grid h-7 w-4 shrink-0 place-items-center rounded-full text-faint transition-colors hover:text-fg"
+          title="Open in…"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenu({ x: r.right - 200, y: r.bottom + 6 });
+          }}
+        >
+          <ChevronDown size={11} />
+        </button>
+      )}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          {editors.map((ed) => (
+            <ContextMenuItem
+              key={ed.id}
+              onClick={() => {
+                setMenu(null);
+                void open(ed.id);
+              }}
+            >
+              Open in {ed.label}
+              {ed.id === current.id && <Check size={13} className="ml-auto text-muted" />}
+            </ContextMenuItem>
+          ))}
+        </ContextMenu>
+      )}
+    </>
   );
 }
 

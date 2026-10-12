@@ -9,6 +9,7 @@ import {
   claudeAuthStatus,
   quarantineConfigCredential,
   readConfigCredential,
+  readJsonSync,
   readOAuthCreds,
 } from './claude';
 import { activeLogin, harnessLoginEnv, harnessSupportsMultiLogin, loginDir, DEFAULT_LOGIN_ID } from './logins';
@@ -66,14 +67,6 @@ function jwtClaims(idToken?: string): any {
   }
 }
 
-function readJson(file: string): any {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
 const SPECS: Record<HarnessId, AuthSpec> = {
   'claude-code': {
     // Non-REPL login (fact 5): `claude auth login` opens the browser, waits for
@@ -122,7 +115,7 @@ const SPECS: Record<HarnessId, AuthSpec> = {
     apiKeyEnv: 'OPENAI_API_KEY',
     apiKeyUrl: 'https://platform.openai.com/api-keys',
     async detect() {
-      const j = readJson(path.join(os.homedir(), '.codex', 'auth.json'));
+      const j = readJsonSync(path.join(os.homedir(), '.codex', 'auth.json'));
       const details: HarnessAuthDetail[] = [{ label: 'Provider', value: 'openai' }];
       if (j?.tokens?.access_token || j?.tokens?.id_token) {
         const claims = jwtClaims(j.tokens.id_token);
@@ -139,7 +132,11 @@ const SPECS: Record<HarnessId, AuthSpec> = {
   },
   cursor: {
     login: null, // Cursor connects via API key (matches Conductor)
-    install: 'curl https://cursor.com/install -fsSL | bash',
+    // Cursor's documented installers: bash script on macOS/Linux, PowerShell on Windows.
+    install:
+      process.platform === 'win32'
+        ? `powershell -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`
+        : 'curl https://cursor.com/install -fsSL | bash',
     apiKeyEnv: 'CURSOR_API_KEY',
     apiKeyUrl: 'https://cursor.com/settings',
     async detect(settings) {
@@ -156,7 +153,7 @@ const SPECS: Record<HarnessId, AuthSpec> = {
     apiKeyUrl: null,
     async detect() {
       const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-      const j = readJson(path.join(base, 'opencode', 'auth.json'));
+      const j = readJsonSync(path.join(base, 'opencode', 'auth.json'));
       const providers = j && typeof j === 'object' ? Object.keys(j) : [];
       return providers.length
         ? { connected: true, method: 'Provider login', details: [{ label: 'Providers', value: providers.join(', ') }] }
@@ -166,17 +163,18 @@ const SPECS: Record<HarnessId, AuthSpec> = {
   'kimi-code': {
     login: { file: 'kimi', args: [], send: '/login\r', label: 'kimi /login' },
     install: 'npm install -g @moonshot-ai/kimi-code',
-    apiKeyEnv: 'MOONSHOT_API_KEY',
+    // kimi only reads a key from env as KIMI_MODEL_API_KEY + KIMI_MODEL_NAME;
+    // the kimi adapter sets the name (BuildOpts.apiKeyMode).
+    apiKeyEnv: 'KIMI_MODEL_API_KEY',
     apiKeyUrl: 'https://platform.moonshot.ai/console/api-keys',
     async detect() {
-      const home = process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code');
-      for (const f of ['auth.json', 'credentials.json']) {
-        const j = readJson(path.join(home, f));
-        if (j && (j.access_token || j.accessToken || j.token || j.api_key || Object.keys(j).length > 0)) {
-          return { connected: true, method: 'Kimi Code login', details: [{ label: 'Provider', value: 'Moonshot AI' }] };
-        }
+      // /login stores the OAuth token as <home>/credentials/<provider>.json.
+      const dir = path.join(process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code'), 'credentials');
+      const tokens = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : [];
+      if (tokens.some((f) => Object.keys(readJsonSync(path.join(dir, f)) ?? {}).length > 0)) {
+        return { connected: true, method: 'Kimi Code login', details: [{ label: 'Provider', value: 'Moonshot AI' }] };
       }
-      return process.env.MOONSHOT_API_KEY
+      return process.env.KIMI_MODEL_API_KEY
         ? { connected: true, method: 'API key', details: [{ label: 'Provider', value: 'Moonshot AI' }] }
         : NONE;
     },
@@ -197,7 +195,7 @@ const SPECS: Record<HarnessId, AuthSpec> = {
       // OAuth tokens land adjacent), so probe the plausible names.
       const home = path.join(os.homedir(), '.grok');
       for (const f of ['credentials.json', 'auth.json']) {
-        const j = readJson(path.join(home, f));
+        const j = readJsonSync(path.join(home, f));
         if (j && Object.keys(j).length > 0) {
           return { connected: true, method: 'Grok sign-in', details: [{ label: 'Provider', value: 'xAI' }] };
         }

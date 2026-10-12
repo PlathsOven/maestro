@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
   Archive,
-  Book,
   Clock,
   Folder,
   FolderPlus,
@@ -29,7 +28,9 @@ import {
   Laptop,
 } from 'lucide-react';
 import { GitHubMark } from '../../shared/ui/brandIcons';
-import { EMPTY_ARR, useApp, useActiveProject, useCaps, useShowPr, LAYOUT_LIMITS, DEFAULT_LAYOUT, type LiveTurn } from '../store/app';
+import { EMPTY_ARR, useApp, useActiveProject, useCaps, useShowPr, type LiveTurn } from '../store/app';
+import { askingAgents, turnKey } from '../lib/liveTurn';
+import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
 import {
   ContextMenu,
   ContextMenuItem,
@@ -37,22 +38,23 @@ import {
   DetailRow,
   MenuDivider,
   MenuItem,
-  ReadUnreadMenu,
   RenameInput,
   Resizer,
   ScrollingTitle,
   SessionStatusDot,
   Spinner,
   StatusStack,
+  useCoversPreview,
   useDismiss,
   useHoverDetail,
 } from './common';
 import { Chevron, RepoIcon as SharedRepoIcon } from '../../shared/ui/primitives';
 import { GLASS_CONTROL, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { tryInvoke } from '../lib/api';
-import { fmtStat } from '../lib/format';
+import { fmtStat } from '../../shared/ui/format';
 import FeedbackPopover from './FeedbackPopover';
-import { mergeabilityUnknown, mergeFailureMessage } from '../lib/resolveConflicts';
+import { RailDropLine, setRowDragImage } from './ChatPanel';
+import { mergeabilityUnknown } from '../lib/resolveConflicts';
 import { StainedGlass } from '../../shared/ui/StainedGlass';
 import {
   INDICATOR_LABEL,
@@ -60,9 +62,10 @@ import {
   projectStatusCounts,
   sessionIndicator,
   workspaceStatusCounts,
-} from '../lib/status';
+} from '../../shared/ui/status';
 import type { ChatMeta, PrStatus, Project, Workspace } from '../../shared/types';
 import { chatDisplayTitle } from '../../shared/chatTitle';
+import { unwrapShellCommand } from '../../shared/harness/parse';
 
 export default function Sidebar() {
   const collapsed = useApp((s) => s.settings.sidebarCollapsed);
@@ -90,7 +93,11 @@ function ExpandedSidebar() {
   }, [activeProject?.id]);
 
   const archived = useMemo(
-    () => workspaces.filter((w) => w.projectId === activeProject?.id && w.archived),
+    () =>
+      workspaces
+        .filter((w) => w.projectId === activeProject?.id && w.archived)
+        // most recent first
+        .sort((a, b) => (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt)),
     [workspaces, activeProject?.id]
   );
   const attention = workspaces.filter((w) => !w.archived && w.status === 'needs-attention');
@@ -310,7 +317,7 @@ function ExpandedSidebar() {
         radius={16}
         {...GLASS_CONTROL}
         tint="light"
-        className="z-20 mx-2.5 mb-2.5 flex items-center gap-0.5 p-1"
+        className="sidebar-foot z-20 mx-2.5 mb-2.5 flex items-center gap-0.5 p-1"
       >
         <button className="btn btn-ghost flex-1 justify-start text-muted" onClick={() => setModal({ kind: 'settings' })}>
           <Settings size={13} /> Settings
@@ -340,6 +347,7 @@ function ExpandedSidebar() {
 
 /** Card popover that opens to the right of a thin-rail trigger. */
 function FlyoutPanel({ children, className }: { children: React.ReactNode; className?: string }) {
+  useCoversPreview(true);
   return (
     <div data-motion="pop" className={clsx('glass absolute left-full top-0 z-50 ml-2 origin-top-left overflow-hidden', className)}>
       {children}
@@ -589,11 +597,13 @@ function CollapsedProjectIcon({ project, active }: { project: Project; active: b
   const activeWsId = useApp((s) => s.activeWorkspaceId);
   const chatsMeta = useApp((s) => s.chatsMeta);
   const runningAgents = useApp((s) => s.runningAgents);
-  const counts = projectStatusCounts(workspaces, project.id, chatsMeta, runningAgents);
+  const asking = askingAgents(useApp((s) => s.pendingAsks));
+  const counts = projectStatusCounts(workspaces, project.id, chatsMeta, runningAgents, asking);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const list = workspaces.filter((w) => w.projectId === project.id && !w.archived);
+  useCoversPreview(!!rect);
 
   const clearTimer = () => {
     if (timer.current) clearTimeout(timer.current);
@@ -703,11 +713,15 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
   const activeWsId = useApp((s) => s.activeWorkspaceId);
   const chatsMeta = useApp((s) => s.chatsMeta);
   const runningAgents = useApp((s) => s.runningAgents);
+  const asking = askingAgents(useApp((s) => s.pendingAsks));
   const [menuOpen, setMenuOpen] = useState(false);
   const active = project.id === activeProjectId;
   const list = workspaces.filter((w) => w.projectId === project.id && !w.archived);
-  const counts = projectStatusCounts(workspaces, project.id, chatsMeta, runningAgents);
+  const counts = projectStatusCounts(workspaces, project.id, chatsMeta, runningAgents, asking);
   const { rect, hoverProps, hideHover } = useHoverDetail();
+  // Drag-to-reorder: the dragged workspace and the row it would take the slot of.
+  // Local state, so a drag only ever reorders within its own project.
+  const [drag, setDrag] = useState<{ from: string; over: string } | null>(null);
 
   return (
     <div data-motion="row" className="relative mb-0.5">
@@ -762,7 +776,7 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
             ) : (
               <div className="space-y-1">
                 {list.map((w) => {
-                  const wc = workspaceStatusCounts(w, chatsMeta[w.id], runningAgents[w.id] ?? EMPTY_ARR);
+                  const wc = workspaceStatusCounts(w, chatsMeta[w.id], runningAgents[w.id] ?? EMPTY_ARR, asking[w.id] ?? EMPTY_ARR);
                   return (
                     <div key={w.id} className="flex items-center gap-2 text-2xs">
                       <span className="min-w-0 flex-1 truncate text-muted">{w.title ?? w.branch}</span>
@@ -803,10 +817,8 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
                 confirmLabel: 'Remove',
                 danger: true,
                 onConfirm: () => {
-                  void import('../lib/api').then(({ tryInvoke }) =>
-                    tryInvoke('project:remove', { projectId: project.id, deleteWorkspaces: false }).then(() =>
-                      useApp.getState().refreshProjects()
-                    )
+                  void tryInvoke('project:remove', { projectId: project.id, deleteWorkspaces: false }).then(() =>
+                    useApp.getState().refreshProjects()
                   );
                 },
               });
@@ -818,9 +830,33 @@ function ProjectGroup({ project, expanded, onToggle }: { project: Project; expan
       )}
 
       {expanded && (
-        <div data-motion="collapse" className="ml-3 space-y-px pb-1 pl-1">
+        <div
+          data-motion="collapse"
+          className="ml-3 space-y-px pb-1 pl-1"
+          onDragStart={(e) => {
+            const row = e.target as HTMLElement;
+            if (!row.dataset.wsId) return;
+            setDrag({ from: row.dataset.wsId, over: row.dataset.wsId });
+            e.dataTransfer.effectAllowed = 'move';
+            setRowDragImage(e, row);
+          }}
+          onDragOver={(e) => {
+            const over = (e.target as HTMLElement).closest<HTMLElement>('[data-ws-id]')?.dataset.wsId;
+            if (!drag || !over) return;
+            e.preventDefault();
+            if (over !== drag.over) setDrag({ ...drag, over });
+          }}
+          onDrop={() => drag && useApp.getState().reorderWorkspace(drag.from, drag.over)}
+          onDragEnd={() => setDrag(null)}
+        >
           {list.map((ws, i) => (
-            <WorkspaceRow key={ws.id} ws={ws} index={active ? i : -1} active={ws.id === activeWsId} />
+            <WorkspaceRow
+              key={ws.id}
+              ws={ws}
+              index={active ? i : -1}
+              active={ws.id === activeWsId}
+              dropLine={drag?.over !== ws.id || drag.from === ws.id ? null : list.findIndex((w) => w.id === drag.from) < i ? 'after' : 'before'}
+            />
           ))}
           <NewWorkspaceButton project={project} />
         </div>
@@ -906,8 +942,8 @@ function NewWorkspaceButton({ project }: { project: Project }) {
 }
 
 /** Open (non-closed) sessions of a workspace, each with its display status. */
-function listSessions(chats: Record<string, ChatMeta> | undefined, running: number[]) {
-  const ids = new Set<number>(running);
+function listSessions(chats: Record<string, ChatMeta> | undefined, running: number[], asking: number[]) {
+  const ids = new Set<number>([...running, ...asking]);
   for (const k of Object.keys(chats ?? {})) ids.add(Number(k));
   return [...ids]
     .filter((id) => !chats?.[String(id)]?.closed)
@@ -917,7 +953,7 @@ function listSessions(chats: Record<string, ChatMeta> | undefined, running: numb
       // No messages in scope here; a title-less chat reads "New chat" until the
       // boot backfill fills it (§7). Never a synthetic "Chat N".
       title: chatDisplayTitle(chats?.[String(id)]),
-      status: sessionIndicator(chats?.[String(id)], running.includes(id)),
+      status: sessionIndicator(chats?.[String(id)], running.includes(id), asking.includes(id)),
     }));
 }
 
@@ -1017,7 +1053,7 @@ function WorkspacePrAction({ ws, view, hasChanges }: { ws: Workspace; view: PrVi
   if (view.state === 'OPEN') {
     const merge = async () => {
       setMerging(true);
-      await squashMergePr(ws.id, view.number);
+      await useApp.getState().squashMergePr(ws.id, view.number);
       setMerging(false);
     };
     return (
@@ -1056,13 +1092,20 @@ function WorkspaceRow({
   index,
   active,
   onNavigate,
+  dropLine,
 }: {
   ws: Workspace;
   index: number;
   active: boolean;
   onNavigate?: () => void;
+  /** Where the drag-to-reorder marker sits; undefined where rows aren't draggable (rail flyout). */
+  dropLine?: 'before' | 'after' | null;
 }) {
   const runningList = useApp((s) => s.runningAgents[ws.id]) ?? EMPTY_ARR;
+  const askingList = useApp((s) => askingAgents(s.pendingAsks)[ws.id]) ?? EMPTY_ARR;
+  const question = useApp((s) =>
+    askingList.length ? s.pendingAsks[turnKey(ws.id, askingList[0])]?.questions[0]?.question : undefined
+  );
   const chats = useApp((s) => s.chatsMeta[ws.id]);
   const project = useApp((s) => s.projects.find((p) => p.id === ws.projectId));
   const defaultCloudHost = useApp((s) => s.settings.cloud?.hostId ?? null);
@@ -1079,14 +1122,17 @@ function WorkspaceRow({
   const view = prView(ws, pr);
   const inPlace = ws.wsKind === 'in-place';
   const status = ws.status === 'idle' && runningList.length > 0 ? 'running' : ws.status;
-  const counts = workspaceStatusCounts(ws, chats, runningList);
+  const counts = workspaceStatusCounts(ws, chats, runningList, askingList);
   const merged = counts.merged > 0;
   // A clean open PR is one click from done — surface that as a green merge
   // button in the icon slot, same pattern as the merged→archive prompt.
   // "Clean" has to mean GitHub said so: while it's still computing mergeability
   // this button was the loudest place a conflicted PR read as ready to merge.
   const readyToMerge = showPr && !merged && view.state === 'OPEN' && !view.conflicting && !view.draft && !view.checking;
-  const sessions = listSessions(chats, runningList);
+  // Its conflicted counterpart. Shell workspaces have no agent to dispatch, so
+  // they keep the hover link to GitHub instead.
+  const needsResolve = showPr && !merged && view.state === 'OPEN' && view.conflicting && ws.harness !== 'shell';
+  const sessions = listSessions(chats, runningList, askingList);
 
   // Title from the first prompt; subtitle = live activity or last thing done.
   // In-place (folder) workspaces have no branch — fall back to the folder name.
@@ -1096,8 +1142,10 @@ function WorkspaceRow({
       ? inPlace
         ? 'Preparing workspace…'
         : 'Setting up worktree…'
-      : runningList.length > 0
-        ? liveActivity(liveTurn)
+      : question
+        ? `Asks: ${question}`
+        : runningList.length > 0
+          ? liveActivity(liveTurn)
         : (ws.subtitle ?? (ws.title ? (inPlace ? ws.name : ws.branch) : ws.name));
 
   const hasStat = !!stat && (stat.additions > 0 || stat.deletions > 0);
@@ -1137,11 +1185,16 @@ function WorkspaceRow({
         hideHover();
         setCtxMenu({ x: e.clientX, y: e.clientY });
       }}
+      data-ws-id={ws.id}
+      draggable={dropLine !== undefined && !editing}
+      onDragStart={hideHover}
       {...hoverProps}
     >
+      {dropLine && <RailDropLine edge={dropLine} />}
       <StatusStack counts={merged ? { ...counts, merged: 0 } : counts} />
       {merged && <ArchiveMergedButton ws={ws} />}
       {readyToMerge && <MergePrButton ws={ws} view={view} />}
+      {needsResolve && <ResolveConflictsButton ws={ws} />}
       {editing ? (
         <RenameInput
           initial={ws.branch}
@@ -1180,15 +1233,20 @@ function WorkspaceRow({
               </span>
             )}
           </div>
-          <div className={clsx('truncate text-2xs text-faint', runningList.length > 0 && 'text-st-running')}>
+          <div
+            className={clsx(
+              'truncate text-2xs text-faint',
+              question ? 'text-st-asking' : runningList.length > 0 && 'text-st-running'
+            )}
+          >
             {subtitle}
           </div>
         </div>
       )}
       {!editing && (
         <div className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex">
-          {/* ready-to-merge rows already carry a green merge button in the icon slot */}
-          {showPr && !readyToMerge && <WorkspacePrAction ws={ws} view={view} hasChanges={hasStat} />}
+          {/* ready-to-merge and conflicted rows already carry their PR action in the icon slot */}
+          {showPr && !readyToMerge && !needsResolve && <WorkspacePrAction ws={ws} view={view} hasChanges={hasStat} />}
           {/* merged rows already carry a purple archive button in the icon slot */}
           {!merged && (
             <button
@@ -1287,21 +1345,6 @@ function WorkspaceRow({
   );
 }
 
-/** Squash-merge the workspace's PR, surfacing the result as a toast. */
-async function squashMergePr(wsId: string, prNumber: number | null): Promise<void> {
-  const res = await tryInvoke('github:prMerge', { workspaceId: wsId, method: 'squash' });
-  if (res.error || !res.data?.ok) {
-    const base = useApp.getState().prStatus[wsId]?.baseRefName ?? '';
-    useApp.getState().toast('error', mergeFailureMessage(res.error ?? res.data?.error, base));
-    // Re-ask GitHub: a refusal means our cached mergeability was optimistic, and
-    // this row should stop offering a merge it can't do.
-    void useApp.getState().refreshPr(wsId, true);
-    return;
-  }
-  useApp.getState().toast('success', prNumber != null ? `PR #${prNumber} merged` : 'PR merged');
-  void useApp.getState().refreshPr(wsId, true);
-}
-
 /**
  * A ready-to-merge branch's icon slot: a green squash-merge button, the
  * counterpart of the merged→archive prompt. Without it an idle branch with a
@@ -1324,10 +1367,35 @@ function MergePrButton({ ws, view }: { ws: Workspace; view: PrView }) {
       onClick={(e) => {
         e.stopPropagation();
         setMerging(true);
-        void squashMergePr(ws.id, view.number).finally(() => setMerging(false));
+        void useApp.getState().squashMergePr(ws.id, view.number).finally(() => setMerging(false));
       }}
     >
       {merging ? <Spinner size={11} className="!text-current" /> : <GitMerge size={11} />}
+    </StainedGlass>
+  );
+}
+
+/**
+ * A conflicted PR's icon slot: an amber button that sends the agent to resolve
+ * the conflicts (the right panel's Resolve conflicts). The click bubbles to the
+ * row on purpose, opening the workspace so the resolving turn is visible.
+ */
+function ResolveConflictsButton({ ws }: { ws: Workspace }) {
+  const resolving = useApp((s) => !!s.resolvingPr[ws.id]);
+  const label = resolving ? 'The agent is resolving the conflicts…' : 'Merge conflicts — send the agent to resolve them';
+  return (
+    <StainedGlass
+      as="button"
+      tone="warn"
+      radius={5}
+      ripple={resolving}
+      className="flex h-[18px] w-[18px] shrink-0 items-center justify-center transition active:scale-95"
+      title={label}
+      aria-label={label}
+      disabled={resolving}
+      onClick={() => void useApp.getState().startConflictResolution(ws.id)}
+    >
+      {resolving ? <Spinner size={11} className="!text-current" /> : <GitMerge size={11} />}
     </StainedGlass>
   );
 }
@@ -1366,7 +1434,8 @@ function liveActivity(t: LiveTurn | undefined): string {
     const b = blocks[i];
     if (b.type === 'tool') {
       const input = (b.input ?? {}) as Record<string, unknown>;
-      if (b.name === 'Bash' && input.command) return `$ ${String(input.command).slice(0, 48)}`;
+      if ((b.name === 'Bash' || b.name === 'shell') && input.command)
+        return `$ ${unwrapShellCommand(String(input.command)).slice(0, 48)}`;
       const p = input.file_path ?? input.path ?? input.pattern ?? input.query;
       return p ? `${b.name} · ${String(p).split('/').pop()}` : b.name;
     }
@@ -1402,7 +1471,7 @@ function GhBadge() {
   }
   return (
     <button
-      className="flex items-center gap-1 rounded-ctl px-2 py-1 text-2xs text-warn hover:bg-accent-soft"
+      className="gh-signin flex items-center gap-1 rounded-ctl px-2 py-1 text-2xs text-warn hover:bg-accent-soft"
       title="Sign in with GitHub — enables cloning, PRs, checks and pushes"
       onClick={() => void useApp.getState().startGithubSignIn()}
     >
@@ -1421,7 +1490,3 @@ export function Menu({ children, onClose }: { children: React.ReactNode; onClose
     </div>
   );
 }
-
-// MenuItem / MenuDivider moved to the shared UI package (web-desktop-parity spec
-// §2.5); re-exported here so existing `./Sidebar` importers keep working.
-export { MenuItem, MenuDivider };

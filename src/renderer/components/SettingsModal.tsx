@@ -19,12 +19,13 @@ import { useApp, useActiveProject, useCaps } from '../store/app';
 import { DoctorRowLine, Kbd, Modal, Spinner, Toggle } from './common';
 import { SHORTCUTS, acceleratorFromEvent, formatShortcut, type ShortcutId } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
-import { COMPLETION_SOUNDS, SOUND_GROUP_ORDER, playCompletionSound } from '../lib/sounds';
-import { hostAddress, hostLabel } from '../lib/hosts';
-import { timeAgo } from '../lib/format';
+import { COMPLETION_SOUNDS, SOUND_GROUP_ORDER, playCompletionSound, playQuestionSound, resolveSoundId } from '../lib/sounds';
+import { hostLabel } from '../lib/hosts';
+import { timeAgo } from '../../shared/ui/format';
 import HarnessesTab, { SettingsRow, SettingsSection } from './HarnessesSettings';
 import { ThemePicker } from '../../shared/ui/ThemePicker';
 import { normalizeColorTheme } from '../../shared/themes';
+import { isEffectsMode, lowEndReason } from '../../shared/ui/effects';
 import type {
   AccountStatus,
   CloudStatus,
@@ -237,6 +238,9 @@ function ShortcutsTab() {
 function GeneralTab() {
   const settings = useApp((s) => s.settings);
   const harnesses = useApp((s) => s.harnesses);
+  const gpu = useApp((s) => s.gpu);
+  const effects = isEffectsMode(settings.visualEffects) ? settings.visualEffects : 'auto';
+  const lowEnd = lowEndReason(gpu);
   const save = (patch: Partial<GlobalSettings>) => void useApp.getState().saveSettings(patch);
 
   return (
@@ -254,6 +258,19 @@ function GeneralTab() {
             <option value="system">System</option>
             <option value="dark">Dark</option>
             <option value="light">Light</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow
+          label="Visual effects"
+          description={
+            'Glass and blur are drawn by your graphics card. Reduced swaps them for solid surfaces, which keeps Maestro smooth on older or integrated graphics.' +
+            (effects === 'auto' ? (lowEnd ? ` Auto is using Reduced on this device (${lowEnd}).` : ' Auto is using Full on this device.') : '')
+          }
+        >
+          <select className="input w-48" value={effects} onChange={(e) => save({ visualEffects: e.target.value as never })}>
+            <option value="auto">Auto</option>
+            <option value="full">Full</option>
+            <option value="reduced">Reduced</option>
           </select>
         </SettingsRow>
         <SettingsRow label="Default agent" description="Used for new conversations.">
@@ -289,6 +306,7 @@ function GeneralTab() {
           <input
             className="input w-48 font-mono text-xs"
             placeholder="code | cursor | subl…"
+            key={settings.ideCommand} // an "Open in" pick changes it from outside
             defaultValue={settings.ideCommand}
             onBlur={(e) => save({ ideCommand: e.target.value.trim() || 'code' })}
           />
@@ -296,16 +314,19 @@ function GeneralTab() {
       </SettingsSection>
 
       <SettingsSection title="Notifications">
-        <SettingsRow label="Notify when an agent finishes while Maestro is in the background">
+        <SettingsRow
+          label="Notify when an agent finishes or asks a question"
+          description="A notification in the background, a toast when it’s another workspace, and a dock badge for workspaces waiting on you"
+        >
           <Toggle checked={settings.notifications} onChange={(v) => save({ notifications: v })} />
         </SettingsRow>
         <SettingsRow
           label="Completion sound"
-          description="Plays when an agent finishes working in a chat — synthesized from Maestro’s orchestra, so it works offline."
+          description="Plays when an agent finishes working in a chat — modelled on real instruments and synthesized live, so it works offline."
         >
           <select
             className="input w-44"
-            value={settings.completionSound}
+            value={resolveSoundId(settings.completionSound)}
             onChange={(e) => {
               save({ completionSound: e.target.value });
               playCompletionSound(e.target.value); // preview the pick immediately
@@ -328,6 +349,27 @@ function GeneralTab() {
             onClick={() => playCompletionSound(settings.completionSound)}
             title="Play the selected sound"
             aria-label="Test sound"
+          >
+            <Volume2 size={14} />
+          </button>
+        </SettingsRow>
+        <SettingsRow
+          label="Question alert"
+          description="A distinct rising chime when an agent stops to ask you something — it can't continue until you answer."
+        >
+          <Toggle
+            checked={settings.questionSound}
+            onChange={(v) => {
+              save({ questionSound: v });
+              if (v) playQuestionSound();
+            }}
+          />
+          <button
+            className="btn btn-ghost h-8 w-8 shrink-0 !px-0"
+            disabled={!settings.questionSound}
+            onClick={() => playQuestionSound()}
+            title="Play the question alert"
+            aria-label="Test question alert"
           >
             <Volume2 size={14} />
           </button>

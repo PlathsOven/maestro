@@ -4,15 +4,14 @@
  * normalized `AgentEvent`s — lives here, free of node builtins and main-process
  * imports, so the desktop main process and the relay ingest run the *same code*
  * over the *same journal bytes* (G7). The main-process adapters
- * (`src/main/services/harness/*.ts`) import their `parseLine` from here and
- * re-export the shared helpers, so all existing call sites are untouched.
+ * (`src/main/services/harness/*.ts`) import their `parseLine` from here.
  */
 import type { AgentBlock, AgentEvent, BackgroundTaskStatus, ContextUsage, HarnessId } from '../types';
 import { GROK_EFFORT_LEVELS } from '../types';
 
 // ---------- shared pure helpers (moved from harness/adapter.ts) ----------
 
-export function extractResultText(content: unknown): string {
+function extractResultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
@@ -28,6 +27,37 @@ export function truncate(s: string, n = 600): string {
   return s.slice(0, n) + `\n… (${s.length - n} more chars)`;
 }
 
+/** A shell-wrapped invocation: `/bin/zsh -lc 'git status'`, `bash -c "…"`,
+ *  `cmd.exe /c …`, `pwsh -NoProfile -Command …`. */
+const SHELL_WRAPPER = /^\s*(?:\S*[\\/])?(?:(?:ba|z)?sh|cmd|pwsh|powershell)(?:\.exe)?(?:\s+-\w+)*?\s+(?:-l?c|\/c|-command)\s+([\s\S]+)$/i;
+
+/**
+ * The command a `shell` tool call actually ran. Codex (and Grok) report every
+ * command wrapped in a login shell, which buries the part worth reading behind
+ * `/bin/zsh -lc '…'` — so tool rows show the inner command. The raw invocation
+ * is untouched in the stored input. Anything that doesn't unwrap cleanly (an
+ * unbalanced quote, no wrapper) is returned as-is.
+ */
+export function unwrapShellCommand(cmd: string): string {
+  const m = SHELL_WRAPPER.exec(cmd);
+  if (!m) return cmd;
+  const inner = m[1].trim();
+  const q = inner[0];
+  if (q !== "'" && q !== '"') return inner;
+  if (inner.length < 2 || !inner.endsWith(q)) return cmd;
+  // Undo the shell's own quoting ('it'\''s' / 'it'"'"'s' → it's; "say \"hi\"" →
+  // say "hi"). A quote left bare means it was never one quoted argument
+  // (`'a' && echo 'b'`) — leave that alone.
+  const body = inner.slice(1, -1);
+  if (q === "'") {
+    const escaped = /'\\''|'"'"'/g;
+    if (body.replace(escaped, '').includes("'")) return cmd;
+    return body.replace(escaped, "'") || cmd;
+  }
+  if (/(^|[^\\])"/.test(body)) return cmd;
+  return body.replace(/\\(["\\$`])/g, '$1') || cmd;
+}
+
 /** Parse one NDJSON line to an object, or null on parse failure / non-object. */
 export function parseJsonLine(line: string): any {
   try {
@@ -39,7 +69,7 @@ export function parseJsonLine(line: string): any {
 }
 
 /** Best-effort JSON.parse for tool-call arguments that may arrive as a string. */
-export function parseArgs(raw: unknown): Record<string, unknown> {
+function parseArgs(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
   if (typeof raw === 'string') {
     try {
@@ -53,13 +83,13 @@ export function parseArgs(raw: unknown): Record<string, unknown> {
 }
 
 /** First non-empty string among candidate fields. */
-export function firstStr(...c: unknown[]): string | null {
+function firstStr(...c: unknown[]): string | null {
   for (const v of c) if (typeof v === 'string' && v) return v;
   return null;
 }
 
 /** First finite number among candidate fields. */
-export function firstNum(...c: unknown[]): number | undefined {
+function firstNum(...c: unknown[]): number | undefined {
   for (const v of c) if (typeof v === 'number' && Number.isFinite(v)) return v;
   return undefined;
 }

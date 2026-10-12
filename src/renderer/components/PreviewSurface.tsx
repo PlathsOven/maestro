@@ -7,6 +7,7 @@ import {
   Copy,
   ExternalLink,
   Globe,
+  History,
   Lock,
   MoreVertical,
   PenLine,
@@ -18,13 +19,15 @@ import {
 } from 'lucide-react';
 import { invoke, tryInvoke } from '../lib/api';
 import { useApp } from '../store/app';
-import { Menu, MenuItem, MenuDivider } from './Sidebar';
-import { Segmented } from './common';
+import { Menu } from './Sidebar';
+import { MenuItem, MenuDivider, Segmented } from './common';
 import { StainedDot } from '../../shared/ui/StainedGlass';
 import AnnotateOverlay from './AnnotateOverlay';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
-import type { ConsoleEntry, ConsoleLevel, Workspace } from '../../shared/types';
+import type { ConsoleEntry, ConsoleLevel, LocalServer, Workspace } from '../../shared/types';
+import { recentPreviewUrls } from '../lib/previewRecent';
+import { copyText } from '../lib/clipboard';
 
 type Rect = { x: number; y: number; width: number; height: number };
 const rectOf = (r: DOMRect): Rect => ({ x: r.left, y: r.top, width: r.width, height: r.height });
@@ -35,14 +38,14 @@ const isRefused = (e?: { code: number; description: string } | null) =>
  * The Preview center surface (§5): a toolbar + an OS-composited `WebContentsView`
  * that floats above this placeholder. Because the view sits above the DOM, we
  * hide it (setVisible) whenever an overlay owns the screen — a modal, the command
- * palette, annotate mode, an error card, the toolbar's overflow menu, or another
- * center mode.
+ * palette, a sidebar popover or hover card, annotate mode, an error card, the
+ * toolbar's overflow menu, or another center mode.
  */
 export default function PreviewSurface({ workspace, active }: { workspace: Workspace; active: boolean }) {
   const wsId = workspace.id;
   const preview = useApp((s) => s.previewByWs[wsId]);
   const annotating = useApp((s) => s.annotate?.wsId === wsId);
-  const overlayOwnsScreen = useApp((s) => s.modal !== null || s.paletteOpen);
+  const overlayOwnsScreen = useApp((s) => s.modal !== null || s.paletteOpen || s.popovers > 0 || s.feedbackPanel.open);
   const layout = useApp((s) => s.layout);
   const agentId = useApp((s) => s.composerAgent[wsId] ?? 1);
   const runScripts = useApp((s) => s.runScripts[wsId]);
@@ -269,7 +272,7 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
                 </MenuItem>
                 <MenuItem
                   onClick={() => {
-                    void navigator.clipboard?.writeText(preview?.url ?? '');
+                    void copyText(preview?.url ?? '');
                     setOverflow(false);
                   }}
                 >
@@ -300,13 +303,14 @@ export default function PreviewSurface({ workspace, active }: { workspace: Works
         {live && err && (
           refused ? (
             <ErrorCard
+              workspace={workspace}
               title={`Nothing is listening on :${workspace.port}`}
               body="Start the workspace's dev server — this card flips to the app the moment the port is up."
               onStart={startDevServer}
               onRetry={() => navigate('goto', preview?.url || `http://localhost:${workspace.port}`)}
             />
           ) : (
-            <div className="absolute inset-x-3 top-3 z-10 flex items-center gap-2 rounded-ctl bg-warn/10 px-4 py-2 text-2xs text-warn backdrop-blur">
+            <div className="absolute inset-x-3 top-3 z-10 flex items-center gap-2 rounded-ctl bg-warn/10 px-4 py-2 text-2xs text-warn backdrop-blur fx-solid-warn">
               <AlertTriangle size={13} className="shrink-0" />
               <span className="min-w-0 flex-1 truncate">
                 {err.description} ({err.code}) — {err.url}
@@ -382,17 +386,81 @@ function EmptyCard({
             No run script yet — add one from the Run dock so “Start” knows how to launch your server.
           </div>
         )}
+        <OtherPages workspace={workspace} />
       </div>
     </div>
   );
 }
 
+/**
+ * Where else the preview could point: web servers running on this machine
+ * (a dev server that picked another port, a sibling project) and this
+ * project's recently previewed pages that could load right now. Polled while
+ * the card is up, so a server started meanwhile just appears.
+ */
+function OtherPages({ workspace }: { workspace: Workspace }) {
+  const [servers, setServers] = useState<LocalServer[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const scan = () =>
+      void tryInvoke('preview:servers', { workspaceId: workspace.id }).then((r) => alive && setServers(r.data ?? []));
+    scan();
+    const t = setInterval(scan, 4_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [workspace.id]);
+
+  const running = servers.filter((s) => s.port !== workspace.port);
+  const up = new Set([workspace.port, ...servers.map((s) => s.port)].map(String));
+  const recent = recentPreviewUrls(workspace.projectId)
+    .filter((u) => {
+      const { hostname, port } = new URL(u);
+      return hostname !== 'localhost' || up.has(port); // a dead local port would just refuse
+    })
+    .slice(0, 5);
+  if (!running.length && !recent.length) return null;
+
+  const open = (url: string) => useApp.getState().openPreview(workspace.id, url);
+  const row = 'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent-soft';
+  return (
+    <div className="mt-3 w-72 space-y-3 text-left">
+      {running.length > 0 && (
+        <div>
+          <div className="px-2.5 pb-1 text-2xs text-faint">Running on this machine</div>
+          {running.map((s) => (
+            <button key={s.port} className={row} onClick={() => open(`http://localhost:${s.port}`)}>
+              <StainedDot tone="running" size={6} />
+              <span className="font-mono text-fg">localhost:{s.port}</span>
+              <span className="ml-auto truncate text-2xs text-faint">{s.process}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {recent.length > 0 && (
+        <div>
+          <div className="px-2.5 pb-1 text-2xs text-faint">Recent</div>
+          {recent.map((u) => (
+            <button key={u} className={row} onClick={() => open(u)}>
+              <History size={12} className="shrink-0 text-faint" />
+              <span className="truncate font-mono text-muted">{u.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ErrorCard({
+  workspace,
   title,
   body,
   onStart,
   onRetry,
 }: {
+  workspace: Workspace;
   title: string;
   body: string;
   onStart: () => void;
@@ -414,6 +482,7 @@ function ErrorCard({
             <RotateCw size={12} /> Retry
           </button>
         </div>
+        <OtherPages workspace={workspace} />
       </div>
     </div>
   );

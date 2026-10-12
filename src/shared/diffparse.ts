@@ -1,115 +1,123 @@
-import type { DiffFile, DiffHunk, DiffLine, GitStatusSummary } from './types';
+import type { DiffFile, DiffHunk, GitStatusSummary } from './types';
 
 /**
- * Pure parsers for the box-side git report (web-desktop-parity spec §9.6): the
- * relay can't use the main-process git module, so it parses the raw `git diff`
- * patch + `git status --porcelain=v2 --branch` the box shim posts. Shared so a
- * test (and any other consumer) uses one implementation. No node imports.
+ * Pure git output parsers, shared by the desktop's git service and the relay
+ * (web-desktop-parity spec §9.6: the relay parses the raw `git diff` patch +
+ * `git status --porcelain=v2 --branch` the box shim posts), so both sides turn
+ * the same patch into the same DiffFile[]. No node imports.
  */
 
-function stripPrefix(p: string): string {
-  if (p === '/dev/null') return p;
-  return p.replace(/^[ab]\//, '');
+function unquoteGitPath(p: string): string {
+  if (p.startsWith('"') && p.endsWith('"')) {
+    try {
+      return JSON.parse(p);
+    } catch {
+      return p.slice(1, -1);
+    }
+  }
+  return p;
 }
 
-const STATUS_FROM_LETTER: Record<string, DiffFile['status']> = {
-  A: 'added',
-  M: 'modified',
-  D: 'deleted',
-  R: 'renamed',
-  C: 'modified',
-  U: 'modified',
-  T: 'modified',
-};
+function stripPrefix(p: string): string {
+  const un = unquoteGitPath(p);
+  if (un === '/dev/null') return un;
+  return un.replace(/^[ab]\//, '');
+}
 
-/** Parse a unified `git diff base...HEAD` patch into structured DiffFile[]. */
-export function parseUnifiedDiff(patch: string, base = ''): { base: string; files: DiffFile[] } {
+/** Parse a unified `git diff` patch into structured DiffFile[]. Handles quoted
+ *  (non-ASCII) paths, renames, binary files and "\\ No newline" meta rows. */
+export function parseUnifiedDiff(text: string): DiffFile[] {
   const files: DiffFile[] = [];
-  const lines = patch.split('\n');
+  const lines = text.split('\n');
   let cur: DiffFile | null = null;
   let hunk: DiffHunk | null = null;
-  let oldLine = 0;
-  let newLine = 0;
+  let oldLn = 0;
+  let newLn = 0;
+  let renameFrom: string | null = null;
 
-  const pushHunk = () => {
-    if (cur && hunk) cur.hunks.push(hunk);
-    hunk = null;
-  };
-  const pushFile = () => {
-    pushHunk();
+  const flushFile = () => {
     if (cur) files.push(cur);
     cur = null;
+    hunk = null;
+    renameFrom = null;
   };
 
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      pushFile();
-      const m = /^diff --git (.+) (.+)$/.exec(line);
-      const newPath = m ? stripPrefix(m[2]) : '';
-      cur = { path: newPath, oldPath: null, status: 'modified', additions: 0, deletions: 0, hunks: [] };
+  for (const raw of lines) {
+    if (raw.startsWith('diff --git ')) {
+      flushFile();
+      // "diff --git a/path b/path" (possibly quoted)
+      const m = raw.match(/^diff --git (.+) (.+)$/);
+      const bPath = m ? stripPrefix(m[2]) : 'unknown';
+      cur = { path: bPath, oldPath: null, status: 'modified', additions: 0, deletions: 0, hunks: [] };
       continue;
     }
     if (!cur) continue;
-    if (line.startsWith('new file mode')) {
-      cur.status = 'added';
+    const c: DiffFile = cur;
+    if (raw.startsWith('new file mode')) {
+      c.status = 'added';
       continue;
     }
-    if (line.startsWith('deleted file mode')) {
-      cur.status = 'deleted';
+    if (raw.startsWith('deleted file mode')) {
+      c.status = 'deleted';
       continue;
     }
-    if (line.startsWith('rename from ')) {
-      cur.oldPath = line.slice('rename from '.length).trim();
-      cur.status = 'renamed';
+    if (raw.startsWith('rename from ')) {
+      renameFrom = raw.slice('rename from '.length);
       continue;
     }
-    if (line.startsWith('rename to ')) {
-      cur.path = line.slice('rename to '.length).trim();
+    if (raw.startsWith('rename to ')) {
+      c.status = 'renamed';
+      c.oldPath = renameFrom ? unquoteGitPath(renameFrom) : null;
+      c.path = unquoteGitPath(raw.slice('rename to '.length));
       continue;
     }
-    if (line.startsWith('Binary files')) {
-      cur.status = cur.status === 'added' ? 'added' : cur.status === 'deleted' ? 'deleted' : 'binary';
+    if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
+      c.status = c.status === 'added' ? 'added' : c.status === 'deleted' ? 'deleted' : 'binary';
+      if (c.hunks.length === 0) c.hunks = [];
       continue;
     }
-    if (line.startsWith('--- ')) {
-      const p = stripPrefix(line.slice(4).trim());
-      if (p !== '/dev/null' && cur.oldPath == null && cur.status !== 'renamed') cur.oldPath = p === cur.path ? null : p;
+    if (raw.startsWith('--- ')) {
+      const p = stripPrefix(raw.slice(4).trim());
+      if (p !== '/dev/null' && !c.oldPath && c.status === 'renamed') c.oldPath = p;
       continue;
     }
-    if (line.startsWith('+++ ')) {
-      const p = stripPrefix(line.slice(4).trim());
-      if (p !== '/dev/null') cur.path = p;
+    if (raw.startsWith('+++ ')) {
+      const p = stripPrefix(raw.slice(4).trim());
+      if (p !== '/dev/null') c.path = p;
       continue;
     }
-    if (line.startsWith('@@')) {
-      pushHunk();
-      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
-      oldLine = m ? Number(m[1]) : 0;
-      newLine = m ? Number(m[2]) : 0;
-      hunk = { header: line, lines: [] };
+    if (raw.startsWith('@@')) {
+      const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (!m) continue;
+      oldLn = parseInt(m[1], 10);
+      newLn = parseInt(m[2], 10);
+      hunk = { header: raw, lines: [] };
+      c.hunks.push(hunk);
       continue;
     }
     if (!hunk) continue;
-    const kind = line[0];
-    const text = line.slice(1);
-    if (kind === '+') {
-      hunk.lines.push({ kind: 'add', oldLine: null, newLine, text });
-      newLine++;
-      cur.additions++;
-    } else if (kind === '-') {
-      hunk.lines.push({ kind: 'del', oldLine, newLine: null, text });
-      oldLine++;
-      cur.deletions++;
-    } else if (kind === ' ') {
-      hunk.lines.push({ kind: 'context', oldLine, newLine, text });
-      oldLine++;
-      newLine++;
-    } else if (kind === '\\') {
-      // "\ No newline at end of file" — ignore.
+    if (raw.startsWith('+')) {
+      hunk.lines.push({ kind: 'add', oldLine: null, newLine: newLn++, text: raw.slice(1) });
+      c.additions++;
+    } else if (raw.startsWith('-')) {
+      hunk.lines.push({ kind: 'del', oldLine: oldLn++, newLine: null, text: raw.slice(1) });
+      c.deletions++;
+    } else if (raw.startsWith(' ')) {
+      hunk.lines.push({ kind: 'context', oldLine: oldLn++, newLine: newLn++, text: raw.slice(1) });
+    } else if (raw.startsWith('\\')) {
+      hunk.lines.push({ kind: 'meta', oldLine: null, newLine: null, text: raw });
     }
   }
-  pushFile();
-  return { base, files };
+  flushFile();
+  // status refinement for /dev/null cases
+  for (const f of files) {
+    if (isNewFile(f) && f.status === 'modified') f.status = 'added';
+  }
+  return files;
+}
+
+function isNewFile(f: DiffFile): boolean {
+  return f.hunks.length > 0 && f.hunks.every((h) => h.lines.every((l) => l.kind !== 'del' && l.kind !== 'context'));
 }
 
 /** A short status letter (A/M/D/R/U) for the Changes list, from a DiffFile. */
@@ -150,6 +158,3 @@ export function parsePorcelainV2(text: string): GitStatusSummary {
   const changedFiles = staged + unstaged + untracked;
   return { branch, ahead, behind, staged, unstaged, untracked, changedFiles, dirty: changedFiles > 0 };
 }
-
-/** Type re-exports for consumers that only import from here. */
-export type { DiffFile, DiffLine, DiffHunk, GitStatusSummary };

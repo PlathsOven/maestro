@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { ExecHost } from '../hosts/types';
+import { ensureShim, forgetShim, homeFor, shq } from '../hosts/posix';
 
 /**
  * `maestro-sync` — the box-side sync loop (mobile-web-app spec §6.5). Sibling of
@@ -14,23 +15,6 @@ import type { ExecHost } from '../hosts/types';
  * both only ever CREATE queue files (never overwrite), so the `turnId` suffix
  * keeps names unique across the two writers (§6.5 filename note).
  */
-
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-const homeCache = new Map<string, Promise<string>>();
-function homeFor(host: ExecHost): Promise<string> {
-  let p = homeCache.get(host.id);
-  if (!p) {
-    p = host
-      .exec('sh', ['-lc', 'printf %s "$HOME"'])
-      .then((r) => r.stdout.trim() || '.')
-      .catch(() => '.');
-    homeCache.set(host.id, p);
-  }
-  return p;
-}
 
 /**
  * The shim. ~180 lines of POSIX sh + curl. Reads `~/.maestro/sync.url` +
@@ -117,6 +101,12 @@ enc() { base64 2>/dev/null | tr -d '\\n'; }
 valid() { case "$1" in *[!A-Za-z0-9_:-]*) return 1;; '') return 1;; *) return 0;; esac }
 
 # --- push journal deltas, one chat dir at a time ---
+#     A 404 means the relay has no such chat for this box (archived — the desktop
+#     deletes it, web-neon-usage-diet §3.5 — or not published yet). It used to fail
+#     the whole cycle: every later chat stopped syncing, and the retry (once a
+#     minute, forever) was a Postgres read that kept Neon awake 24/7
+#     (neon-idle-compute). Now the chat is parked at its journal size and retried
+#     only when the journal grows; its offset never moved, so nothing is lost. ---
 push_journals() {
   for wsdir in "$BASE"/*/; do
     [ -d "$wsdir" ] || continue
@@ -129,6 +119,8 @@ push_journals() {
       offf="$adir""sync.offset"
       offset=$(cat "$offf" 2>/dev/null); [ -n "$offset" ] || offset=0
       size=$(wc -c < "$journal" 2>/dev/null | tr -d ' '); [ -n "$size" ] || size=0
+      nff="$adir"".nf"
+      [ -f "$nff" ] && [ "$size" = "$(cat "$nff" 2>/dev/null)" ] && continue
       if [ "$size" -lt "$offset" ]; then
         api POST /api/box/rotated -H "Content-Type: application/json" \\
           --data "{\\"conversationId\\":\\"$conv\\"}" >/dev/null 2>&1
@@ -137,9 +129,16 @@ push_journals() {
       while [ "$size" -gt "$offset" ]; do
         avail=$((size - offset)); send=$avail
         [ "$send" -gt 524288 ] && send=524288
-        resp=$(tail -c +$((offset + 1)) "$journal" | head -c "$send" | api POST /api/box/journal \\
+        out=$(tail -c +$((offset + 1)) "$journal" | head -c "$send" | api_code POST /api/box/journal \\
           -H "maestro-conversation: $conv" -H "maestro-from-offset: $offset" \\
           -H "Content-Type: application/octet-stream" --data-binary @-)
+        code=$(printf '%s' "$out" | tail -n 1)
+        resp=$(printf '%s' "$out" | sed '$d')
+        case "$code" in
+          401) token_revoked; return 1;;
+          404) echo "$size" > "$nff"; continue 2;;
+        esac
+        [ -f "$nff" ] && rm -f "$nff"
         exp=$(printf '%s' "$resp" | grep -o '"expectedOffset":[0-9]*' | grep -o '[0-9]*')
         if [ -n "$exp" ]; then echo "$exp" > "$offf"; offset="$exp"; continue; fi
         nxt=$(printf '%s' "$resp" | grep -o '"nextOffset":[0-9]*' | grep -o '[0-9]*')
@@ -320,9 +319,10 @@ MIN_CYCLE=3
 QD=0
 fails=0
 # A fresh loop (new link, new shim, desktop boot) can't know what the relay holds,
-# so forget the git change-gate stamps: each workspace re-reports exactly once
-# (web-neon-usage-diet §3.1) and then goes quiet again until something changes.
-rm -f "$BASE"/*/.githash 2>/dev/null
+# so forget the git change-gate stamps and the journal 404 parks: each workspace
+# re-reports and each parked chat retries exactly once (web-neon-usage-diet §3.1),
+# then goes quiet again until something changes.
+rm -f "$BASE"/*/.githash "$BASE"/*/*/.nf 2>/dev/null
 while still_ours; do
   started=$(date +%s 2>/dev/null || echo 0)
   [ -n "$TRACE" ] && echo cycle >> "$TRACE"
@@ -346,21 +346,10 @@ done
 `;
 
 export const SYNC_HASH = crypto.createHash('sha256').update(SYNC_SH).digest('hex').slice(0, 12);
-const shimUploaded = new Set<string>(); // `${hostId}:${hash}`
 
 /** Upload maestro-sync once per (host, content-hash). Returns its box path. */
-export async function ensureSyncShim(host: ExecHost): Promise<string> {
-  const home = await homeFor(host);
-  const bin = host.path.join(home, '.maestro', 'bin');
-  const shim = host.path.join(bin, 'maestro-sync');
-  const key = `${host.id}:${SYNC_HASH}`;
-  if (!shimUploaded.has(key)) {
-    await host.fs.mkdirp(bin);
-    await host.fs.write(shim, SYNC_SH);
-    await host.fs.chmod(shim, 0o755);
-    shimUploaded.add(key);
-  }
-  return shim;
+function ensureSyncShim(host: ExecHost): Promise<string> {
+  return ensureShim(host, 'maestro-sync', SYNC_SH, SYNC_HASH);
 }
 
 async function lockDir(host: ExecHost): Promise<string> {
@@ -382,7 +371,7 @@ async function runningSync(host: ExecHost): Promise<string | null> {
 }
 
 /** Is the sync loop alive (lock pid points at a live process)? */
-export async function syncAlive(host: ExecHost): Promise<boolean> {
+async function syncAlive(host: ExecHost): Promise<boolean> {
   return (await runningSync(host)) !== null;
 }
 
@@ -436,12 +425,12 @@ export async function teardownSync(host: ExecHost): Promise<void> {
         `rm -f ${shq(host.path.join(mdir, 'sync.token'))} ${shq(host.path.join(mdir, 'sync.url'))} ${shq(host.path.join(mdir, 'bin', 'maestro-sync'))} 2>/dev/null; true`,
     ])
     .catch(() => {});
-  shimUploaded.clear();
+  forgetShim('maestro-sync');
 }
 
 /** The exact crontab lines the "keep running after reboots" option installs,
  *  shown to the user verbatim before writing (§6.5). */
-export function syncCrontabLines(): string[] {
+function syncCrontabLines(): string[] {
   const launch = `sh "$HOME/.maestro/bin/maestro-sync"`;
   return [
     `@reboot MAESTRO_SYNC_HASH=${SYNC_HASH} ${launch} >/dev/null 2>&1`,

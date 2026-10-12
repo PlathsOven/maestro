@@ -356,16 +356,6 @@ async function ensureSession(
   }
 }
 
-export async function startKernel(
-  wsId: string,
-  worktreePath: string,
-  relPath: string
-): Promise<{ ok: boolean; status: KernelStatus; error?: string }> {
-  const { session, error } = await ensureSession(wsId, worktreePath, relPath);
-  if (!session) return { ok: false, status: 'none', error };
-  return { ok: true, status: session.status };
-}
-
 export async function executeCell(
   wsId: string,
   worktreePath: string,
@@ -395,15 +385,6 @@ export async function restartKernel(
   }
   const { session, error } = await ensureSession(wsId, worktreePath, relPath);
   return session ? { ok: true } : { ok: false, error };
-}
-
-export function shutdownKernel(wsId: string, relPath: string): void {
-  const key = keyOf(wsId, relPath);
-  const s = sessions.get(key);
-  if (s) {
-    s.shutdown();
-    sessions.delete(key);
-  }
 }
 
 export function kernelStatus(wsId: string, relPath: string): { status: KernelStatus; kernelName?: string } {

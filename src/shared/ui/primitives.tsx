@@ -3,7 +3,8 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'reac
 import clsx from 'clsx';
 import { GLASS_CONTROL, LiquidGlass } from './LiquidGlass';
 import { StainedDot, type GlassTone } from './StainedGlass';
-import { Book, Check, ChevronRight, Circle, Star } from 'lucide-react';
+import { useFullEffects } from './effects';
+import { Book, Check, ChevronRight, Star } from 'lucide-react';
 import type { EffortLevel, WorkspaceStatus } from '../types';
 import { INDICATOR_LABEL, INDICATOR_ORDER, type IndicatorStatus, type StatusCounts } from './status';
 
@@ -30,10 +31,11 @@ export function StatusDot({ status, pulse = true }: { status: WorkspaceStatus; p
 
 /**
  * One status dot of the unified indicator system (blue running / green unread /
- * yellow waiting / purple merged) in stained glass: the backdrop seen through
- * the status colour. Running dots emit a stained-glass ripple. When it
- * represents several sessions or branches (`count` > 1), the count is shown
- * inside the dot.
+ * yellow waiting / purple merged / pink asking) in stained glass: the backdrop
+ * seen through the status colour. Running dots emit a stained-glass ripple; the
+ * asking dot carries a "?" and nudges instead, so a blocked agent never reads as
+ * a busy one. When it represents several sessions or branches (`count` > 1),
+ * the count is shown inside the dot.
  */
 export function StatusCircle({
   status,
@@ -47,11 +49,11 @@ export function StatusCircle({
   return (
     <span
       title={count > 1 ? `${INDICATOR_LABEL[status]} × ${count}` : INDICATOR_LABEL[status]}
-      className="flex shrink-0"
+      className={clsx('flex shrink-0', status === 'asking' && 'ask-glyph')}
       style={{ fontSize: Math.max(7, Math.round(size * 0.62)) }}
     >
       <StainedDot tone={status} size={size} ripple={status === 'running'}>
-        {count > 1 ? (count > 9 ? '9+' : count) : ''}
+        {count > 1 ? (count > 9 ? '9+' : count) : status === 'asking' ? '?' : ''}
       </StainedDot>
     </span>
   );
@@ -110,6 +112,24 @@ export function SessionStatusDot({ status, size = 9 }: { status: IndicatorStatus
  */
 export function Spinner({ className, size = 14 }: { className?: string; size?: number }) {
   const id = `lq-${useId().replace(/[^a-zA-Z0-9-]/g, '')}`;
+  // The droplets animate SVG children through a lighting filter, which is
+  // repainted on the main thread every frame. Reduced effects spin the whole
+  // icon instead: a transform on the <svg> box the compositor runs alone.
+  if (!useFullEffects()) {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        role="status"
+        aria-label="Loading"
+        className={clsx('spin shrink-0 text-muted', className)}
+      >
+        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeOpacity="0.22" strokeWidth="2.2" />
+        <path d="M12 4a8 8 0 0 1 8 8" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
   return (
     <svg
       width={size}
@@ -589,6 +609,62 @@ export function Kbd({ children }: { children: React.ReactNode }) {
     <kbd className="inline-flex items-center rounded-md border bg-raised px-1 text-2xs font-medium text-muted">
       {children}
     </kbd>
+  );
+}
+
+/**
+ * Inline single-line rename field: autofocuses and selects its text, commits on
+ * Enter or blur, cancels on Escape, and swallows pointer events so the row
+ * underneath doesn't navigate. commit/cancel fire exactly once.
+ */
+export function RenameInput({
+  initial,
+  onCommit,
+  onCancel,
+  mono,
+  className = 'h-6 w-full min-w-0 flex-1 px-1.5 text-[13px]',
+}: {
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+  mono?: boolean;
+  /** sizing/shape; replaces the default row-fitting size. */
+  className?: string;
+}) {
+  const [value, setValue] = useState(initial);
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (commit) onCommit(value.trim());
+    else onCancel();
+  };
+  return (
+    <input
+      ref={ref}
+      value={value}
+      spellCheck={false}
+      className={clsx('input py-0', className, mono && 'font-mono')}
+      onChange={(e) => setValue(e.target.value)}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+      onBlur={() => finish(true)}
+    />
   );
 }
 

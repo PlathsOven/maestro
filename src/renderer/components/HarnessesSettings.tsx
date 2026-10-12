@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { KeyRound, Play, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
 import { invoke, on, tryInvoke } from '../lib/api';
+import { useHarnessPty } from '../lib/useHarnessPty';
 import { useApp } from '../store/app';
 import { ApiKeyField, Segmented, Spinner, Toggle } from './common';
 import AuthFix from './AuthFix';
@@ -117,8 +118,6 @@ function HarnessAuthPanel({ harness }: { harness: HarnessId }) {
   const [auth, setAuth] = useState<HarnessAuth | null>(null);
   const [logins, setLogins] = useState<HarnessLogins | null>(null);
   const [loading, setLoading] = useState(true);
-  const [ptyId, setPtyId] = useState<string | null>(null);
-  const [installPty, setInstallPty] = useState<string | null>(null);
   const [installCmd, setInstallCmd] = useState<string | null>(null);
   const [installFailed, setInstallFailed] = useState(false);
   const [keyDraft, setKeyDraft] = useState(settings.harnessApiKeys?.[harness] ?? '');
@@ -146,73 +145,56 @@ function HarnessAuthPanel({ harness }: { harness: HarnessId }) {
   // rotate, or a profile filled in) — re-read the rows.
   useEffect(() => on('harness:logins', ({ harness: h }) => h === harness && void loadLogins()), [harness, loadLogins]);
 
+  // Never leave a login or install pty running when the panel unmounts or the
+  // harness switches (login is declared first, so it's stopped first).
   // A finished login terminal (browser flow returned / user quit) → re-probe.
-  useEffect(() => {
-    if (!ptyId) return;
-    return on('pty:exit', ({ id }) => {
-      if (id === ptyId) void refresh();
-    });
-  }, [ptyId, refresh]);
+  const login = useHarnessPty('login', harness, () => void refresh(), [refresh]);
+  const ptyId = login.ptyId;
 
   // Installer exited → re-probe. A now-detected CLI is success (the panel flips
   // to its login/API-key state); otherwise the terminal shows what failed —
   // leave it up and offer a retry.
-  useEffect(() => {
-    if (!installPty) return;
-    return on('pty:exit', ({ id }) => {
-      if (id !== installPty) return;
+  const install = useHarnessPty(
+    'install',
+    harness,
+    () =>
       void (async () => {
         const { data } = await tryInvoke('harness:auth', { harness });
         if (data) setAuth(data);
         if (data?.installed) {
           toast('success', `${data.displayName} installed`);
-          setInstallPty(null);
+          install.clear();
           setInstallCmd(null);
           void refreshHarnesses(true); // model pickers/composer see it too
         } else {
           setInstallFailed(true);
         }
-      })();
-    });
-  }, [installPty, harness, toast, refreshHarnesses]);
-
-  // Never leave a login or install pty running when the panel unmounts or the
-  // harness switches.
-  useEffect(
-    () => () => {
-      void invoke('harness:loginStop', { harness });
-      void invoke('harness:installStop', { harness });
-    },
-    [harness]
+      })(),
+    [harness, toast, refreshHarnesses]
   );
+  const installPty = install.ptyId;
 
   const startInstall = async () => {
     setInstallFailed(false);
-    const { data, error } = await tryInvoke('harness:installStart', { harness });
+    const { data, error } = await install.start();
     if (error) return toast('error', error);
-    if (data) {
-      setInstallCmd(data.cmd);
-      setInstallPty(data.ptyId);
-    }
+    if (data) setInstallCmd(data.cmd);
   };
 
   const cancelInstall = async () => {
-    await invoke('harness:installStop', { harness });
-    setInstallPty(null);
+    await install.stop();
     setInstallCmd(null);
     setInstallFailed(false);
     void refresh();
   };
 
   const startLogin = async (loginId?: string) => {
-    const { data, error } = await tryInvoke('harness:loginStart', { harness, loginId });
+    const { error } = await login.start({ loginId });
     if (error) return toast('error', error);
-    if (data) setPtyId(data.ptyId);
   };
 
   const closeLogin = async () => {
-    await invoke('harness:loginStop', { harness });
-    setPtyId(null);
+    await login.stop();
     void refresh();
   };
 

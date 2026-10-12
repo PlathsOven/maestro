@@ -30,16 +30,21 @@ const MAX_NOTEBOOK = 25 * 1024 * 1024;
  * Images come back as a `data:` URL; text as UTF-8; anything else (binary, too
  * big, missing, or outside the worktree) as `kind: 'binary'` so the renderer
  * falls back to opening it in the OS default app.
+ *
+ * Images also carry a `version` (mtime + size); pass it back as `ifVersion` and
+ * an unchanged image answers `{ unchanged: true }` after just the stat, so the
+ * renderer can cheaply re-check a cached image an agent may have overwritten.
  */
 export async function readAttachment(
   worktreePath: string,
   relPath: string,
-  host: ExecHost = localHost
+  host: ExecHost = localHost,
+  ifVersion?: string
 ): Promise<AttachmentPreview> {
   const abs = safeResolve(worktreePath, relPath, host);
   const name = host.path.basename(relPath);
   if (!abs) return { kind: 'binary', name, error: 'Path is outside the workspace' };
-  let stat: { size: number; dir: boolean };
+  let stat: { size: number; mtimeMs: number; dir: boolean };
   try {
     stat = await host.fs.stat(abs);
   } catch {
@@ -51,9 +56,11 @@ export async function readAttachment(
   const mime = IMAGE_MIME[ext];
   if (mime) {
     if (stat.size > MAX_IMAGE) return { kind: 'binary', name, error: 'Image too large to preview' };
+    const version = `${stat.mtimeMs}:${stat.size}`;
+    if (ifVersion === version) return { kind: 'image', name, version, unchanged: true };
     try {
       const b64 = (await host.fs.read(abs)).toString('base64');
-      return { kind: 'image', dataUrl: `data:${mime};base64,${b64}`, name };
+      return { kind: 'image', dataUrl: `data:${mime};base64,${b64}`, name, version };
     } catch {
       return { kind: 'binary', name, error: 'Could not read image' };
     }
@@ -246,6 +253,72 @@ export function createEntry(worktreePath: string, relPath: string, dir: boolean)
   if (fs.existsSync(abs)) throw new Error(`${relPath} already exists`);
   fs.mkdirSync(dir ? abs : path.dirname(abs), { recursive: true });
   if (!dir) fs.writeFileSync(abs, '');
+}
+
+/**
+ * Resolve a worktree-relative path for a mutating Files-tab action (rename,
+ * move, copy, trash): confined like `createEntry`, and never the worktree root.
+ * Only the *parent* is realpath-checked, so a symlink inside the tree is
+ * moved/removed as a link rather than followed out of the workspace.
+ */
+export function entryPath(worktreePath: string, relPath: string): string {
+  const abs = safeResolve(worktreePath, relPath);
+  if (!abs || abs === path.resolve(worktreePath) || !containedReal(worktreePath, path.dirname(abs))) {
+    throw new Error('Path is outside the workspace');
+  }
+  return abs;
+}
+
+/** lstat-based existence, so a dangling symlink still counts. */
+function exists(abs: string): boolean {
+  try {
+    fs.lstatSync(abs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rename or move an entry within the worktree. Missing destination parents are
+ * created; never overwrites, except a case-only rename of the same entry (same
+ * inode on a case-insensitive filesystem). A folder can't move into itself.
+ */
+export function renameEntry(worktreePath: string, from: string, to: string): void {
+  const src = entryPath(worktreePath, from);
+  const dest = entryPath(worktreePath, to);
+  if (src === dest) return;
+  if (!exists(src)) throw new Error(`${from} no longer exists`);
+  if (dest.startsWith(src + path.sep)) throw new Error('Cannot move a folder into itself');
+  if (exists(dest)) {
+    const [a, b] = [fs.lstatSync(src), fs.lstatSync(dest)];
+    if (a.ino !== b.ino || a.dev !== b.dev) throw new Error(`${path.basename(to)} already exists in that folder`);
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.renameSync(src, dest);
+}
+
+/**
+ * Copy entries (recursively; symlinks as links) into `toDir` ('' = root) for
+ * Duplicate, Copy → Paste and drops from the OS file manager — `paths` are
+ * worktree-relative, or absolute for those OS drops. A taken name gets a
+ * Finder-style suffix (`a copy.ts`, `a copy 2.ts`). Returns the new paths.
+ */
+export function copyEntries(worktreePath: string, paths: string[], toDir: string): string[] {
+  const root = path.resolve(worktreePath);
+  const destDir = toDir ? entryPath(worktreePath, toDir) : root;
+  return paths.map((p) => {
+    const src = path.isAbsolute(p) ? path.resolve(p) : entryPath(worktreePath, p);
+    if (!exists(src)) throw new Error(`${path.basename(p)} no longer exists`);
+    if (destDir === src || destDir.startsWith(src + path.sep)) throw new Error('Cannot copy a folder into itself');
+    const name = path.basename(src);
+    const dot = fs.lstatSync(src).isDirectory() ? -1 : name.lastIndexOf('.');
+    const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+    let dest = path.join(destDir, name);
+    for (let i = 1; exists(dest); i++) dest = path.join(destDir, `${stem} copy${i > 1 ? ` ${i}` : ''}${ext}`);
+    fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+    return path.relative(root, dest).split(path.sep).join('/');
+  });
 }
 
 /**

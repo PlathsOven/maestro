@@ -15,20 +15,20 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 
 export const COLOR_THEMES = [
   { id: 'classic', label: 'Classic', blurb: 'Warm neutrals with a violet accent' },
-  { id: 'catppuccin', label: 'Catppuccin', blurb: 'Soft pastels — Latte and Mocha' },
-  { id: 'nord', label: 'Nord', blurb: 'Arctic blues and frost' },
-  { id: 'solarized', label: 'Solarized', blurb: 'The precision-tuned classic' },
-  { id: 'gruvbox', label: 'Gruvbox', blurb: 'Retro, earthy and high-warmth' },
-  { id: 'rose-pine', label: 'Rosé Pine', blurb: 'Muted rose, pine and gold' },
-  { id: 'tokyo-night', label: 'Tokyo Night', blurb: 'Neon blues — Day and Night' },
-  { id: 'everforest', label: 'Everforest', blurb: 'Calm forest greens' },
+  { id: 'catppuccin', label: 'Catppuccin', blurb: 'Cosy pastels, soft and round — Latte and Mocha' },
+  { id: 'nord', label: 'Nord', blurb: 'Arctic calm: frosted glass under an aurora' },
+  { id: 'solarized', label: 'Solarized', blurb: 'Flat and exact — no glass, just measured contrast' },
+  { id: 'gruvbox', label: 'Gruvbox', blurb: 'A retro workshop: warm lamplight and paper grain' },
+  { id: 'rose-pine', label: 'Rosé Pine', blurb: 'Twilight rose and iris, with serif headings' },
+  { id: 'tokyo-night', label: 'Tokyo Night', blurb: 'A neon city after rain — Day and Night' },
+  { id: 'everforest', label: 'Everforest', blurb: 'Soft, round and dappled with forest light' },
   // Experimental: these go past a palette swap (type, shape, texture, glow), so
   // the picker lists them apart. Each still has a light and a dark variant.
-  { id: 'synthwave', label: 'Synthwave', blurb: 'Neon on a midnight grid — or vaporwave pastels', experimental: true },
+  { id: 'synthwave', label: 'Synthwave', blurb: 'A striped sun over a neon grid — or vaporwave pastels', experimental: true },
   { id: 'phosphor', label: 'Phosphor', blurb: 'A green CRT with scanlines — or greenbar printer paper', experimental: true },
   { id: 'brutalist', label: 'Brutalist', blurb: 'Hard edges, hard shadows, no glass', experimental: true },
-  { id: 'blueprint', label: 'Blueprint', blurb: 'Cyanotype drafting grid — or pencil on graph paper', experimental: true },
-  { id: 'bubblegum', label: 'Bubblegum', blurb: 'Pink, round and unreasonably cheerful', experimental: true },
+  { id: 'blueprint', label: 'Blueprint', blurb: 'A cyanotype drafting sheet — or pencil on graph paper', experimental: true },
+  { id: 'bubblegum', label: 'Bubblegum', blurb: 'Candy-coloured, bouncy and sprinkled', experimental: true },
 ] as const satisfies readonly { id: string; label: string; blurb: string; experimental?: true }[];
 
 export type ColorThemeId = (typeof COLOR_THEMES)[number]['id'];

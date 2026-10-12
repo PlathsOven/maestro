@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertCircle, Check, Copy, ExternalLink } from 'lucide-react';
 import { useApp } from '../store/app';
 import { Modal, Spinner } from './common';
+import { copyText } from '../lib/clipboard';
 
 /**
  * OAuth device-flow sign-in: show the one-time code, send the user to
@@ -15,7 +16,7 @@ export default function GitHubSignInModal() {
 
   const copyCode = () => {
     if (!st?.userCode) return;
-    void navigator.clipboard.writeText(st.userCode);
+    void copyText(st.userCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -41,7 +41,7 @@ import { resyncDevices, resyncStatus, revokeDevice } from '../web/lib/handlers/a
 import { boxWorkspaceGit } from '../web/lib/handlers/box';
 import { postAttachment, getAttachment } from '../web/lib/handlers/attachments';
 import { webSend, webReadState, webTurns, webQueueEdit, webQueueRemove, webQueueSendNow, webStop } from '../web/lib/handlers/web';
-import { putConversation, deviceReadState, putConvTurn, putDeviceSettings, putWebSettings } from '../web/lib/handlers/desktop';
+import { putConversation, deviceReadState, putConvTurn, putDeviceSettings, putWebSettings, backfill } from '../web/lib/handlers/desktop';
 import { boxPoll } from '../web/lib/handlers/box';
 import { eventsSince, type EventKind } from '../web/lib/events';
 import { getBus, seenKey } from '../web/lib/bus';
@@ -213,6 +213,29 @@ async function main() {
   const [editedRow] = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
   check('relay queued row text updated', editedRow?.text === 'edited queued', editedRow?.text);
 
+  // Editing photos: an `attachments` list replaces the row's photos and rides on
+  // the queue_edit job (the desktop downloads them); a text-only edit keeps them,
+  // and a photo-only edit (empty text) is allowed.
+  const qPhoto = await jbody(await postAttachment(req('POST', '/api/attachments', webH, { dataUrl: 'data:image/png;base64,iVBORw0KGgoQ=' })));
+  const qPhotoEdit = await webQueueEdit(
+    req('POST', `/api/queue/${qMsgId}/edit`, webH, { text: '', attachments: [{ id: qPhoto.id, name: 'shot.png' }, { id: 'not-mine' }] }),
+    { messageId: qMsgId }
+  );
+  check('photo-only queue edit accepted', qPhotoEdit.status === 200, `${qPhotoEdit.status}`);
+  const [photoRow] = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
+  check(
+    'relay queued row photos replaced (unowned refs dropped)',
+    JSON.stringify(photoRow?.attachments) === JSON.stringify([{ id: qPhoto.id, name: 'shot.png' }]),
+    JSON.stringify(photoRow?.attachments)
+  );
+  const editJobs = await db.select().from(jobs).where(and(eq(jobs.conversationId, 'wsLocal:1'), eq(jobs.kind, 'queue_edit')));
+  check('queue_edit job carries the new photos', editJobs.some((j) => (j.payload as any)?.attachments?.[0]?.id === qPhoto.id));
+  await webQueueEdit(req('POST', `/api/queue/${qMsgId}/edit`, webH, { text: 'edited queued' }), { messageId: qMsgId });
+  const [keptRow] = await db.select().from(userMessages).where(eq(userMessages.id, qMsgId));
+  check('text-only edit keeps photos', (keptRow?.attachments as any[] | null)?.length === 1, JSON.stringify(keptRow?.attachments));
+  const qEmpty = await webQueueEdit(req('POST', `/api/queue/${qMsgId}/edit`, webH, { text: '', attachments: [] }), { messageId: qMsgId });
+  check('edit leaving nothing to send rejected', qEmpty.status === 400, `${qEmpty.status}`);
+
   // Send now → queue_send_now job routed to the device, keyed by the messageId. The
   // relay row is left queued (the desktop drains it into a running turn and clears
   // it on the next publish).
@@ -331,6 +354,44 @@ async function main() {
   const tr4 = toTranscript(t4);
   check('cancelled empty turn shows no live "Thinking…"', tr4.live === null);
   check('cancelled empty turn shows no empty bubble', !tr4.messages.some((m: any) => m.id === 'lt2'));
+
+  // A metadata publish read while the turn ran (`running: true`) can land AFTER
+  // the turn's terminal PUT. It must not set the finished chat back to running —
+  // that left a spinner stuck on the web's Home screen with no turn to clear it.
+  const runningOf = async () =>
+    (await jbody(await webWorkspaces(req('GET', '/api/workspaces', webH)))).sessions.find((s: any) => s.conversationId === 'wsLocal:1')?.running;
+  await putConversation(req('PUT', '/api/conversations/wsLocal:1', devH, { projectName: 'Proj', hasRun: true, running: true }), { id: 'wsLocal:1' });
+  check('late running:true meta publish cannot revive a finished chat', (await runningOf()) === false);
+  // …while a chat with a turn actually open still reads as running.
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: 'lt3', status: 'running', blocks: [], startedAt: Date.now() }), { id: 'wsLocal:1' });
+  await putConversation(req('PUT', '/api/conversations/wsLocal:1', devH, { projectName: 'Proj', hasRun: true, running: true }), { id: 'wsLocal:1' });
+  check('running:true meta publish holds while a turn is open', (await runningOf()) === true);
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: 'lt3', status: 'done', blocks: [], endedAt: Date.now() }), { id: 'wsLocal:1' });
+  check('terminal turn PUT clears running', (await runningOf()) === false);
+
+  // ---- a web send's "Queued" card clears once its turn is running ----
+  const queuedOf = async (messageId: string) =>
+    (await jbody(await webTurns(req('GET', '/api/conversations/wsLocal:1/turns', webH), { id: 'wsLocal:1' }))).userMessages.find((m: any) => m.id === messageId)?.queued;
+  // A current desktop runs the turn under the send's own turnId: opening it un-queues.
+  const qm1 = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'run me' }), { id: 'wsLocal:1' }));
+  check('web send starts queued', (await queuedOf(qm1.messageId)) === true);
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: qm1.turnId, status: 'running', blocks: [], startedAt: Date.now() }), { id: 'wsLocal:1' });
+  check('turn opened under the send turnId un-queues it', (await queuedOf(qm1.messageId)) === false);
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: qm1.turnId, status: 'done', blocks: [], endedAt: Date.now() }), { id: 'wsLocal:1' });
+  // An older desktop mints its own turn id, so only its republish (backfill)
+  // clears the row — and that must tell the web, or the card sticks until the
+  // turn ends.
+  const qm2 = await jbody(await webSend(req('POST', '/api/conversations/wsLocal:1/send', webH, { text: 'run me too' }), { id: 'wsLocal:1' }));
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: 'desk-own-id', status: 'running', blocks: [], startedAt: Date.now() }), { id: 'wsLocal:1' });
+  check('turn under a foreign id leaves the send queued', (await queuedOf(qm2.messageId)) === true);
+  const qcBefore = (await feed('queue-changed')).length;
+  await backfill(req('POST', '/api/conversations/wsLocal:1/backfill', devH, { turns: [], userMessages: [{ id: qm2.messageId, text: 'run me too', origin: 'web', queued: false, createdAt: Date.now() }] }), { id: 'wsLocal:1' });
+  check('desktop backfill un-queues the running send', (await queuedOf(qm2.messageId)) === false);
+  check('un-queueing backfill emits queue-changed', (await feed('queue-changed')).length === qcBefore + 1);
+  const qcAfter = (await feed('queue-changed')).length;
+  await backfill(req('POST', '/api/conversations/wsLocal:1/backfill', devH, { turns: [], userMessages: [{ id: qm2.messageId, text: 'run me too', origin: 'web', queued: false, createdAt: Date.now() }] }), { id: 'wsLocal:1' });
+  check('a no-op backfill emits nothing', (await feed('queue-changed')).length === qcAfter);
+  await putConvTurn(req('PUT', '/api/conversations/wsLocal:1/turn', devH, { turnId: 'desk-own-id', status: 'done', blocks: [], endedAt: Date.now() }), { id: 'wsLocal:1' });
 
   // ---- attachments (§6.4): device uploads a data URL, web loads it as an image ----
   const att = await jbody(await postAttachment(req('POST', '/api/attachments', devH, { dataUrl: 'data:image/png;base64,iVBORw0KGgo=' })));

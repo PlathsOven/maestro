@@ -8,7 +8,7 @@
  *   {"maestro":"turn-end","turnId":"…","exit":0,"at":…}
  *
  * This module is PURE (no node builtins, no main-process imports): the desktop
- * follower (`src/main/hosts/journal.ts` re-exports it) and the relay ingest
+ * cloud follower (`src/main/services/cloud.ts`) and the relay ingest
  * (`web/lib/ingest.ts`) parse the same bytes with the same code — one wire
  * protocol, one parser (G7).
  */

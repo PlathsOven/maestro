@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { broadcast } from '../../bus';
-import { Messages, Projects, Settings, Workspaces, now, uid } from '../../db';
+import { Messages, Projects, Settings, Workspaces, uid } from '../../db';
 import { backgroundFactor } from '../activity';
 import { addProject, createWorkspace } from '../workspaces';
 import { addRunFinishedListener } from '../harness';
@@ -17,6 +17,7 @@ import {
   headReadFile,
   isImportable,
   placeCwd,
+  placementKey,
   scanHarnessSessions,
   sessionTitle,
   type HarnessSession,
@@ -112,7 +113,7 @@ export function detectHarnessSync(): boolean {
 // ---------- scan (grouped, for the panel) ----------
 
 export async function scanHarnessSync(): Promise<HarnessSyncScan> {
-  const { scan } = await buildScan(linkedIds());
+  const scan = await buildScan(linkedIds());
   lastScanAt = Date.now();
   refreshCandidatesFromScan(scan);
   broadcastStatus();
@@ -123,7 +124,7 @@ function refreshCandidatesFromScan(scan: HarnessSyncScan): void {
   candidates.clear();
   for (const g of scan.groups) {
     if (g.placement.kind !== 'new-project' && g.placement.kind !== 'new-folder') continue;
-    const root = g.placement.kind === 'new-project' ? g.placement.root : g.placement.root;
+    const root = g.placement.root;
     if ((Settings.global().harnessSync?.dismissedRoots ?? []).includes(normPath(root))) continue;
     const app = g.sessions[0]?.app ?? 'claude-code';
     candidates.set(root, { root, app, ids: new Set(g.sessions.map((s) => s.sessionId)) });
@@ -183,7 +184,8 @@ async function resolveTarget(
       return Workspaces.forProject(project.id).find((w) => !w.archived) ?? null;
     }
   } catch (e) {
-    result.errors.push(`${(placement as any).root ?? (placement as any).path ?? 'target'}: ${String((e as Error)?.message ?? e)}`);
+    const where = 'root' in placement ? placement.root : 'path' in placement ? placement.path : 'target';
+    result.errors.push(`${where}: ${String((e as Error)?.message ?? e)}`);
     return null;
   }
   return null;
@@ -197,10 +199,11 @@ const IMPORT_MARKER = (app: HarnessSyncApp, turns: number) =>
 async function createChatForSession(ws: Workspace, s: HarnessSession): Promise<number> {
   const agentId = maxAgentId(ws.id) + 1;
   const title = sessionTitle(s, agentId);
+  const model = knownModel(s.app, s.model);
   Workspaces.patchChat(ws.id, agentId, {
     title,
     titleCustom: true,
-    ...(knownModel(s.app, s.model) ? { model: knownModel(s.app, s.model) } : {}),
+    ...(model ? { model } : {}),
     mirror: { app: s.app, file: s.file, cursor: 0, imported: true },
     lastReadAt: s.modifiedAt,
   });
@@ -234,7 +237,7 @@ export async function importHarnessSync(sessionIds: string[], enableSync: boolea
   for (const s of selected) {
     const placement = await placeCwd(s.cwd);
     if (placement.kind === 'missing') continue;
-    const key = placementDedupKey(placement);
+    const key = placementKey(placement);
     let g = byKey.get(key);
     if (!g) {
       g = { placement, app: s.app, sessions: [] };
@@ -274,21 +277,6 @@ export async function importHarnessSync(sessionIds: string[], enableSync: boolea
   lastScanAt = Date.now();
   broadcastStatus();
   return result;
-}
-
-function placementDedupKey(p: Placement): string {
-  switch (p.kind) {
-    case 'workspace':
-      return `ws:${p.workspaceId}`;
-    case 'adopt':
-      return `adopt:${p.path}`;
-    case 'new-project':
-      return `new:${p.root}`;
-    case 'new-folder':
-      return `folder:${p.root}`;
-    case 'missing':
-      return `missing:${p.root}`;
-  }
 }
 
 // ---------- live-elsewhere maintenance ----------

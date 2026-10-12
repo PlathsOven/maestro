@@ -63,7 +63,7 @@ async function ensureKeypair(): Promise<{ keyPath: string; pubkey: string }> {
 }
 
 /** The saved managed-host row, if the user has joined. */
-export function managedHost(): SshHostConfig | null {
+function managedHost(): SshHostConfig | null {
   return Hosts.list().find((h) => h.managed) ?? null;
 }
 

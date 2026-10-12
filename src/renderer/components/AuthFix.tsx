@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CheckCircle2, KeyRound, RefreshCw, Wrench } from 'lucide-react';
-import { invoke, on, tryInvoke } from '../lib/api';
+import { tryInvoke } from '../lib/api';
+import { useHarnessPty } from '../lib/useHarnessPty';
 import { useApp } from '../store/app';
 import { Spinner } from './common';
 import PtyView from './TerminalPanel';
@@ -35,7 +36,11 @@ export default function AuthFix({
   const toast = useApp((s) => s.toast);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<HarnessAuthRepair | null>(null);
-  const [ptyId, setPtyId] = useState<string | null>(null);
+  // Leaving the card (chat switch, settings close) must not orphan a login pty.
+  // The login terminal exiting (browser flow returned, or the user quit it) is
+  // the cue to re-ask the CLI whether it is signed in now.
+  const login = useHarnessPty('login', harness, () => void finishLogin(), []);
+  const ptyId = login.ptyId;
 
   const repair = async () => {
     setBusy(true);
@@ -51,14 +56,12 @@ export default function AuthFix({
   };
 
   const startLogin = async () => {
-    const { data, error } = await tryInvoke('harness:loginStart', { harness, loginId });
+    const { error } = await login.start({ loginId });
     if (error) return toast('error', error);
-    if (data) setPtyId(data.ptyId);
   };
 
   const finishLogin = async () => {
-    await invoke('harness:loginStop', { harness });
-    setPtyId(null);
+    await login.stop();
     const { data } = await tryInvoke('harness:auth', { harness });
     void refreshHarnesses(true);
     if (data?.connected) {
@@ -74,18 +77,6 @@ export default function AuthFix({
       });
     }
   };
-
-  // Leaving the card (chat switch, settings close) must not orphan a login pty.
-  useEffect(() => () => void invoke('harness:loginStop', { harness }), [harness]);
-
-  // The login terminal exiting (browser flow returned, or the user quit it) is
-  // the cue to re-ask the CLI whether it is signed in now.
-  useEffect(() => {
-    if (!ptyId) return;
-    return on('pty:exit', ({ id }) => {
-      if (id === ptyId) void finishLogin();
-    });
-  }, [ptyId]);
 
   if (result?.ok) {
     return (

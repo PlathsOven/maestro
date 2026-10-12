@@ -156,7 +156,7 @@ export async function removeLogin(harness: HarnessId, id: string): Promise<void>
 const limitedMarks = new Map<string, number>();
 const markKey = (harness: HarnessId, id: string) => `${harness}:${id}`;
 
-export function markLimited(harness: HarnessId, id: string, until: number): void {
+function markLimited(harness: HarnessId, id: string, until: number): void {
   limitedMarks.set(markKey(harness, id), until);
 }
 

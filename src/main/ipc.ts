@@ -1,8 +1,8 @@
 import fs from 'fs';
 import nodePath from 'path';
-import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
+import { app, clipboard, dialog, ipcMain, shell } from 'electron';
 import { run } from './exec';
-import { rebuildMenu } from './bus';
+import { getWindow, rebuildMenu } from './bus';
 import { Comments, Hosts, Messages, Projects, Scheduled, Settings, Subagents, Todos, Workspaces, mustWorkspace, mustProject, now, uid } from './db';
 import * as git from './services/git';
 import * as files from './services/files';
@@ -10,10 +10,11 @@ import * as jupyter from './services/jupyter';
 import * as gh from './services/github';
 import { cancelDeviceSignIn, signOutGitHub, startDeviceSignIn } from './services/ghauth';
 import * as wsvc from './services/workspaces';
-import { clearQueue, deleteChat, editQueued, editScheduledChat, removeQueued, scheduleChat, sendChat, sendQueuedNow } from './services/chat';
-import { cancelScheduled, dropDueRemoteForAgent, sendScheduledNow } from './services/schedule';
+import { editQueued, editScheduledChat, removeQueued, scheduleChat, sendChat, sendQueuedNow, stopChat } from './services/chat';
+import { cancelScheduled, sendScheduledNow } from './services/schedule';
 import { submitAskAnswer } from './services/ask';
-import { detectHarnesses, getSubUsage, liveTurnSnapshots, runningAgents, stopAgent } from './services/harness';
+import { gpuHint } from './services/gpu';
+import { detectHarnesses, getSubUsage, liveTurnSnapshots, runningAgents } from './services/harness';
 import {
   detectHarnessAuth,
   repairHarnessAuth,
@@ -64,12 +65,13 @@ import {
   setPreviewVisible,
   writeConsoleLog,
 } from './services/preview';
-import { watchPort, unwatchPort } from './services/portwatch';
+import { listLocalServers, watchPort, unwatchPort } from './services/portwatch';
+import { listEditors, openInEditor } from './services/editors';
 import { computeCaps, githubOwner } from './services/capabilities';
 import { hostDoctor } from './services/hostdoctor';
 import * as shadow from './services/shadow';
-import { hostById, hostForProject, hostForWorkspace, isCloudWorkspace } from './hosts';
-import { stopCloudTurn } from './services/cloud';
+import * as changes from './services/changes';
+import { hostById, hostForProject, hostForWorkspace } from './hosts';
 import { setWorkspaceCloud } from './services/cloudmove';
 import { cloudStatus, joinMaestroCloud, leaveMaestroCloud } from './services/cloudaccount';
 import { listSshConfigHosts } from './hosts/ssh';
@@ -83,7 +85,6 @@ import { dictationSupported, startDictation, stopDictation } from './services/st
 import { ensurePty, getPtyBuffer, killPty, resizePty, writePty } from './services/pty';
 import { readRepoSettings, writeRepoSettings } from './services/settingsToml';
 import { deleteSkill, listSkills, readSkill, saveSkill } from './services/skills';
-import { fetchLinearIssue } from './services/linear';
 import { scanConductor, importConductor, conductorDetected } from './services/conductorImport';
 import {
   detectHarnessSync,
@@ -94,7 +95,7 @@ import {
 import { capture } from './services/analytics';
 import { listContextFiles } from './services/watcher';
 import * as account from './services/account';
-import type { ChatMeta, HarnessId, HarnessLoginView, IpcInvokeMap, ProjectCaps } from '../shared/types';
+import type { ChatMeta, HarnessId, HarnessLoginView, IpcInvokeMap, ProjectCaps, Workspace } from '../shared/types';
 
 function handle<K extends keyof IpcInvokeMap>(
   channel: K,
@@ -121,16 +122,12 @@ function localAbs(workspaceId: string, relPath: string): string | null {
   return files.safeResolve(ws.worktreePath, relPath, hostForWorkspace(ws));
 }
 
-/** Open a path (worktree or file) in the user's IDE (defaults to `code`). */
-async function openInIde(target: string): Promise<void> {
-  const cmd = Settings.global().ideCommand.trim() || 'code';
-  const r = await run(cmd, [target], { timeout: 15_000 });
-  if (r.ok) return;
-  // VS Code's `code` CLI is an opt-in install on macOS; open the app directly.
-  if (cmd === 'code' && process.platform === 'darwin') {
-    if ((await run('open', ['-b', 'com.microsoft.VSCode', target], { timeout: 15_000 })).ok) return;
-  }
-  throw new Error(`Could not run "${cmd}": ${r.stderr.trim() || 'command failed'}`);
+/** A workspace whose files live on this machine — the Files tab's mutating
+ *  actions (rename/move/copy/trash) touch the local disk directly. */
+function mustLocalWorkspace(workspaceId: string): Workspace {
+  const ws = mustWorkspace(workspaceId);
+  if (mustProject(ws.projectId).hostId) throw new Error('Not available for remote workspaces');
+  return ws;
 }
 
 /** Open the OS terminal app rooted at `dir` (best-effort per platform). */
@@ -153,7 +150,42 @@ async function openTerminalAt(dir: string): Promise<void> {
   }
 }
 
-export function registerIpc(getMainWindow: () => BrowserWindow | null) {
+export function registerIpc() {
+  // One register function per section, called in the original registration order.
+  registerAppIpc();
+  registerHarnessIpc();
+  registerCloudIpc();
+  registerK8sIpc();
+  registerDialogIpc();
+  registerUpdateIpc();
+  registerProjectIpc();
+  registerHostIpc();
+  registerProjectQueryIpc();
+  registerWorkspaceIpc();
+  registerPreviewIpc();
+  registerChatIpc();
+  registerAccountIpc();
+  registerAgentIpc();
+  registerGitIpc();
+  registerFileBrowserIpc();
+  registerEditorIpc();
+  registerJupyterIpc();
+  registerCommentIpc();
+  registerTodoIpc();
+  registerScriptIpc();
+  registerRunScriptIpc();
+  registerStatusIpc();
+  registerDictationIpc();
+  registerPtyIpc();
+  registerGithubIpc();
+  registerSkillIpc();
+  registerSettingsIpc();
+  registerAttachmentIpc();
+  registerConductorIpc();
+  registerHarnessSyncIpc();
+}
+
+function registerAppIpc() {
   handle('app:init', async () => {
     // Warm the slow probes without blocking first paint.
     void gh.ghAuth();
@@ -192,9 +224,14 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
       hosts: Hosts.list(),
       chatsMeta,
       runningAgents: runningByWs,
+      gpu: await gpuHint(),
     };
   });
+  // macOS + Linux (Unity); a no-op elsewhere.
+  handle('app:setBadge', ({ count }) => void app.setBadgeCount(count));
+}
 
+function registerHarnessIpc() {
   handle('harness:list', (p) => detectHarnesses(p?.force));
   handle('harness:auth', async ({ harness }) => {
     const info = (await detectHarnesses()).find((h) => h.id === harness);
@@ -274,13 +311,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   });
   // Host-keyed probe/install/readiness for the shared HostConnect flow (§6.7),
   // so the picker works before any project or workspace exists.
-  handle('harness:hostProbe', ({ hostId, harness, force }) => probeRemoteHarness(hostById(hostId), harness, force));
-  handle('harness:hostInstall', ({ hostId, harness }) => installRemoteHarness(hostById(hostId), harness));
-  handle('host:readiness', ({ hostId }) => {
-    const h = remoteHostFor(hostId);
-    return h ? hostDoctor(h, Hosts.get(hostId)) : { rows: [] };
-  });
+}
 
+function registerCloudIpc() {
   // ---------- Maestro Cloud free beta ----------
   handle('cloud:status', () => cloudStatus());
   handle('cloud:join', async ({ inviteCode }) => {
@@ -290,13 +323,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     return r;
   });
   handle('cloud:leave', () => leaveMaestroCloud());
+}
 
+function registerK8sIpc() {
   // ---------- Kubernetes workspaces ----------
   handle('k8s:contexts', () => listContexts());
   handle('k8s:addCluster', (opts) => addK8sCluster(opts));
+}
 
+function registerDialogIpc() {
   handle('dialog:pickFolder', async () => {
-    const win = getMainWindow();
+    const win = getWindow();
     if (!win) return null;
     const res = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'createDirectory'],
@@ -304,14 +341,18 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     });
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0];
   });
+}
 
+function registerUpdateIpc() {
   // ---------- auto-update ----------
 
   handle('update:check', () => checkForUpdatesNow());
   handle('update:pending', () => pendingUpdate());
   handle('update:installed', () => installedUpdate());
   handle('update:install', () => installUpdate());
+}
 
+function registerProjectIpc() {
   // ---------- projects ----------
 
   // Inspect a path before adding it, so the renderer can pick the right flow:
@@ -326,7 +367,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   });
   handle('project:add', (payload) => wsvc.addProject(payload));
   handle('project:defaultParentDir', () => wsvc.defaultParentDir());
+}
 
+function registerHostIpc() {
   // ---------- SSH hosts ----------
 
   handle('host:list', () => Hosts.list());
@@ -399,6 +442,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     const entries = await host.fs.readdir(dir).catch(() => []);
     return { path: dir, entries: entries.filter((e) => e.dir).sort((a, b) => a.name.localeCompare(b.name)) };
   });
+}
+
+function registerProjectQueryIpc() {
   handle('project:capabilities', ({ projectId }) => computeCaps(mustProject(projectId)));
   handle('project:remove', ({ projectId, deleteWorkspaces }) => wsvc.removeProject(projectId, deleteWorkspaces));
   // Git/GitHub project queries return empty (not errors) for folder projects, so
@@ -434,7 +480,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     Projects.update(p);
     return p;
   });
+}
 
+function registerWorkspaceIpc() {
   // ---------- workspaces ----------
 
   handle('workspace:create', (payload) => wsvc.createWorkspace(payload));
@@ -448,20 +496,12 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('workspace:setCloud', ({ workspaceId, hostId }) => setWorkspaceCloud(workspaceId, hostId));
   handle('workspace:recreateFromBranch', ({ workspaceId }) => wsvc.recreateAdoptedFromBranch(workspaceId));
   handle('workspace:dirExists', ({ workspaceId }) => fs.existsSync(mustWorkspace(workspaceId).worktreePath));
-  handle('workspace:refresh', async ({ workspaceId }) => {
-    const ws = mustWorkspace(workspaceId);
-    const branch = await git.currentBranch(ws.worktreePath, hostForWorkspace(ws));
-    if (branch && branch !== 'HEAD') ws.branch = branch;
-    Workspaces.update(ws);
-    return ws;
-  });
-  handle('workspace:openInIDE', async ({ workspaceId }) => {
-    await openInIde(mustWorkspace(workspaceId).worktreePath);
-  });
+  handle('workspace:openInIDE', ({ workspaceId, editor }) => openInEditor(mustWorkspace(workspaceId).worktreePath, editor));
+  handle('ide:list', () => listEditors());
+  handle('clipboard:writeText', ({ text }) => clipboard.writeText(text));
   handle('workspace:reveal', ({ workspaceId }) => {
     shell.openPath(mustWorkspace(workspaceId).worktreePath);
   });
-  handle('workspace:openTerminalApp', ({ workspaceId }) => openTerminalAt(mustWorkspace(workspaceId).worktreePath));
   handle('workspace:contextFiles', ({ workspaceId }) => listContextFiles(mustWorkspace(workspaceId)));
   handle('workspace:openPreview', async ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
@@ -473,12 +513,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
       return { error: String(e?.message ?? e) };
     }
   });
+}
 
+function registerPreviewIpc() {
   // ---------- integrated browser (Preview surface) ----------
   // The WebContentsView is owned by main (services/preview.ts); these handlers
   // are the renderer's control surface. The agent drives the SAME views through
   // the roleserver /preview route, so both look at one live pane (§7, §8).
   handle('preview:open', ({ workspaceId, url }) => openPreview(mustWorkspace(workspaceId).id, url));
+  handle('preview:servers', ({ workspaceId }) =>
+    hostForWorkspace(mustWorkspace(workspaceId)).id === 'local' ? listLocalServers() : []
+  );
   handle('preview:navigate', ({ workspaceId, action, url }) =>
     navigatePreview(mustWorkspace(workspaceId).id, action, url)
   );
@@ -497,27 +542,16 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   // workspace; run scripts watch themselves in main (runscripts.ts).
   handle('port:watch', ({ workspaceId }) => watchPort(mustWorkspace(workspaceId).id, 'selected'));
   handle('port:unwatch', ({ workspaceId }) => unwatchPort(workspaceId, 'selected'));
+}
 
+function registerChatIpc() {
   // ---------- chat ----------
 
   handle('chat:list', ({ workspaceId }) => Messages.list(workspaceId));
   handle('chat:send', (payload) => sendChat(payload));
-  handle('chat:stop', ({ workspaceId, agentId }) => {
-    // Stop is a full halt: also drop anything queued behind the run.
-    clearQueue(workspaceId, agentId);
-    stopAgent(workspaceId, agentId);
-    // Cloud: also kill the drain group on the box and clear its job files
-    // (the local stopAgent only detaches the tail). A *due* remote row's job was
-    // promoted into the queue, so it's gone from the box now too — drop its row
-    // (§4.5). Future scheduled rows are a standing intent and stay.
-    const ws = Workspaces.get(workspaceId);
-    if (ws && isCloudWorkspace(ws))
-      void stopCloudTurn(ws, agentId)
-        .catch(() => {})
-        .finally(() => dropDueRemoteForAgent(workspaceId, agentId));
-  });
+  handle('chat:stop', ({ workspaceId, agentId }) => stopChat(workspaceId, agentId));
   handle('chat:queue:remove', ({ workspaceId, agentId, itemId }) => removeQueued(workspaceId, agentId, itemId));
-  handle('chat:queue:edit', ({ workspaceId, agentId, itemId, text }) => editQueued(workspaceId, agentId, itemId, text));
+  handle('chat:queue:edit', ({ workspaceId, agentId, itemId, text, attachments }) => editQueued(workspaceId, agentId, itemId, text, attachments));
   // Steer: stop the current turn but keep the queue (promoting this item), so the
   // run-finished hook runs this message next instead of after the turn completes.
   handle('chat:queue:sendNow', ({ workspaceId, agentId, itemId }) => sendQueuedNow(workspaceId, agentId, itemId));
@@ -545,46 +579,40 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     const ts = now();
     Workspaces.patchChat(workspaceId, agentId, { lastReadAt: ts });
     // Push read state to Maestro Web so unread dots agree across devices (§6.6).
-    void account.pushReadState(workspaceId, agentId, ts).catch(() => {});
+    void account.pushReadState(workspaceId, agentId).catch(() => {});
   });
-  handle('chat:delete', ({ workspaceId, agentId }) => deleteChat(workspaceId, agentId));
+}
 
+function registerAccountIpc() {
   // ---- Maestro Web account (spec mobile-web-app §6.9) ----
   handle('account:status', () => account.accountStatus());
   handle('account:linkStart', ({ deviceName }) => account.startLink(deviceName));
-  handle('account:linkCancel', () => account.cancelLink());
   handle('account:signOut', () => account.signOut());
   handle('account:deviceUnlink', ({ deviceId }) => account.unlinkDevice(deviceId));
   handle('account:boxLink', ({ hostId, label, cron }) => account.linkBox(hostId, label, cron));
   handle('account:boxUnlink', ({ hostId }) => account.unlinkBox(hostId));
-  handle('account:cronPreview', () => account.cronPreview());
   handle('account:setProjectSync', ({ projectId, synced }) => account.setProjectSync(projectId, synced));
   handle('account:resync', () => account.resyncAll());
+}
 
+function registerAgentIpc() {
   // The user answered (or dismissed) an agent's structured question — unblocks
   // the `maestro-ask` call that's holding the agent's turn open.
   handle('ask:answer', ({ askId, answers, cancelled }) => submitAskAnswer(askId, answers, cancelled));
 
   handle('subagent:list', ({ workspaceId, parentMessageId }) => Subagents.listForParent(workspaceId, parentMessageId));
+}
 
+function registerGitIpc() {
   // ---------- git ----------
 
   handle('git:diff', ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
-    const project = mustProject(ws.projectId);
-    // Local folder projects diff against their shadow-git checkpoint (§7 Phase 5).
-    if (project.kind === 'folder' && !project.hostId) return shadow.shadowDiff(ws);
-    if (project.baseBranch == null) return { base: '', files: [] };
-    return git.workspaceDiff(ws.worktreePath, project.baseBranch, hostForWorkspace(ws));
+    return changes.workspaceDiff(ws, mustProject(ws.projectId));
   });
   handle('git:status', ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
-    const project = mustProject(ws.projectId);
-    if (project.kind === 'folder' && !project.hostId) return shadow.shadowStatus(ws);
-    if (project.baseBranch == null) {
-      return { branch: '', ahead: 0, behind: 0, staged: 0, unstaged: 0, untracked: 0, changedFiles: 0, dirty: false };
-    }
-    return git.statusSummary(ws.worktreePath, project.baseBranch, hostForWorkspace(ws));
+    return changes.workspaceStatus(ws, mustProject(ws.projectId));
   });
   // Folder projects have no git index — the composer's @-file mentions fall back
   // to a bounded on-disk walk (on the project's host).
@@ -596,22 +624,16 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   });
   handle('git:diffstat', ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
-    const project = mustProject(ws.projectId);
-    if (project.kind === 'folder' && !project.hostId) return shadow.shadowDiffStat(ws);
-    if (project.baseBranch == null) return { additions: 0, deletions: 0 };
-    return git.diffStat(ws.worktreePath, project.baseBranch, hostForWorkspace(ws));
-  });
-  handle('git:commit', ({ workspaceId, message }) => {
-    const ws = mustWorkspace(workspaceId);
-    if (mustProject(ws.projectId).kind === 'folder') return { ok: false, error: 'Not a git repository' };
-    return git.commitAll(ws.worktreePath, message, hostForWorkspace(ws));
+    return changes.workspaceDiffStat(ws, mustProject(ws.projectId));
   });
   handle('workspace:revertCheckpoint', ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
     if (mustProject(ws.projectId).kind !== 'folder') return { ok: false, error: 'Only folder projects use checkpoints' };
     return shadow.rollbackToCheckpoint(ws);
   });
+}
 
+function registerFileBrowserIpc() {
   // ---------- working-tree file browser ("All files") ----------
 
   handle('fs:list', ({ workspaceId, path }) => {
@@ -629,10 +651,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     const abs = localAbs(workspaceId, path);
     if (abs) shell.showItemInFolder(abs); // open the enclosing folder and select the entry
   });
-  handle('fs:openInIDE', async ({ workspaceId, path }) => {
+  handle('fs:openInIDE', async ({ workspaceId, path, editor }) => {
     const abs = localAbs(workspaceId, path);
-    if (!abs) return;
-    await openInIde(abs);
+    if (abs) await openInEditor(abs, editor);
   });
   handle('fs:openTerminal', ({ workspaceId, path, dir }) => {
     const abs = localAbs(workspaceId, path);
@@ -640,7 +661,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     if (abs) return openTerminalAt(dir ? abs : nodePath.dirname(abs));
   });
   handle('fs:absPath', ({ workspaceId, path }) => ({ path: localAbs(workspaceId, path) }));
+}
 
+function registerEditorIpc() {
   // ---------- in-app editor (read/stat/write a worktree file) ----------
 
   handle('fs:read', ({ workspaceId, path }) => files.readFile(mustWorkspace(workspaceId).worktreePath, path));
@@ -651,13 +674,23 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('fs:create', ({ workspaceId, path, dir }) =>
     files.createEntry(mustWorkspace(workspaceId).worktreePath, path, dir)
   );
+  handle('fs:rename', ({ workspaceId, from, to }) =>
+    files.renameEntry(mustLocalWorkspace(workspaceId).worktreePath, from, to)
+  );
+  handle('fs:copy', ({ workspaceId, paths, toDir }) =>
+    files.copyEntries(mustLocalWorkspace(workspaceId).worktreePath, paths, toDir)
+  );
+  // Delete = move to the OS trash (recoverable). Validate every path before touching any.
+  handle('fs:trash', async ({ workspaceId, paths }) => {
+    const root = mustLocalWorkspace(workspaceId).worktreePath;
+    for (const abs of paths.map((p) => files.entryPath(root, p))) await shell.trashItem(abs);
+  });
+}
 
+function registerJupyterIpc() {
   // ---------- notebook kernel execution ----------
 
   handle('jupyter:capabilities', ({ workspaceId }) => jupyter.jupyterCapabilities(mustWorkspace(workspaceId).worktreePath));
-  handle('jupyter:start', ({ workspaceId, path }) =>
-    jupyter.startKernel(workspaceId, mustWorkspace(workspaceId).worktreePath, path)
-  );
   handle('jupyter:execute', ({ workspaceId, path, cellId, code }) =>
     jupyter.executeCell(workspaceId, mustWorkspace(workspaceId).worktreePath, path, cellId, code)
   );
@@ -665,9 +698,10 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('jupyter:restart', ({ workspaceId, path }) =>
     jupyter.restartKernel(workspaceId, mustWorkspace(workspaceId).worktreePath, path)
   );
-  handle('jupyter:shutdown', ({ workspaceId, path }) => jupyter.shutdownKernel(workspaceId, path));
   handle('jupyter:kernelStatus', ({ workspaceId, path }) => jupyter.kernelStatus(workspaceId, path));
+}
 
+function registerCommentIpc() {
   // ---------- comments ----------
 
   handle('comment:list', ({ workspaceId }) => Comments.list(workspaceId));
@@ -678,7 +712,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   });
   handle('comment:resolve', ({ commentId, resolved }) => Comments.setResolved(commentId, resolved));
   handle('comment:delete', ({ commentId }) => Comments.remove(commentId));
+}
 
+function registerTodoIpc() {
   // ---------- todos ----------
 
   handle('todo:list', ({ workspaceId }) => Todos.list(workspaceId));
@@ -689,13 +725,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   });
   handle('todo:toggle', ({ todoId, done }) => Todos.setDone(todoId, done));
   handle('todo:delete', ({ todoId }) => Todos.remove(todoId));
+}
 
+function registerScriptIpc() {
   // ---------- scripts ----------
 
   handle('script:run', ({ workspaceId, kind }) => runScript(workspaceId, kind));
   handle('script:stop', ({ workspaceId, kind }) => stopScript(workspaceId, kind));
   handle('script:status', ({ workspaceId }) => scriptStatus(workspaceId));
+}
 
+function registerRunScriptIpc() {
   // ---------- run scripts (Run tab) ----------
 
   handle('runscript:list', ({ workspaceId }) => listRunScripts(mustWorkspace(workspaceId).id));
@@ -708,7 +748,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('runscript:exec', ({ workspaceId, scriptId }) => execRunScript(mustWorkspace(workspaceId).id, scriptId));
   handle('runscript:stop', ({ workspaceId, scriptId }) => stopRunScript(workspaceId, scriptId));
   handle('runscript:states', ({ workspaceId }) => runScriptStates(workspaceId));
+}
 
+function registerStatusIpc() {
   // ---------- status digests (Status tab) ----------
 
   handle('status:get', (req) => getStatus(req));
@@ -719,13 +761,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   // now live in services/refine.ts, which rejects refusals/meta-commentary so a
   // model's words never become the user's message (§3).
   handle('prompt:refine', ({ workspaceId, text }) => refinePrompt(mustWorkspace(workspaceId), text));
+}
 
+function registerDictationIpc() {
   // ---------- voice dictation (on-device, macOS) ----------
   // Transcript streams back on the 'dictation:*' events, keyed by sessionId.
   handle('dictation:supported', () => dictationSupported());
   handle('dictation:start', (opts) => startDictation(opts));
   handle('dictation:stop', (opts) => stopDictation(opts));
+}
 
+function registerPtyIpc() {
   // ---------- pty ----------
 
   handle('pty:ensure', ({ id, workspaceId, cols, rows }) => {
@@ -737,7 +783,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('pty:write', ({ id, data }) => writePty(id, data));
   handle('pty:resize', ({ id, cols, rows }) => resizePty(id, cols, rows));
   handle('pty:kill', ({ id }) => killPty(id));
+}
 
+function registerGithubIpc() {
   // ---------- github ----------
 
   handle('github:auth', () => gh.ghAuth(true));
@@ -786,7 +834,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
   handle('workspace:conflictResolveEvent', ({ phase }) => {
     capture(`pr_resolve_conflicts_${phase}`);
   });
+}
 
+function registerSkillIpc() {
   // ---------- skills ----------
 
   handle('skill:list', ({ workspaceId }) => listSkills(mustWorkspace(workspaceId)));
@@ -795,16 +845,19 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     saveSkill(mustWorkspace(workspaceId), location, markdown, prevPath)
   );
   handle('skill:delete', ({ workspaceId, path }) => deleteSkill(mustWorkspace(workspaceId), path));
+}
 
+function registerSettingsIpc() {
   // ---------- settings ----------
 
   handle('feedback:send', (req) => sendFeedback(req));
 
-  handle('settings:get', () => Settings.global());
   handle('settings:set', (patch) => {
     // Finishing first-run setup is the one settings write worth a usage signal
     // (pairs with app_opened to measure the install → set-up funnel).
-    if (patch.onboarded && !Settings.global().onboarded) capture('setup_completed');
+    if (patch.onboarded && !Settings.global().onboarded) {
+      capture('setup_completed', patch.heardFrom ? { heard_from: patch.heardFrom, $set_once: { heard_from: patch.heardFrom } } : undefined);
+    }
     const next = Settings.setGlobal(patch);
     // A shortcut change must re-render the menu accelerators (§9). Menu.setApplicationMenu is idempotent.
     if ('shortcuts' in patch) rebuildMenu();
@@ -818,20 +871,22 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     void account.publishSettings().catch(() => {});
     return next;
   });
+}
 
+function registerAttachmentIpc() {
   // ---------- attachments / linear ----------
 
   handle('attachment:save', async ({ workspaceId, name, text, dataBase64 }) => {
     const ws = mustWorkspace(workspaceId);
     return { path: await wsvc.writeWorkspaceAttachment(ws, { name, text, dataBase64 }) };
   });
-  handle('attachment:read', ({ workspaceId, path }) => {
+  handle('attachment:read', ({ workspaceId, path, ifVersion }) => {
     const ws = mustWorkspace(workspaceId);
-    return files.readAttachment(ws.worktreePath, path, hostForWorkspace(ws));
+    return files.readAttachment(ws.worktreePath, path, hostForWorkspace(ws), ifVersion);
   });
+}
 
-  handle('linear:issue', ({ id }) => fetchLinearIssue(id));
-
+function registerConductorIpc() {
   // ---------- Conductor import (spec docs/specs/conductor-import.md) ----------
 
   handle('conductor:detect', () => conductorDetected());
@@ -847,7 +902,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null) {
     });
     return result;
   });
+}
 
+function registerHarnessSyncIpc() {
   // ---------- Harness chat sync (spec docs/specs/harness-chat-sync.md) ----------
 
   handle('harnessSync:detect', () => detectHarnessSync());

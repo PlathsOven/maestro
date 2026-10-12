@@ -11,6 +11,10 @@ export interface BuildOpts {
   model?: string;
   /** '' | 'low' | 'medium' | 'high' | 'max' */
   effort?: string;
+  /** The user saved an API key for this harness (Settings → Harnesses), which
+   *  harnessKeyEnv injects into the spawn env. Lets an adapter whose CLI needs
+   *  more than one env var for key auth switch modes (kimi). */
+  apiKeyMode?: boolean;
 }
 
 export interface AdapterCommand {
@@ -59,10 +63,6 @@ export interface HarnessAdapter {
    *  any failure. */
   fetchProfile?(loginDir?: string): Promise<{ email?: string; plan?: string } | null>;
 }
-
-// The pure parse helpers moved to src/shared/harness/parse.ts (shared with the
-// relay ingest, G7); re-exported so existing adapter call sites are untouched.
-export { extractResultText, truncate, parseJsonLine, parseArgs, firstStr, firstNum } from '../../../shared/harness/parse';
 
 /** Standard `<bin> --version` install probe shared by the version-flag adapters. */
 export async function detectVersion(id: HarnessId, displayName: string, bin: string): Promise<HarnessInfo> {

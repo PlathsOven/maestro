@@ -23,7 +23,7 @@
  *
  *   npx esbuild scripts/account-e2e.ts --bundle --platform=node --format=cjs \
  *     --external:electron --external:better-sqlite3 --external:node-pty \
- *     --external:electron-updater --external:ssh2 --external:cpu-features \
+ *     --external:electron-updater --external:ssh2 \
  *     --outfile=dist/account-e2e.cjs && node dist/account-e2e.cjs
  */
 import http from 'http';
@@ -75,8 +75,10 @@ let approveNow = false;
  *  shape) — drives the circuit-breaker assertions (§B2). */
 let relayFail = false;
 /** Device-poll protocol v2 (web-relay-event-bus §4.3): `null` answers like a
- *  relay that predates it, so the desktop falls back to the old streaming. */
-let pollWatch: boolean | null = false;
+ *  relay that predates it, so the desktop falls back to the old streaming. Starts
+ *  watched — a web client is open — because publishing is held while nothing
+ *  watches; the hold itself is Test 7's. */
+let pollWatch: boolean | null = true;
 let pollIdleWait = 1;
 const polls: string[] = [];
 /** Set to make the next delta POST answer 409 with this expected seq. */
@@ -236,13 +238,17 @@ async function main() {
   process.env.MAESTRO_RELAY_URL = `http://127.0.0.1:${PORT}`;
 
   initDb(path.join(ROOT, 'db.sqlite'));
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   Settings.setGlobal({ notifications: false });
   // Deterministic subscription usage — the real adapter reads the user's Claude
   // credentials. The percent is deliberately fractional: what the desktop
   // publishes must be a whole number (web-neon-usage-diet §3.2), since it is an
   // unrounded float that used to re-publish the whole fleet every five minutes.
-  adapters['claude-code'].fetchUsage = async () => ({ plan: 'max', windows: [{ id: 'session', label: '5h limit', pct: 12.7 }] });
+  // resetsAt carries the read's microseconds, exactly as Claude sends it.
+  adapters['claude-code'].fetchUsage = async () => ({
+    plan: 'max',
+    windows: [{ id: 'session', label: '5h limit', pct: 12.7, resetsAt: '2026-09-27T03:30:00.921518+00:00' }],
+  });
   setSshHostFactory((hostId) => (hostId === 'testbox' || hostId === 'testbox2' ? fakeBoxHost(hostId) : null));
 
   execSync('git init -b main && git config user.email e2e@maestro.local && git config user.name "Maestro E2E" && git remote add origin https://github.com/maestro-e2e/repo.git && git add -A && git commit -q --allow-empty -m init', { cwd: REPO });
@@ -629,6 +635,13 @@ async function main() {
     claudeUsage?.windows?.length === 1 && claudeUsage.windows[0].pct === 13,
     JSON.stringify(claudeUsage?.windows)
   );
+  // Claude stamps resetsAt with the read's microseconds, so every 30-s refresh
+  // changed the body and re-PUT it — a Postgres write each time (neon-idle-compute).
+  check(
+    'published resetsAt is whole minutes',
+    claudeUsage?.windows?.[0]?.resetsAt === '2026-09-27T03:30:00.000Z',
+    JSON.stringify(claudeUsage?.windows)
+  );
   // ws is a cloud workspace (its harness runs on the box), ws2 is the local one
   // that put claude-code in the map — a harness with no live local work is absent.
   check('usage covers only harnesses with live local work', Object.keys(usageBody ?? {}).join(',') === 'claude-code', JSON.stringify(Object.keys(usageBody ?? {})));
@@ -925,20 +938,68 @@ async function main() {
     JSON.stringify(idlePolls)
   );
 
+  // Nothing is written while nothing watches — every write is a Neon wake-up —
+  // and nothing is lost either: no fingerprint advances, so the catch-up a viewer
+  // triggers sends exactly what was held (account.ts publishHeld).
   captured.turns.length = 0;
   captured.deltas.length = 0;
   await account.publishLiveTurn(ws2.id, 1, { turnId: liveTurn, status: 'running', events: [], stream: newBlockStream(), startedAt: 1 });
-  check(
-    'a turn is opened on the relay even in standby',
-    captured.turns.some((t) => t.id === liveConv && t.body.status === 'running' && t.body.blocks.length === 0),
-    JSON.stringify(captured.turns)
-  );
   await tick([{ kind: 'seg-start', segType: 'text' }, { kind: 'seg-delta', text: 'a' }]);
-  check('nothing streams while nothing is watching', captured.deltas.length === 0, JSON.stringify(captured.deltas));
+  check(
+    'a turn that starts while nothing watches is neither opened nor streamed',
+    captured.turns.length === 0 && captured.deltas.length === 0,
+    JSON.stringify({ turns: captured.turns, deltas: captured.deltas })
+  );
+  await account.publishLiveTurn(ws2.id, 1, {
+    turnId: uid(),
+    status: 'done',
+    blocks: [{ type: 'text', text: 'unseen' }],
+    meta: {},
+    startedAt: 1,
+    endedAt: 2,
+  });
+  check('a finished turn the relay never saw is left to the backfill', captured.turns.length === 0, JSON.stringify(captured.turns));
+
+  captured.put.length = 0;
+  captured.readState.length = 0;
+  Workspaces.patchChat(ws2.id, 1, { title: 'Renamed unwatched', lastReadAt: now() });
+  await account.publishConversation(Workspaces.get(ws2.id)!, 1);
+  await account.pushReadState(ws2.id, 1);
+  check(
+    'a changed chat and its read mark are held while nothing watches',
+    captured.put.length === 0 && captured.readState.length === 0,
+    JSON.stringify({ put: captured.put, readState: captured.readState })
+  );
 
   pollWatch = true;
   check('a watcher puts the desktop back in live mode', await waitFor(() => relayMode() === 'live', 10_000, 'live'), relayMode());
+  const caughtUp = await waitFor(
+    () => captured.put.some((p) => p.id === liveConv && p.body.title === 'Renamed unwatched'),
+    5_000,
+    'catch-up'
+  );
+  check('a viewer connecting catches the relay up in one pass', caughtUp, JSON.stringify(captured.put.map((p) => p.id)));
+  check(
+    '…read marks included, once',
+    (await waitFor(() => captured.readState.length > 0, 5_000, 'read-state catch-up')) &&
+      captured.readState.filter((r) => r.conversationId === liveConv).length === 1,
+    JSON.stringify(captured.readState)
+  );
+  const caughtBody = captured.put.find((p) => p.id === liveConv)?.body ?? {};
+  check(
+    'a chat body carries no workspace-wide state/subtitle (a status flip must not re-PUT every chat)',
+    !('state' in caughtBody) && !('subtitle' in caughtBody),
+    JSON.stringify(caughtBody)
+  );
+  await account.pushReadState(ws2.id, 1);
+  check('an unchanged read mark is not re-sent', captured.readState.filter((r) => r.conversationId === liveConv).length === 1);
+
   await tick([{ kind: 'seg-delta', text: 'b' }]);
+  check(
+    'the held turn is opened by its first tick once watched',
+    captured.turns.some((t) => t.id === liveConv && t.body.turnId === liveTurn && t.body.status === 'running'),
+    JSON.stringify(captured.turns)
+  );
   const base = captured.deltas[0];
   check('the first entry after going live is a base', base?.seq === 1 && !!base?.base, JSON.stringify(base));
   check('the base carries the turn so far, not just the new events', snapshotBlocks(base.base)[0]?.text === 'ab', JSON.stringify(base?.base));

@@ -4,7 +4,7 @@ import { Projects, Workspaces } from '../db';
 import { hostForWorkspace } from '../hosts';
 import type { ExecHost } from '../hosts/types';
 import { readRepoSettings } from './settingsToml';
-import { ensurePty, isPtyAlive, killPty, spawnPty } from './pty';
+import { isPtyAlive, killPty, spawnPty } from './pty';
 import type { ScriptState, Workspace, WorkspaceScripts } from '../../shared/types';
 
 /**

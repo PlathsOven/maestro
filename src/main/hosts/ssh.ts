@@ -23,11 +23,7 @@ import type {
   SpawnOpts,
 } from './types';
 import type { FsEntry, HostState, SshConfigHost, SshHostConfig } from '../../shared/types';
-
-/** POSIX single-quote a shell argument. */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
+import { shq } from './posix';
 
 /** POSIX snippet appending nvm-managed node bins to PATH. nvm initializes only
  *  in interactive bash/zsh (its nvm.sh is not POSIX and Ubuntu's .bashrc
@@ -1151,18 +1147,19 @@ class SshPty implements HostPty {
   private dataCbs: ((c: string) => void)[] = [];
   private exitCbs: ((c: number) => void)[] = [];
   private pendingWrites: string[] = [];
-  private lastCols: number;
-  private lastRows: number;
+  /** A resize that arrived while the channel was still opening; applied on open
+   *  (xterm fits the terminal right after spawn, before SSH answers). */
+  private pendingSize: { cols: number; rows: number } | null = null;
 
   constructor(host: SshHost, opts: HostPtyOpts) {
-    this.lastCols = opts.cols ?? 80;
-    this.lastRows = opts.rows ?? 24;
     host
       .openPtyChannel(opts)
       .then((channel) => {
         this.channel = channel;
         for (const d of this.pendingWrites) channel.write(d);
         this.pendingWrites = [];
+        if (this.pendingSize) this.resize(this.pendingSize.cols, this.pendingSize.rows);
+        this.pendingSize = null;
         channel.on('data', (d: Buffer) => this.dataCbs.forEach((cb) => cb(d.toString())));
         channel.stderr?.on('data', (d: Buffer) => this.dataCbs.forEach((cb) => cb(d.toString())));
         channel.on('close', (code: number | null) => this.exitCbs.forEach((cb) => cb(code ?? 0)));
@@ -1183,10 +1180,12 @@ class SshPty implements HostPty {
     else this.pendingWrites.push(data);
   }
   resize(cols: number, rows: number) {
-    this.lastCols = cols;
-    this.lastRows = rows;
+    if (!this.channel) {
+      this.pendingSize = { cols, rows };
+      return;
+    }
     try {
-      this.channel?.setWindow(rows, cols, 480, 640);
+      this.channel.setWindow(rows, cols, 480, 640);
     } catch {}
   }
   kill() {

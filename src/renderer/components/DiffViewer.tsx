@@ -9,7 +9,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
-import { highlightLine, langForPath } from '../lib/format';
+import { highlightLine, langForPath } from '../../shared/ui/format';
 import { EMPTY_ARR, useApp } from '../store/app';
 import { EmptyHint, Segmented, Spinner } from './common';
 import ChangedFileTree, { StatusGlyph } from './ChangedFileTree';
@@ -47,10 +47,24 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
   const totalAdd = files.reduce((n, f) => n + f.additions, 0);
   const totalDel = files.reduce((n, f) => n + f.deletions, 0);
 
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  // Scroll only the diff pane: scrollIntoView would also shift clipped ancestors.
   const scrollToFile = (path: string) => {
     setSelected(path);
-    fileRefs.current[path]?.scrollIntoView({ block: 'start' });
+    const card = fileRefs.current[path];
+    const scroller = scrollerRef.current;
+    if (card && scroller) scroller.scrollTop += card.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8;
   };
+
+  // A Changes-tab click: scroll to that file once this surface is showing (a
+  // hidden pane can't scroll) and the diff has loaded.
+  const focus = useApp((s) => (s.diffFocus?.wsId === workspace.id ? s.diffFocus.path : null));
+  useEffect(() => {
+    if (!active || !focus || !diff) return;
+    scrollToFile(focus);
+    useApp.setState({ diffFocus: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, focus, diff]);
 
   return (
     <div className="flex h-full">
@@ -108,7 +122,7 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={scrollerRef} className="min-h-0 flex-1 overflow-auto">
           {!diff && (
             <div className="flex h-40 items-center justify-center">
               <Spinner />
@@ -172,7 +186,6 @@ const FileDiffCard = React.memo(function FileDiffCard({
         cardRefs.current[file.path] = el;
       }}
       className="card overflow-hidden"
-      style={{ scrollMarginTop: 8 }}
     >
       <button
         className={clsx('flex w-full items-center gap-2 px-3.5 py-2.5 text-left transition-colors hover:bg-accent-soft/60', open && 'border-b')}
@@ -181,7 +194,18 @@ const FileDiffCard = React.memo(function FileDiffCard({
         <Chevron open={open} size={13} className="text-muted" />
         <StatusGlyph status={file.status} />
         <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium">
-          {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+          {/* the name opens the file (a deleted one has nothing to open); the rest of the row toggles */}
+          <span
+            className={clsx(file.status !== 'deleted' && 'underline-offset-2 hover:text-accent hover:underline')}
+            title={file.status !== 'deleted' ? `Open ${file.path} in the editor` : undefined}
+            onClick={(e) => {
+              if (file.status === 'deleted') return;
+              e.stopPropagation();
+              useApp.getState().openFile(workspace.id, file.path);
+            }}
+          >
+            {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+          </span>
         </span>
         <span className="shrink-0 font-mono text-2xs">
           <span className="text-ok">+{file.additions}</span> <span className="text-err">−{file.deletions}</span>

@@ -247,7 +247,7 @@ async function main() {
       .find((t) => t.startsWith('SHA256:')) ?? '';
 
   initDb(path.join(ROOT, 'db.sqlite'));
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   initRemoteHosts();
 
   // ---------- 1. the host row ----------
@@ -269,6 +269,13 @@ async function main() {
   check('the K8sHost keeps the row id (bridge/host caches key alike)', cluster?.id === 'cluster1');
   check('hosts are cached per row id', remoteHostFor('cluster1') === cluster);
   check('hostById resolves through the same factory', hostById('cluster1') === cluster);
+  const removedHost = hostById('deleted-row');
+  const goneRun = await removedHost.exec('git', ['status']);
+  check(
+    'a removed host never falls back to this machine',
+    removedHost.id === 'deleted-row' && !goneRun.ok && /no longer set up/.test(goneRun.stderr) && !(await removedHost.fs.exists('/')),
+    JSON.stringify(goneRun)
+  );
   check('posix path math (the node is Linux)', cluster?.path.sep === '/' && cluster?.platform === 'linux');
 
   // ---------- 3. manifests ----------

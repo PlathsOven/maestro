@@ -482,18 +482,8 @@ export const Workspaces = {
     // Keep every window's session-status indicators live without refetching.
     broadcast('chat:meta:updated', { workspaceId: id, agentId, meta });
   },
-  removeChat(id: string, agentId: number) {
-    const chats = { ...Workspaces.getChats(id) };
-    delete chats[String(agentId)];
-    stmt('UPDATE workspaces SET chatsJson=? WHERE id=?').run(JSON.stringify(chats), id);
-  },
   setSession(id: string, agentId: number, sessionId: string) {
     const sessions = { ...Workspaces.getSessions(id), [String(agentId)]: sessionId };
-    stmt('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
-  },
-  removeSession(id: string, agentId: number) {
-    const sessions = { ...Workspaces.getSessions(id) };
-    delete sessions[String(agentId)];
     stmt('UPDATE workspaces SET sessionsJson=? WHERE id=?').run(JSON.stringify(sessions), id);
   },
   clearSessions(id: string) {
@@ -547,9 +537,6 @@ export const Messages = {
       metaJson: m.meta ? JSON.stringify(m.meta) : null,
       ts: m.ts,
     });
-  },
-  removeForAgent(workspaceId: string, agentId: number) {
-    stmt('DELETE FROM messages WHERE workspaceId=? AND agentId=?').run(workspaceId, agentId);
   },
   get(id: string): ChatMessage | null {
     const r = stmt('SELECT * FROM messages WHERE id=?').get(id);
@@ -727,12 +714,6 @@ export const Queued = {
       .all(workspaceId, agentId)
       .map(rowToQueued);
   },
-  /** The oldest waiting message for a chat (FIFO drain), or null. */
-  oldest(workspaceId: string, agentId: number): QueuedMessage | null {
-    const r = stmt('SELECT * FROM queued_messages WHERE workspaceId=? AND agentId=? ORDER BY seq ASC LIMIT 1')
-      .get(workspaceId, agentId);
-    return r ? rowToQueued(r) : null;
-  },
   /** Next monotonic seq for a chat — the job-file ordinal on the box. */
   nextSeq(workspaceId: string, agentId: number): number {
     const r = stmt('SELECT COALESCE(MAX(seq),0) m FROM queued_messages WHERE workspaceId=? AND agentId=?')
@@ -747,8 +728,8 @@ export const Queued = {
       .get(workspaceId, agentId) as any;
     stmt('UPDATE queued_messages SET seq=? WHERE id=?').run((r?.m ?? 0) - 1, id);
   },
-  setText(id: string, text: string) {
-    stmt('UPDATE queued_messages SET text=? WHERE id=?').run(text, id);
+  update(id: string, text: string, attachments: Attachment[]) {
+    stmt('UPDATE queued_messages SET text=?, attachmentsJson=? WHERE id=?').run(text, JSON.stringify(attachments), id);
   },
   remove(id: string) {
     stmt('DELETE FROM queued_messages WHERE id=?').run(id);
@@ -826,9 +807,6 @@ export const Subagents = {
     const r = stmt('SELECT COALESCE(SUM(costUsd),0) s FROM subagent_runs WHERE workspaceId=? AND parentMessageId=?')
       .get(workspaceId, parentMessageId) as any;
     return r.s ?? 0;
-  },
-  removeForAgent(workspaceId: string, agentId: number) {
-    stmt('DELETE FROM subagent_runs WHERE workspaceId=? AND parentAgentId=?').run(workspaceId, agentId);
   },
 };
 
@@ -1001,6 +979,7 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   linearToken: '',
   notifications: true,
   completionSound: DEFAULT_COMPLETION_SOUND,
+  questionSound: true,
   defaultModels: {},
   defaultEffort: DEFAULT_EFFORT,
   sidebarCollapsed: false,

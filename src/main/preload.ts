@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 // Narrow, typed-on-the-renderer-side bridge. Channels are validated by the
 // main process handlers; we only expose invoke/on.
@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('maestro', {
     ipcRenderer.on(channel, listener as never);
     return () => ipcRenderer.removeListener(channel, listener as never);
   },
+  // Absolute path of a File dropped in from the OS ('' when it has none).
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
 });

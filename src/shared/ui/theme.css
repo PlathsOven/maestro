@@ -48,6 +48,10 @@
   --on-ink: #ffffff;
   --st-idle: #b3b0aa;
   --st-running: #3f7fe0;
+  /* An agent blocked on a maestro-ask question. Deliberately off the rest of
+     the status palette (no theme reuses it for anything else) so it can't be
+     mistaken for running/waiting at a glance. */
+  --st-asking: #e0407e;
   --st-attention: #e0930f;
   --st-review: #2f9e6a;
   --st-unread: #2f9e6a;
@@ -83,6 +87,16 @@
   --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 0 0 1px rgba(255, 255, 255, 0.45);
   --glass-shadow: 0 0 0 1px rgba(24, 22, 20, 0.06), 0 2px 6px rgba(24, 22, 20, 0.05),
     0 18px 48px -12px rgba(24, 22, 20, 0.2);
+  --glass-sat: 180%;
+
+  /* Shape. Families in themes.css override these to change the app's geometry
+     (square and technical, soft and pebbly, …) without touching components. */
+  --r-card: 14px;
+  --r-ctl: 10px;
+  --r-stage: 14px;
+  --r-glass: 14px;
+  --r-btn: 9999px;
+  --r-bubble: 20px;
 }
 
 .dark {
@@ -104,6 +118,7 @@
   --on-ink: #141414;
   --st-idle: #5e5e5e;
   --st-running: #6aa6ff;
+  --st-asking: #ff6fa3;
   --st-attention: #f0a93a;
   --st-review: #4cc38a;
   --st-unread: #4cc38a;
@@ -228,13 +243,13 @@ summary {
    and shoving their siblings around. Each popup owns its own positioning. */
 .glass {
   background-color: var(--glass-bg);
-  border-radius: 14px;
+  border-radius: var(--r-glass);
   box-shadow: var(--glass-rim), var(--glass-shadow);
 }
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .glass {
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-    backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   }
 }
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
@@ -420,15 +435,17 @@ summary {
     var(--canvas);
 }
 
-/* The floating work area beside the sidebar (desktop): a pane of frosted glass
-   over the ambient wash, with a hairline edge and a diffuse shadow. Chat and
-   the right panel stay transparent on it; code surfaces (diff, editor,
-   terminal) keep their solid canvas for legibility. */
+/* The floating work area beside the sidebar (desktop): a translucent pane over
+   the ambient wash, with a hairline edge and a diffuse shadow. Chat and the
+   right panel stay transparent on it; code surfaces (diff, editor, terminal)
+   keep their solid canvas for legibility.
+   No backdrop-filter: all that sits behind the stage is the wash, which is
+   already a soft gradient, so a blur changed nothing visible — but it made the
+   whole work area one render surface re-blurred on every repaint inside it
+   (each streamed token, each spinner frame), which older GPUs can't keep up with. */
 .stage {
   background: var(--canvas-glass);
-  -webkit-backdrop-filter: blur(40px) saturate(170%);
-  backdrop-filter: blur(40px) saturate(170%);
-  border-radius: 14px;
+  border-radius: var(--r-stage);
   box-shadow: var(--stage-shadow);
 }
 
@@ -453,7 +470,8 @@ button:disabled {
 }
 
 .btn {
-  @apply inline-flex items-center justify-center gap-1.5 rounded-full border bg-raised px-3 h-7 text-xs font-medium text-fg select-none whitespace-nowrap;
+  @apply inline-flex items-center justify-center gap-1.5 border bg-raised px-3 h-7 text-xs font-medium text-fg select-none whitespace-nowrap;
+  border-radius: var(--r-btn);
   box-shadow: 0 1px 1px rgba(24, 22, 20, 0.03);
   transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease;
 }
@@ -609,6 +627,31 @@ select.input {
 }
 .sg-ring-once {
   animation: sg-ripple 0.7s cubic-bezier(0.15, 0.6, 0.25, 1) 1;
+}
+/* The asking bead: a periodic tilt-and-hop so it catches the eye among the
+   static dots and the (differently animated) running ripple. */
+.ask-glyph {
+  transform-origin: 50% 90%;
+  animation: ask-nudge 2.4s ease-in-out infinite;
+}
+@keyframes ask-nudge {
+  0%,
+  62%,
+  100% {
+    transform: rotate(0) translateY(0);
+  }
+  70% {
+    transform: rotate(-12deg) translateY(-1px);
+  }
+  78% {
+    transform: rotate(9deg) translateY(-1px);
+  }
+  86% {
+    transform: rotate(-5deg) translateY(0);
+  }
+  93% {
+    transform: rotate(2deg);
+  }
 }
 @keyframes sg-ripple {
   0% {
@@ -1031,6 +1074,38 @@ select.input {
   animation-timing-function: var(--ease-glass);
 }
 
+/* ---- Reduced effects ------------------------------------------------------------
+   `<html data-fx="reduced">` (src/shared/ui/effects.ts: Settings → Visual effects,
+   or Auto on older / integrated / software-rendered graphics). Every backdrop
+   blur goes — each one re-samples and re-blurs what's behind it whenever
+   anything under or inside it repaints, which is what makes weak GPUs stutter —
+   and the surfaces that relied on the frosting to stay legible over scrolling
+   content get an opaque fill instead. <LiquidGlass>/<StainedGlass> also stop
+   building their SVG refraction filters; layout, palette and motion are unchanged. */
+:root[data-fx='reduced'] {
+  --glass-bg: var(--raised) !important;
+  --glass-panel-bg: var(--raised) !important;
+}
+:root[data-fx='reduced'] *,
+:root[data-fx='reduced'] *::before,
+:root[data-fx='reduced'] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+/* Liquid glass floats over the transcript (composer, header controls, menus):
+   solid instead of a near-clear tint. The segmented thumb keeps its own tint so
+   it still reads against the track. */
+:root[data-fx='reduced'] .lg:not(.seg-thumb)::after {
+  background: var(--raised);
+}
+:root[data-fx='reduced'] .lg-clear:not(.seg-thumb)::after {
+  background: var(--surface);
+}
+/* Tinted notices that float over the transcript. */
+:root[data-fx='reduced'] .fx-solid-warn {
+  background: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent) 0 0), var(--raised);
+}
+
 /* --- Mobile additions (web-desktop-parity §3.4). No effect on the desktop,
    which never reports a coarse pointer. --------------------------------------- */
 @media (pointer: coarse) {
@@ -1040,7 +1115,7 @@ select.input {
   .tap { min-height: 44px; }           /* apply to list rows / chips that are primary targets */
 }
 @media (prefers-reduced-motion: reduce) {
-  .sg-ring, .spin, .lq-drop, .lq-drift, .fade-in, .pulse-soft { animation: none !important; }
+  .sg-ring, .ask-glyph, .spin, .lq-drop, .lq-drift, .fade-in, .pulse-soft { animation: none !important; }
   .seg, .lg-field, .btn, .chev { transition: none; }
   [data-motion], [data-motion] > :first-child { animation: none !important; }
   ::view-transition-group(*) { animation: none !important; }

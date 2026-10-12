@@ -22,7 +22,7 @@ const IDLE_MS = 10 * 60_000;
 const KEEP_RECENT = 8;
 
 /** The slices eviction reads and writes — a structural subset of the store. */
-export interface EvictableState {
+interface EvictableState {
   activeWorkspaceId: string | null;
   lastSeenAt: Record<string, number>;
   runningAgents: Record<string, number[]>;

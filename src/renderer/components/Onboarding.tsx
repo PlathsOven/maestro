@@ -39,7 +39,7 @@ export default function Onboarding() {
     {
       icon: <Folder size={17} />,
       title: 'Open project',
-      blurb: 'Open a git repo — or any folder — on this Mac',
+      blurb: 'Open a git repo — or any folder — on this computer',
       onClick: () => void useApp.getState().openLocalProject(),
     },
     {

@@ -9,6 +9,7 @@ import { maestroHome } from '../env';
 // that never installed gh.
 
 const isWindows = process.platform === 'win32';
+const isLinux = process.platform === 'linux';
 const GH_EXE = isWindows ? 'gh.exe' : 'gh';
 
 let cached: string | null = null;
@@ -41,8 +42,10 @@ export async function ensureGh(): Promise<string> {
   if (existing) return existing;
 
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-  const osName = isWindows ? 'windows' : 'macOS';
-  const assetSuffix = `_${osName}_${arch}.zip`;
+  // cli/cli ships .zip for macOS/Windows but only .tar.gz (plus .deb/.rpm) for Linux.
+  const osName = isWindows ? 'windows' : isLinux ? 'linux' : 'macOS';
+  const ext = isLinux ? '.tar.gz' : '.zip';
+  const assetSuffix = `_${osName}_${arch}${ext}`;
   const rel = await fetch('https://api.github.com/repos/cli/cli/releases/latest', {
     headers: { 'User-Agent': 'maestro', Accept: 'application/vnd.github+json' },
     signal: AbortSignal.timeout(20_000),
@@ -60,13 +63,16 @@ export async function ensureGh(): Promise<string> {
   if (!zipRes.ok) throw new Error(`GitHub CLI download failed (HTTP ${zipRes.status})`);
   const buf = Buffer.from(await zipRes.arrayBuffer());
 
-  const tmpZip = path.join(os.tmpdir(), `maestro-gh-${Date.now()}.zip`);
+  const tmpZip = path.join(os.tmpdir(), `maestro-gh-${Date.now()}${ext}`);
   const extractDir = path.join(os.tmpdir(), `maestro-gh-extract-${Date.now()}`);
   fs.writeFileSync(tmpZip, buf);
   try {
     // ditto is macOS-only; PowerShell's Expand-Archive ships with every
-    // supported Windows and handles .zip natively.
-    const unzip = isWindows
+    // supported Windows and handles .zip natively; every Linux has tar.
+    if (isLinux) fs.mkdirSync(extractDir, { recursive: true });
+    const unzip = isLinux
+      ? await run('tar', ['-xzf', tmpZip, '-C', extractDir], { timeout: 60_000 })
+      : isWindows
       ? await run(
           'powershell',
           [
@@ -79,7 +85,7 @@ export async function ensureGh(): Promise<string> {
         )
       : await run('ditto', ['-xk', tmpZip, extractDir], { timeout: 60_000 });
     if (!unzip.ok) throw new Error(`Could not extract GitHub CLI: ${unzip.stderr.trim()}`);
-    // Layouts differ by OS: the macOS archive wraps everything in a single
+    // Layouts differ by OS: the macOS and Linux archives wrap everything in a single
     // `gh_<version>_<os>_<arch>/` directory, while the Windows zip unpacks
     // `bin/`, `LICENSE`, etc. straight into the destination. Copy from whichever
     // directory actually holds `bin/<gh>` — the extract root or its one child.

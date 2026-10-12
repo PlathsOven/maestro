@@ -12,13 +12,13 @@
  */
 import { broadcast } from '../bus';
 import { Comments, Messages, Settings, Todos, Workspaces, now, uid } from '../db';
-import { isLinked, relayFetch, relayRetryIn, relayStatus, applyEvents, schedulePublish, publishRunScripts, publishTodos, publishComments, resyncAll, downloadAttachment } from './account';
-import { agentLoopError, recordUserMessage, sendChat, clearQueue, removeQueued, editQueued, sendQueuedNow, scheduleChat, editScheduledChat } from './chat';
+import { isLinked, relayFetch, relayRetryIn, relayStatus, applyEvents, publishAll, schedulePublish, publishRunScripts, publishTodos, publishComments, resyncAll, downloadAttachment } from './account';
+import { agentLoopError, recordUserMessage, sendChat, stopChat, removeQueued, editQueued, sendQueuedNow, scheduleChat, editScheduledChat } from './chat';
 import { cancelScheduled } from './schedule';
 import { createWorkspace, writeWorkspaceAttachment } from './workspaces';
 import { execRunScript, stopRunScript } from './runscripts';
 import { setWorkspaceCloud } from './cloudmove';
-import { postSystem, stopAgent } from './harness';
+import { postSystem } from './harness';
 import { submitAskAnswer } from './ask';
 import type { Attachment, HarnessId } from '../../shared/types';
 import {
@@ -42,6 +42,10 @@ interface Job {
 }
 
 let running = false;
+// Which loop is current. A loop that ended on its own (sign-out flips isLinked)
+// leaves `running` set, so a restart can't key off it; a superseded loop sees a
+// newer generation and exits after its in-flight poll instead.
+let generation = 0;
 let backoff = 2000;
 
 /**
@@ -65,13 +69,17 @@ export function relayMode(): RelayMode {
   return Date.now() - watchingAt < LIVE_GRACE_MS ? 'live' : 'idle';
 }
 
-/** Tell the renderer when the cadence changes, so Settings → Account can say
- *  whether a phone is connected. */
+/** Act on a cadence change: tell the renderer (so Settings → Account can say
+ *  whether a phone is connected), and whenever publishing is no longer held —
+ *  a viewer connected, or this is the first answer from the relay — catch the
+ *  relay up. Publishing waits while nobody watches (account.ts `publishHeld`);
+ *  this one fingerprint-gated pass is what makes that lossless. */
 function noteMode(): void {
   const mode = relayMode();
   if (mode === lastMode) return;
   lastMode = mode;
   broadcast('account:relay-status', relayStatus());
+  if (mode !== 'idle') void publishAll().catch(() => {});
 }
 
 /** Sleep in ≤5s slices so a stop / sign-out still takes effect promptly. */
@@ -174,8 +182,7 @@ async function runJob(job: Job): Promise<{ ok: boolean; result?: unknown; error?
       return { ok: r.ok, error: r.error };
     }
     case 'stop': {
-      clearQueue(wsId, agentId);
-      stopAgent(wsId, agentId);
+      stopChat(wsId, agentId);
       schedulePublish(wsId);
       return { ok: true };
     }
@@ -226,9 +233,14 @@ async function runJob(job: Job): Promise<{ ok: boolean; result?: unknown; error?
       return { ok: true };
     }
     case 'queue_edit': {
-      // Rewrite the real queued row by the web's messageId (empty text drops it).
+      // Rewrite the real queued row by the web's messageId (nothing left drops
+      // it). An `attachments` list replaces the row's photos — re-downloaded from
+      // the relay, the same as a web send; absent keeps them.
       const id = String(job.payload?.messageId ?? '');
-      if (id) editQueued(wsId, agentId, id, String(job.payload?.text ?? ''));
+      if (id) {
+        const atts = Array.isArray(job.payload?.attachments) ? await downloadWebAttachments(wsId, job.payload.attachments) : undefined;
+        editQueued(wsId, agentId, id, String(job.payload?.text ?? ''), atts);
+      }
       schedulePublish(wsId);
       return { ok: true };
     }
@@ -419,8 +431,8 @@ async function poll(): Promise<void> {
   }
 }
 
-async function loop(): Promise<void> {
-  while (running && isLinked()) {
+async function loop(gen: number): Promise<void> {
+  while (running && gen === generation && isLinked()) {
     // Honour the shared relay breaker (web-relay-egress-quota §B2) so this loop
     // and the publish paths back off together instead of each hammering a dead
     // relay on its own schedule. This poll is also the PROBER that closes it:
@@ -444,16 +456,16 @@ async function loop(): Promise<void> {
   }
 }
 
-/** Start the device long-poll loop (idempotent). */
+/** Start the device long-poll loop — at boot, and again on every link (a new
+ *  link may be a different relay). Replaces any earlier loop. */
 export function startBridge(): void {
-  if (running) return;
   running = true;
   backoff = 2000;
   // A fresh link may be a different (or older) relay: re-learn its protocol.
   sawWatch = false;
   watchingAt = 0;
   lastMode = null;
-  void loop();
+  void loop(++generation);
 }
 
 /** Stop the loop; the in-flight poll times out server-side and the device ages

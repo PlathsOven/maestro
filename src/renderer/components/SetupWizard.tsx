@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import clsx from 'clsx';
 import { Bot, Boxes, Check, ChevronLeft, Download, Folder, GitPullRequest, Play, RefreshCw } from 'lucide-react';
 import { HarnessLogo } from '../../shared/ui/brandIcons';
-import { invoke, on, tryInvoke } from '../lib/api';
+import { on, tryInvoke } from '../lib/api';
+import { useHarnessPty } from '../lib/useHarnessPty';
 import { useApp } from '../store/app';
 import { ApiKeyField, Kbd, Spinner } from './common';
 import PtyView from './TerminalPanel';
@@ -20,6 +21,7 @@ export default function SetupWizard() {
   // Live auth results from this session's connect panels — fresher than the
   // store list, whose `connected` flags come from main's 5-min detect cache.
   const [authed, setAuthed] = useState<Partial<Record<HarnessId, boolean>>>({});
+  const [heardFrom, setHeardFrom] = useState<string | null>(null);
 
   // Smoke-test hook: `--smoke-actions=wizard-next,…` pages through the wizard
   // so a screenshot run can capture each pane. No menu item emits this action.
@@ -40,6 +42,7 @@ export default function SetupWizard() {
       if (connected.length > 0 && !connected.some((h) => h.id === s.settings.defaultHarness)) {
         patch.defaultHarness = connected[0].id;
       }
+      if (heardFrom) patch.heardFrom = heardFrom;
     }
     void s.saveSettings(patch);
     // Logins done here outlive the wizard — refresh the cached detect sweep so
@@ -65,7 +68,7 @@ export default function SetupWizard() {
           {step === 1 && (
             <AgentsStep authed={authed} setAuthed={(id, v) => setAuthed((m) => ({ ...m, [id]: v }))} />
           )}
-          {step === 2 && <TourStep />}
+          {step === 2 && <TourStep heardFrom={heardFrom} setHeardFrom={setHeardFrom} />}
 
           <div className="mt-9 flex items-center">
             <div className="flex-1">
@@ -190,7 +193,7 @@ function AgentsStep({
 
       {noneInstalled && (
         <div className="mt-3 rounded-card bg-warn/10 px-4 py-3 text-xs leading-relaxed text-muted">
-          No agent CLIs found on this Mac. Install one — e.g.{' '}
+          No agent CLIs found on this computer. Install one — e.g.{' '}
           <code className="font-mono text-2xs">npm install -g @anthropic-ai/claude-code</code> — then hit Refresh.
         </div>
       )}
@@ -277,7 +280,6 @@ function ConnectPanel({
   const saveSettings = useApp((s) => s.saveSettings);
   const toast = useApp((s) => s.toast);
   const [auth, setAuth] = useState<HarnessAuth | null>(null);
-  const [ptyId, setPtyId] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState(settings.harnessApiKeys?.[harness] ?? '');
 
   const refresh = useCallback(
@@ -300,25 +302,17 @@ function ConnectPanel({
   }, [refresh]);
 
   // A finished login terminal (browser flow returned / user quit) → re-probe.
-  useEffect(() => {
-    if (!ptyId) return;
-    return on('pty:exit', ({ id }) => {
-      if (id === ptyId) void refresh(true);
-    });
-  }, [ptyId, refresh]);
-
   // Never leave a login pty running when the row collapses or the step changes.
-  useEffect(() => () => void invoke('harness:loginStop', { harness }), [harness]);
+  const login = useHarnessPty('login', harness, () => void refresh(true), [refresh]);
+  const ptyId = login.ptyId;
 
   const startLogin = async () => {
-    const { data, error } = await tryInvoke('harness:loginStart', { harness });
+    const { error } = await login.start();
     if (error) return toast('error', error);
-    if (data) setPtyId(data.ptyId);
   };
 
   const closeLogin = async () => {
-    await invoke('harness:loginStop', { harness });
-    setPtyId(null);
+    await login.stop();
     void refresh(true);
   };
 
@@ -395,45 +389,40 @@ function InstallPanel({
 }) {
   const refreshHarnesses = useApp((s) => s.refreshHarnesses);
   const toast = useApp((s) => s.toast);
-  const [ptyId, setPtyId] = useState<string | null>(null);
   const [cmd, setCmd] = useState<string | null>(null);
   const [phase, setPhase] = useState<'running' | 'failed'>('running');
 
-  const start = useCallback(async () => {
-    setPhase('running');
-    const { data, error } = await tryInvoke('harness:installStart', { harness });
-    if (error) {
-      setPhase('failed');
-      return toast('error', error);
-    }
-    if (data) {
-      setCmd(data.cmd);
-      setPtyId(data.ptyId);
-    }
-  }, [harness, toast]);
-
-  // Clicking "Install" is the one click — kick off the installer as we open.
-  useEffect(() => {
-    void start();
-  }, [start]);
-
   // Never leave an install pty running when the row collapses or the step changes.
-  useEffect(() => () => void invoke('harness:installStop', { harness }), [harness]);
-
   // Installer exited → re-probe. A now-detected CLI is success (the row flips to
   // its Connect state); otherwise the terminal shows what failed — offer a retry.
-  useEffect(() => {
-    if (!ptyId) return;
-    return on('pty:exit', ({ id }) => {
-      if (id !== ptyId) return;
+  const install = useHarnessPty(
+    'install',
+    harness,
+    () =>
       void (async () => {
         await refreshHarnesses(true);
         const installed = useApp.getState().harnesses.find((h) => h.id === harness)?.installed;
         if (installed) toast('success', `${displayName} installed`);
         else setPhase('failed');
-      })();
-    });
-  }, [ptyId, harness, displayName, refreshHarnesses, toast]);
+      })(),
+    [harness, displayName, refreshHarnesses, toast]
+  );
+  const { ptyId, start: startInstall } = install;
+
+  const start = useCallback(async () => {
+    setPhase('running');
+    const { data, error } = await startInstall();
+    if (error) {
+      setPhase('failed');
+      return toast('error', error);
+    }
+    if (data) setCmd(data.cmd);
+  }, [startInstall, toast]);
+
+  // Clicking "Install" is the one click — kick off the installer as we open.
+  useEffect(() => {
+    void start();
+  }, [start]);
 
   return (
     <div className="space-y-2 px-3 pb-3 pt-2">
@@ -471,7 +460,9 @@ function InstallPanel({
 
 // ---------- step 3: tour ----------
 
-function TourStep() {
+const HEARD_FROM = ['Google', 'AI assistant', 'Reddit', 'GitHub', 'Hacker News', 'X / Twitter', 'Friend or colleague', 'Other'];
+
+function TourStep({ heardFrom, setHeardFrom }: { heardFrom: string | null; setHeardFrom: (v: string | null) => void }) {
   const items: { icon: React.ReactNode; title: string; blurb: React.ReactNode }[] = [
     {
       icon: <Folder size={17} />,
@@ -526,6 +517,26 @@ function TourStep() {
       <p className="mt-5 text-center text-xs text-muted">
         <Kbd>⌘K</Kbd> opens the command palette — every action is in there.
       </p>
+
+      {/* Optional, one tap — referrers can't see AI chats or word of mouth. */}
+      <div className="mt-7 text-center">
+        <p className="text-xs text-muted">How did you hear about Maestro? (optional)</p>
+        <div className="mt-2.5 flex flex-wrap justify-center gap-1.5">
+          {HEARD_FROM.map((o) => (
+            <button
+              key={o}
+              aria-pressed={heardFrom === o}
+              onClick={() => setHeardFrom(heardFrom === o ? null : o)}
+              className={clsx(
+                'rounded-full border px-2.5 py-1 text-xs transition-colors',
+                heardFrom === o ? 'border-ink bg-ink text-on-ink' : 'bg-raised text-muted hover:text-fg'
+              )}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

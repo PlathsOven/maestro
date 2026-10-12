@@ -3,7 +3,7 @@ import { Activity, ArrowRight, Crosshair, History, RefreshCw, Sparkles } from 'l
 import { statusKey } from '../../shared/types';
 import type { StatusRequest, Workspace } from '../../shared/types';
 import { chatDisplayTitle } from '../../shared/chatTitle';
-import { timeAgo } from '../lib/format';
+import { timeAgo } from '../../shared/ui/format';
 import { useApp, useCaps } from '../store/app';
 import { EmptyHint, Segmented, Spinner } from './common';
 

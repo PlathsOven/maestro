@@ -34,6 +34,7 @@ module.exports = {
         'on-ink': c('--on-ink'),
         'st-idle': c('--st-idle'),
         'st-running': c('--st-running'),
+        'st-asking': c('--st-asking'),
         'st-attention': c('--st-attention'),
         'st-review': c('--st-review'),
         'st-unread': c('--st-unread'),
@@ -53,9 +54,10 @@ module.exports = {
       },
       borderRadius: {
         // Softer, Lovable-style geometry: cards/panels 14px, controls 10px;
-        // buttons are full pills (`.btn`).
-        card: '14px',
-        ctl: '10px',
+        // buttons are full pills (`.btn`). CSS variables (theme.css) so a
+        // theme family can reshape them.
+        card: 'var(--r-card, 14px)',
+        ctl: 'var(--r-ctl, 10px)',
       },
       // Make Tailwind Preflight's universal border reset use the theme token
       // instead of its gray-200 default, so `border` utilities never fall back to

@@ -2,6 +2,7 @@
 import React, { forwardRef, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { computeGlassMaps, imageDataUrl, supportsRefraction } from './liquidGlassMaps';
+import { useFullEffects } from './effects';
 
 type Maps = { displacement: string; specular: string; scale: number };
 
@@ -92,9 +93,11 @@ export const LiquidGlass = forwardRef<HTMLDivElement, LiquidGlassProps>(function
   const filterId = `lg-${useId().replace(/[^a-zA-Z0-9-]/g, '')}`;
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [maps, setMaps] = useState<Maps | null>(null);
-  const [refract, setRefract] = useState(false);
+  const [supported, setSupported] = useState(false);
+  // Reduced effects (older GPUs) skip the SVG filter chain entirely.
+  const refract = useFullEffects() && supported;
 
-  useEffect(() => setRefract(supportsRefraction()), []);
+  useEffect(() => setSupported(supportsRefraction()), []);
 
   useLayoutEffect(() => {
     const el = ref.current;

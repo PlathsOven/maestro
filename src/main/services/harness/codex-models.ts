@@ -60,7 +60,7 @@ function readCatalog(): ModelOption[] | null {
 /** Parse a Codex catalog (from the cache file or `codex debug models` stdout —
  *  same schema) into our picker's model list, strongest→weakest. Null on bad
  *  JSON or an empty list. */
-export function parseCatalog(json: string): ModelOption[] | null {
+function parseCatalog(json: string): ModelOption[] | null {
   try {
     const raw = JSON.parse(json) as { models?: CatalogEntry[] };
     const models = (raw.models ?? [])

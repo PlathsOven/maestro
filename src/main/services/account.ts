@@ -2,7 +2,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { safeStorage } from 'electron';
 import { broadcast, setBroadcastHook } from '../bus';
-import { Comments, Hosts, Messages, Projects, Queued, Scheduled, Settings, Todos, Workspaces, now, uid } from '../db';
+import { Comments, Hosts, Messages, Projects, Queued, Scheduled, Settings, Todos, Workspaces, now } from '../db';
 import { hostById, hostForWorkspace, isCloudWorkspace } from '../hosts';
 import { getSubUsage, isAgentRunning, setLiveTurnHook, type LiveTurnPublish } from './harness';
 import { activeLogin } from './harness/logins';
@@ -14,7 +14,7 @@ import { listRunScripts, runScriptStates } from './runscripts';
 import { firstCommandLine } from '../../shared/rundoc';
 import { snapshotBlocks, type BlockStream } from '../../shared/harness';
 import type { ScriptState } from '../../shared/types';
-import { ensureSync, teardownSync, installSyncCron, removeSyncCron, syncStatus, syncCrontabLines } from './cloudsync';
+import { ensureSync, teardownSync, installSyncCron, removeSyncCron, syncStatus } from './cloudsync';
 import { ensureDrainShim } from './cloud';
 import { HARNESS_DISPLAY, pickSyncedSettings } from '../../shared/types';
 import { isColorTheme, isThemeMode } from '../../shared/themes';
@@ -33,7 +33,7 @@ const DEFAULT_RELAY = '';
 
 // ---------- config + secret storage ----------
 
-export function relayUrl(): string {
+function relayUrl(): string {
   return (Settings.global().account?.relayUrl || process.env.MAESTRO_RELAY_URL || DEFAULT_RELAY).replace(/\/$/, '');
 }
 
@@ -104,8 +104,21 @@ let breakerDelay = BREAKER_MIN_MS;
 let breakerReason: string | null = null;
 
 /** True while the relay is considered down — publish paths must not call it. */
-export function relayPaused(): boolean {
+function relayPaused(): boolean {
   return Date.now() < breakerUntil;
+}
+
+/**
+ * True while publishing should wait: the relay is down, or nothing is watching
+ * this account (the bridge's `idle` mode — no web client connected). Every
+ * mirror write is a Neon wake-up, and a desktop busy with agents kept the
+ * database awake all day for a phone in a drawer. So while nobody watches, the
+ * publish paths return without a request — and without advancing their
+ * fingerprints, so nothing is lost: the moment a viewer connects the bridge runs
+ * `publishAll`, and one fingerprint-gated pass sends exactly what changed.
+ */
+function publishHeld(): boolean {
+  return relayPaused() || relayMode() === 'idle';
 }
 
 /** ms until the breaker clears (0 when closed). The bridge sleeps on this. */
@@ -265,8 +278,10 @@ async function pollLink() {
     // A new link may well be a new (or recovered) relay — don't let a breaker
     // opened against the old one swallow the initial publish.
     resetRelayBreaker();
-    // Publish everything we already have so the phone shows history immediately.
-    void publishAll().catch(() => {});
+    // Start syncing exactly as boot does. The bridge's first answer publishes
+    // everything we already have — at once when the web is open, as linking
+    // usually is; otherwise the moment a viewer connects.
+    void startAccountSync().catch(() => {});
     // Box-link saved SSH hosts by default so their cloud chats work from the web.
     void autoLinkBoxes().catch(() => {});
     return;
@@ -442,7 +457,7 @@ const WS_GONE = 'gone';
 /** Publish one workspace row (web-desktop-parity §9.2/§9.5). Fingerprint-gated.
  *  An archived workspace is UNpublished instead (web-neon-usage-diet §3.5). */
 export async function publishWorkspace(ws: Workspace): Promise<void> {
-  if (!isLinked() || !wsSynced(ws) || relayPaused()) return;
+  if (!isLinked() || !wsSynced(ws) || publishHeld()) return;
   // Archived workspaces are not mirrored at all: 106 of this fleet's 137 rows were
   // archived, and each one still cost a row, a transcript and a re-publish for a
   // History view a phone barely visits. So archiving DELETES the row (the relay
@@ -710,7 +725,7 @@ function backfillSlice(ws: Workspace, agentId: number, stats: MessageStats): Cha
 export async function publishConversation(ws: Workspace, agentId: number): Promise<void> {
   // An archived workspace has been deleted from the relay (§3.5) — publishing its
   // conversations would only re-create rows with no workspace to hang off.
-  if (!isLinked() || !wsSynced(ws) || ws.archived || relayPaused()) return;
+  if (!isLinked() || !wsSynced(ws) || ws.archived || publishHeld()) return;
   const id = convId(ws, agentId);
   const chat = Workspaces.getChats(ws.id)[String(agentId)] ?? {};
   const proj = Projects.get(ws.projectId);
@@ -723,11 +738,15 @@ export async function publishConversation(ws: Workspace, agentId: number): Promi
     workspaceId: ws.id,
     agentId,
     boxId: boxId ?? null,
-    title: chat.title || ws.title || ws.name,
-    subtitle: ws.subtitle ?? null,
+    // Only the first chat stands in for the workspace. A later untitled chat
+    // borrowing the workspace's title — which is the first chat's — showed on the
+    // web as a copy of it; untitled, the web names it "New chat" like the desktop.
+    title: chat.title || (agentId === 1 ? ws.title || ws.name : null),
+    // No workspace-wide `state`/`subtitle`: they ride the workspace row, which is
+    // what the web reads. Carried here too, every status flip changed ALL of a
+    // workspace's chat bodies at once — 30 PUTs per turn start/end in a busy one.
     projectName: proj?.name ?? null,
     harness: ws.harness,
-    state: ws.status,
     hasRun: stats.agentCount > 0,
     archived: !!ws.archived,
     // MUST be stable for an unchanged conversation: this body is fingerprinted
@@ -787,6 +806,8 @@ export async function publishConversation(ws: Workspace, agentId: number): Promi
     if (sent) Settings.setRaw(`account.bfmark.${id}`, JSON.stringify({ ts: stats.maxTs, count: stats.count }));
     Settings.setRaw(`account.fp.${id}`, fp);
   }
+  // A chat read while nobody was watching was held; it goes up with the catch-up.
+  await pushReadState(ws.id, agentId);
 }
 
 function runScriptPhase(st: ScriptState | undefined): 'idle' | 'running' | 'ok' | 'exit' | 'stopped' {
@@ -857,12 +878,13 @@ function rebase(st: LiveTurnState): void {
 async function flushLiveTurn(path: string, turnId: string, st: LiveTurnState, stream: BlockStream, startedAt: number): Promise<void> {
   st.inflight = true;
   try {
-    // The opening PUT creates the relay row and announces the turn — whatever
-    // the mode: the phone has to see that a turn began even when nobody is
-    // watching. Until it lands nothing else can, so a failure here is retried by
-    // the next tick.
+    // The opening PUT creates the relay row and announces the turn. Until it
+    // lands nothing else can, so a failure here is retried by the next tick —
+    // and so is a turn that started while nobody was watching: it is opened by
+    // the first tick after a viewer connects, and its base carries everything
+    // so far (the held ticks re-based it).
     if (!st.opened) {
-      if (relayPaused()) return;
+      if (publishHeld()) return;
       const res = await relayFetch(path, {
         method: 'PUT',
         body: JSON.stringify({ turnId, status: 'running', blocks: [], startedAt }),
@@ -870,7 +892,7 @@ async function flushLiveTurn(path: string, turnId: string, st: LiveTurnState, st
       if (!res?.ok) return rebase(st);
       st.opened = true;
     }
-    while ((st.needBase || st.queue.length) && relayMode() === 'live' && !relayPaused()) {
+    while ((st.needBase || st.queue.length) && !publishHeld()) {
       const sending = st.queue;
       st.queue = [];
       // Serialize NOW: `stream` keeps mutating as the turn runs, so a base is
@@ -906,8 +928,13 @@ export async function publishLiveTurn(workspaceId: string, agentId: number, turn
   const path = `/api/conversations/${encodeURIComponent(id)}/turn`;
 
   if (turn.status !== 'running') {
+    const opened = liveTurns.get(turn.turnId)?.opened ?? false;
     liveTurns.delete(turn.turnId);
-    if (relayPaused()) return;
+    // A turn the relay opened must be closed here even if the viewer has since
+    // left: the history backfill never overwrites a turn row, so skipping this
+    // would strand it on "running". One it never saw arrives whole with the
+    // next catch-up's backfill instead.
+    if (relayPaused() || (!opened && publishHeld())) return;
     const blocks = await rewriteBlocksImages(ws, (turn.blocks as AgentBlock[]) ?? []);
     await relayFetch(path, { method: 'PUT', body: JSON.stringify({ ...turn, blocks }) }).catch(() => {});
     return;
@@ -928,7 +955,7 @@ export async function publishLiveTurn(workspaceId: string, agentId: number, turn
   liveTurns.set(turn.turnId, st);
   // Nobody is watching (or the relay is down): drop the tick and re-base when we
   // resume — sending the next events on top would be a silent gap.
-  if (relayPaused() || relayMode() !== 'live') rebase(st);
+  if (publishHeld()) rebase(st);
   else st.queue.push(...turn.events);
   if (!st.inflight) await flushLiveTurn(path, turn.turnId, st, turn.stream, turn.startedAt);
 }
@@ -938,7 +965,7 @@ export async function publishLiveTurn(workspaceId: string, agentId: number, turn
  *  schedulePublish batch fires todos AND comments for the workspace, so before
  *  this a streaming turn pushed two ungated PUTs per tick, forever (§4.1). */
 async function publishGitBlob(workspaceId: string, fpPrefix: string, build: () => Record<string, unknown>): Promise<void> {
-  if (!isLinked() || !wsIdPublishable(workspaceId) || relayPaused()) return;
+  if (!isLinked() || !wsIdPublishable(workspaceId) || publishHeld()) return;
   const body = JSON.stringify(build());
   const fp = digest(body);
   if (Settings.raw(`${fpPrefix}${workspaceId}`) === fp) return;
@@ -980,6 +1007,12 @@ export async function publishComments(workspaceId: string): Promise<void> {
  */
 type PublishedUsage = Partial<Record<HarnessId, SubUsage | null>>;
 
+/** An ISO timestamp rounded to the minute; anything unparseable passes through. */
+function minuteIso(iso: string | undefined): string | undefined {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(t) ? new Date(Math.round(t / 60_000) * 60_000).toISOString() : iso;
+}
+
 async function publishedUsage(): Promise<PublishedUsage> {
   const harnesses = new Set<HarnessId>();
   for (const ws of Workspaces.list()) {
@@ -992,8 +1025,15 @@ async function publishedUsage(): Promise<PublishedUsage> {
   for (const harness of [...harnesses].sort()) {
     const usage = await getSubUsage(harness, activeLogin(harness).id).catch(() => null);
     // asOf dropped: it flips with every rate-limited read and would re-PUT.
+    // resetsAt to the minute: Claude stamps it with the READ's microseconds
+    // ("…T03:30:00.921518+00:00"), so it too moved on every refresh and defeated
+    // the fingerprint — a Postgres write per 30-s usage refresh (neon-idle-compute).
     value[harness] = usage
-      ? { ...usage, asOf: undefined, windows: usage.windows.map((w) => ({ ...w, pct: Math.round(w.pct) })) }
+      ? {
+          ...usage,
+          asOf: undefined,
+          windows: usage.windows.map((w) => ({ ...w, pct: Math.round(w.pct), resetsAt: minuteIso(w.resetsAt) })),
+        }
       : null;
   }
   return value;
@@ -1009,7 +1049,7 @@ async function publishedUsage(): Promise<PublishedUsage> {
  *  `settings-updated` event (applyWebSettings). Fingerprint-gated on the whole
  *  body so an unchanged blob doesn't re-PUT. */
 export async function publishSettings(): Promise<void> {
-  if (!isLinked() || relayPaused()) return;
+  if (!isLinked() || publishHeld()) return;
   const body = JSON.stringify({ ...pickSyncedSettings(Settings.global()), usage: await publishedUsage() });
   if (Settings.raw('account.settingsfp') === body) return;
   const res = await relayFetch('/api/settings', { method: 'PUT', body });
@@ -1043,6 +1083,8 @@ function clearPublishFingerprints(): void {
   Settings.clearPrefix('account.tfp.');
   Settings.clearPrefix('account.cmfp.');
   Settings.clearPrefix('account.rsfp.');
+  // `account.read.*` is the read mark the relay last took (pushReadState).
+  Settings.clearPrefix('account.read.');
   // `account.img.*` maps an image's content hash to the relay URL we uploaded it
   // to (§3.6); those URLs belong to the previous link's account. The relay dedupes
   // by the same hash, so re-uploading costs bandwidth once, never a second row.
@@ -1057,7 +1099,7 @@ function clearPublishFingerprints(): void {
  *  archived rows leave the relay on the first run after this ships — but they have
  *  no conversations to publish. */
 export async function publishAll(): Promise<void> {
-  if (!isLinked() || relayPaused()) return;
+  if (!isLinked() || publishHeld()) return;
   // Mirror the user's default harness/model/effort + subscription usage first so
   // the web's chips and usage ring are right the moment its fleet loads after a
   // link (settings-sync, §3.2).
@@ -1098,7 +1140,7 @@ export function schedulePublish(workspaceId: string): void {
   // settings reads and a workspace row, are skipped for every trigger but the one
   // that arms the timer.
   if (publishTimers.has(workspaceId)) return;
-  if (relayPaused() || !isLinked() || !wsIdSynced(workspaceId)) return;
+  if (publishHeld() || !isLinked() || !wsIdSynced(workspaceId)) return;
   publishTimers.set(
     workspaceId,
     setTimeout(() => {
@@ -1140,6 +1182,7 @@ function clearWorkspaceFingerprints(ws: Workspace): void {
     // The relay no longer has this conversation, so the re-publish has to carry
     // the whole history, not a tail (§4.2).
     Settings.setRaw(`account.bfmark.${ws.id}:${id}`, '');
+    Settings.setRaw(`account.read.${ws.id}:${id}`, '');
   }
 }
 
@@ -1222,7 +1265,11 @@ function applyReadState(convIdStr: string, lastReadAt: number): void {
   const agentId = Number(agentStr || '1');
   const chat = Workspaces.getChats(wsId)[String(agentId)];
   if (!chat) return;
-  if ((chat.lastReadAt ?? 0) < lastReadAt) Workspaces.patchChat(wsId, agentId, { lastReadAt });
+  if ((chat.lastReadAt ?? 0) < lastReadAt) {
+    Workspaces.patchChat(wsId, agentId, { lastReadAt });
+    // The relay already holds this mark — don't echo it back (pushReadState).
+    Settings.setRaw(`account.read.${wsId}:${agentId}`, String(lastReadAt));
+  }
 }
 
 /** Adopt new-conversation defaults and the theme picked on Maestro Web
@@ -1285,13 +1332,20 @@ export async function pullSync(): Promise<void> {
   if (typeof j.next === 'number') setSyncCursor(j.next);
 }
 
-/** Push local read state for a chat to the relay (LWW). Called from markChatRead. */
-export async function pushReadState(workspaceId: string, agentId: number, lastReadAt: number): Promise<void> {
-  if (!isLinked() || !wsIdPublishable(workspaceId) || relayPaused()) return;
-  await relayFetch('/api/read-state', {
+/** Push a chat's local read mark to the relay (LWW), so unread dots agree across
+ *  devices (§6.6). Called from markChatRead and from every publishConversation;
+ *  gated on the mark the relay last took (`account.read.*`), so a mark held while
+ *  nobody watched goes up with the catch-up and an unchanged one costs nothing. */
+export async function pushReadState(workspaceId: string, agentId: number): Promise<void> {
+  if (!isLinked() || !wsIdPublishable(workspaceId) || publishHeld()) return;
+  const lastReadAt = Workspaces.getChats(workspaceId)[String(agentId)]?.lastReadAt ?? 0;
+  const key = `account.read.${workspaceId}:${agentId}`;
+  if (lastReadAt <= Number(Settings.raw(key) || '0')) return;
+  const res = await relayFetch('/api/read-state', {
     method: 'PUT',
     body: JSON.stringify({ conversationId: `${workspaceId}:${agentId}`, lastReadAt }),
-  }).catch(() => {});
+  }).catch(() => null);
+  if (res?.ok) Settings.setRaw(key, String(lastReadAt));
 }
 
 // ---------- box link (per saved SSH host) ----------
@@ -1486,21 +1540,20 @@ export async function accountStatus(): Promise<AccountStatus> {
   };
 }
 
-export function cronPreview(): { lines: string[] } {
-  return { lines: syncCrontabLines() };
-}
-
 let publishTimer: NodeJS.Timeout | null = null;
 
 /** Boot: pull web-originated deltas ONCE before catch-up (so replayed turns read
- *  correctly, §6.6), publish everything, then hand the steady state to the device
- *  bridge's long-poll (§9.3) with a 5-min fingerprint-gated publish safety net.
+ *  correctly, §6.6), then hand the steady state to the device bridge's long-poll
+ *  (§9.3) — which publishes whenever a viewer connects — with a 5-min
+ *  fingerprint-gated publish safety net.
  *  Returns after the first pull so `index.ts` can order it before `catchUpAll`. */
 export async function startAccountSync(): Promise<void> {
   if (!isLinked()) return;
   await pullSync().catch(() => {});
   void reportRelayBus().catch(() => {});
-  void publishAll().catch(() => {});
+  // No publishAll here: the bridge runs it as soon as its first poll says a web
+  // client is watching (or that the relay predates the flag). An unwatched boot
+  // leaves the relay — and Neon — alone.
   // Reconcile box links each boot: pick up hosts added while unlinked or whose
   // earlier auto-link failed (a no-op for already-linked and opted-out hosts).
   void autoLinkBoxes().catch(() => {});

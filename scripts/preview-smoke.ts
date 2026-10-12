@@ -103,7 +103,7 @@ async function main() {
   check('console captured page load', beforeClick.some((e) => /page ready/.test(e.text)), `${beforeClick.length} entries`);
 
   // ---- click via the command runner → error is captured ----
-  const clickRes = await runPreviewCommand(ws.id, 1, btn ? ['click', btn.selector] : ['click', '#go']);
+  const clickRes = await runPreviewCommand(ws.id, btn ? ['click', btn.selector] : ['click', '#go']);
   check('click command ok', clickRes.ok, clickRes.text.split('\n')[0]);
   await sleep(400);
   const errs = getConsole(ws.id, 'error');
@@ -111,7 +111,7 @@ async function main() {
 
   // ---- selector uniqueness (in-page querySelectorAll === 1) ----
   if (btn) {
-    const uniq = await runPreviewCommand(ws.id, 1, ['eval', `document.querySelectorAll(${JSON.stringify(btn.selector)}).length`]);
+    const uniq = await runPreviewCommand(ws.id, ['eval', `document.querySelectorAll(${JSON.stringify(btn.selector)}).length`]);
     check('synthesized selector is unique', uniq.ok && uniq.text.trim() === '1', `${btn.selector} → ${uniq.text.trim()}`);
   }
 

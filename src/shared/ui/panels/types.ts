@@ -1,5 +1,3 @@
-import type { DiffFile } from '../../types';
-
 /** The workspace fields the shared workflow panels read (web-desktop-parity §10).
  *  Both apps pass an object matching this — the web's WorkspaceRow already does. */
 export interface PanelWorkspace {
@@ -73,9 +71,4 @@ export interface PanelRunScript {
   command: string;
   state: 'idle' | 'running' | 'ok' | 'exit' | 'stopped';
   exitCode?: number;
-}
-
-export interface PanelDiff {
-  base: string;
-  files: DiffFile[];
 }

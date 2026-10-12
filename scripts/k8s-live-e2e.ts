@@ -87,7 +87,7 @@ async function main() {
   fs.rmSync(ROOT, { recursive: true, force: true });
   fs.mkdirSync(REPO, { recursive: true });
   initDb(path.join(ROOT, 'db.sqlite'));
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   Settings.setGlobal({ harnessApiKeys: { 'claude-code': 'test-key' }, notifications: false });
   initRemoteHosts();
 

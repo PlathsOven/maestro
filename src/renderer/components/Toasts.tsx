@@ -25,6 +25,17 @@ export default function Toasts() {
             <Info size={14} className="mt-0.5 shrink-0 text-muted" />
           )}
           <div className="min-w-0 flex-1 break-words">{t.text}</div>
+          {t.action && (
+            <button
+              className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-fg"
+              onClick={() => {
+                t.action!.run();
+                dismiss(t.id);
+              }}
+            >
+              {t.action.label}
+            </button>
+          )}
           {/* One click, nothing to fill in — the "minimal button" (§10). A second,
               muted link opens the feedback box for users who want to say more. */}
           {t.kind === 'error' && (

@@ -1,10 +1,21 @@
 import { create } from 'zustand';
-import { invoke, on, tryInvoke } from '../lib/api';
-import { playCompletionSound } from '../lib/sounds';
+import { invoke, tryInvoke } from '../lib/api';
 import { evictWorkspaceBuffers } from '../lib/editorEvictor';
 import { evictIdleWorkspaces } from '../lib/transcriptEvictor';
-import { composeResolvePrompt } from '../lib/resolveConflicts';
+import { composeResolvePrompt, mergeFailureMessage } from '../lib/resolveConflicts';
+import { appendColumn, firstLeaf, hasLeaf, insertBeside, leaf, paneCount, removeLeaf, withFocusedLeaf, type DropSide, type PaneNode } from '../lib/paneTree';
+import {
+  applyChatOrder,
+  applyWorkspaceOrder,
+  clampLayout,
+  loadChatOrders,
+  loadLayout,
+  saveChatOrder,
+  saveWorkspaceOrder,
+  type LayoutSizes,
+} from '../lib/layoutPrefs';
 import { DEFAULT_COLOR_THEME, applyThemeToElement, isThemeMode, normalizeColorTheme, type ThemeMode } from '../../shared/themes';
+import { applyEffects, isEffectsMode, resolveEffects } from '../../shared/ui/effects';
 import type {
   AgentBlock,
   AskAnswer,
@@ -18,6 +29,7 @@ import type {
   DiffComment,
   ErrorRef,
   GhAuth,
+  GpuHint,
   GitStatusSummary,
   GlobalSettings,
   HarnessId,
@@ -49,7 +61,15 @@ import type {
 } from '../../shared/types';
 import { DEFAULT_COMPLETION_SOUND, statusKey } from '../../shared/types';
 import { provisionalTitle } from '../../shared/chatTitle';
-import { isUnread } from '../lib/status';
+import { isUnread, workspaceStatusCounts } from '../../shared/ui/status';
+import { askingAgents, turnKey } from '../lib/liveTurn';
+import { EMPTY_ARR, capsOf, patchChatMeta, type ChatsMeta } from './helpers';
+import { flushChatEvents, subscribeToMain } from './events';
+import { loadDrafts, persistDrafts } from '../lib/composerDrafts';
+import { STASH_MAX, loadStash, saveStash, type StashedPrompt } from '../lib/promptStash';
+import { rememberPreviewUrl } from '../lib/previewRecent';
+
+export { EMPTY_ARR, capsOf };
 
 export interface LiveTurn {
   agentId: number;
@@ -68,6 +88,8 @@ interface Toast {
   text: string;
   /** One-click error-report state on an error toast (§10). */
   report?: 'idle' | 'sending' | 'sent' | 'failed';
+  /** A single follow-up button (e.g. "Open" on an agent-finished toast). */
+  action?: { label: string; run: () => void };
 }
 
 interface GhSignInState {
@@ -126,7 +148,7 @@ type Modal =
   | null;
 
 /** One image in the chat lightbox — a worktree-relative path plus its alt text. */
-export type LightboxImage = { path: string; alt?: string };
+type LightboxImage = { path: string; alt?: string };
 /**
  * The chat image lightbox (spotlight): a full-screen zoomable viewer opened by
  * clicking an inline transcript image, holding the pane's ordered images so the
@@ -135,33 +157,19 @@ export type LightboxImage = { path: string; alt?: string };
  */
 type Lightbox = { workspaceId: string; images: LightboxImage[]; index: number } | null;
 
-const turnKey = (wsId: string, agentId: number) => `${wsId}:${agentId}`;
+/** "2 projects, 1 workspace, 5 chats" for an import toast; '' when nothing landed. */
+function importSummary(n: { projects: number; workspaces: number; chats: number }): string {
+  const parts: string[] = [];
+  if (n.projects) parts.push(`${n.projects} project${n.projects === 1 ? '' : 's'}`);
+  if (n.workspaces) parts.push(`${n.workspaces} workspace${n.workspaces === 1 ? '' : 's'}`);
+  if (n.chats) parts.push(`${n.chats} chat${n.chats === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
 
 /** How often the store sweeps for evictable workspace state (§4.9.5). The sweep
  *  itself is a few map lookups; idleness is measured in minutes, not ticks. */
 const EVICT_SWEEP_MS = 60_000;
 
-/** Stable empty references — selectors must never fabricate fresh arrays. */
-export const EMPTY_ARR: never[] = [];
-
-/** Capability fallbacks used before main's `projectCaps` arrives (kept as stable
- *  refs so caps selectors don't churn). Every git/GitHub surface derives from a
- *  project's caps; a folder project reaches none of them. */
-const NO_CAPS: ProjectCaps = { git: false, worktrees: false, githubRemote: false, checkpoints: false };
-const GIT_FALLBACK: ProjectCaps = { git: true, worktrees: true, githubRemote: false, checkpoints: false };
-
-/** Resolve a project's capability rung from store state. Falls back to a
- *  kind-derived guess (git chrome shows, PR waits for the probe) so the UI is
- *  right on the first paint after a project is added, before caps load. */
-export function capsOf(
-  s: { projectCaps: Record<string, ProjectCaps>; projects: Project[] },
-  projectId: string | null | undefined
-): ProjectCaps {
-  if (!projectId) return NO_CAPS;
-  const stored = s.projectCaps[projectId];
-  if (stored) return stored;
-  return s.projects.find((p) => p.id === projectId)?.kind === 'git' ? GIT_FALLBACK : NO_CAPS;
-}
 /** Default terminal set for a workspace (one terminal). Stable ref for selectors. */
 export const DEFAULT_TERM_IDS: number[] = [1];
 /** Default chat set for a workspace (one chat). Stable ref for selectors. */
@@ -169,172 +177,6 @@ export const DEFAULT_CHAT_IDS: number[] = [1];
 /** Max chats tiled in the split (center) view before panes get unusably small.
  *  Beyond this, "split" replaces the focused pane instead of adding one. */
 const MAX_PANES = 4;
-
-/**
- * The center chat area is a mosaic of panes laid out as a tree. A `leaf` shows
- * one chat session; a `split` arranges its children left→right (`row`) or
- * top→bottom (`col`), so chats can be tiled on *both* axes (not just a single
- * row of columns). Sizes are intentionally not stored — every pane in a split
- * shares its axis evenly, re-equalizing whenever the split's child count
- * changes (live drag sizing is local to the renderer). The tree is renderer-only
- * state: it's reset to a single leaf on load, never persisted.
- */
-export type PaneNode =
-  | { t: 'leaf'; id: number }
-  | { t: 'split'; dir: 'row' | 'col'; children: PaneNode[] };
-
-/** Which edge of a target pane a dragged session is dropped against. */
-export type DropSide = 'left' | 'right' | 'top' | 'bottom';
-
-export const leaf = (id: number): PaneNode => ({ t: 'leaf', id });
-const sideAxis = (side: DropSide): 'row' | 'col' => (side === 'left' || side === 'right' ? 'row' : 'col');
-const sideFirst = (side: DropSide): boolean => side === 'left' || side === 'top';
-
-/** Every leaf session id, in visual order (left→right, top→bottom). */
-export function paneIds(node: PaneNode | undefined): number[] {
-  if (!node) return [];
-  if (node.t === 'leaf') return [node.id];
-  return node.children.flatMap(paneIds);
-}
-export const paneCount = (node: PaneNode | undefined): number => paneIds(node).length;
-const hasLeaf = (node: PaneNode | undefined, id: number): boolean => paneIds(node).includes(id);
-/** The top-left-most session — the one that owns workspace-level chrome. */
-export const firstLeaf = (node: PaneNode): number => paneIds(node)[0];
-
-/** Swap the leaf showing `oldId` to show `newId`, keeping the tree shape. No-op
- *  if `newId` is already somewhere in the tree (the caller just focuses it). */
-function replaceLeaf(node: PaneNode, oldId: number, newId: number): PaneNode {
-  if (node.t === 'leaf') return node.id === oldId ? leaf(newId) : node;
-  return { ...node, children: node.children.map((c) => replaceLeaf(c, oldId, newId)) };
-}
-
-/** Remove leaf `id`, collapsing any split left with a single child. Returns null
- *  when the whole layout is emptied. */
-function removeLeaf(node: PaneNode, id: number): PaneNode | null {
-  if (node.t === 'leaf') return node.id === id ? null : node;
-  const kept = node.children.map((c) => removeLeaf(c, id)).filter((c): c is PaneNode => c !== null);
-  if (kept.length === 0) return null;
-  if (kept.length === 1) return kept[0];
-  return { ...node, children: kept };
-}
-
-/**
- * Insert `newId` as a new pane next to the leaf `targetId`, on the given side.
- * Splits the target leaf into a two-child row/col; but when the target's parent
- * already runs along that same axis, the new pane is spliced in beside it at
- * that level instead — so repeated same-direction drops tile evenly rather than
- * nesting ever deeper.
- */
-function insertBeside(node: PaneNode, targetId: number, newId: number, side: DropSide): PaneNode {
-  const dir = sideAxis(side);
-  const first = sideFirst(side);
-  if (node.t === 'leaf') {
-    if (node.id !== targetId) return node;
-    const pair = first ? [leaf(newId), node] : [node, leaf(newId)];
-    return { t: 'split', dir, children: pair };
-  }
-  if (node.dir === dir) {
-    const idx = node.children.findIndex((c) => c.t === 'leaf' && c.id === targetId);
-    if (idx >= 0) {
-      const at = first ? idx : idx + 1;
-      const children = [...node.children];
-      children.splice(at, 0, leaf(newId));
-      return { ...node, children };
-    }
-  }
-  return { ...node, children: node.children.map((c) => insertBeside(c, targetId, newId, side)) };
-}
-
-/** Add `newId` as a new right-most top-level column — the rail "split" button's
- *  "join the layout, evenly sharing the horizontal space" behavior. */
-function appendColumn(node: PaneNode, newId: number): PaneNode {
-  if (node.t === 'split' && node.dir === 'row') {
-    return { ...node, children: [...node.children, leaf(newId)] };
-  }
-  return { t: 'split', dir: 'row', children: [node, leaf(newId)] };
-}
-
-/**
- * Selecting/opening a chat shows it in the focused pane (swaps the sole leaf in
- * single-pane mode; swaps only the focused pane in split mode). Already-visible
- * sessions leave the layout untouched — the caller just focuses them. Falls back
- * to a fresh single leaf if the focused pane can't be located (defensive).
- */
-function withFocusedLeaf(layout: PaneNode | undefined, prevFocused: number, agentId: number): PaneNode {
-  const cur = layout ?? leaf(prevFocused);
-  if (hasLeaf(cur, agentId)) return cur;
-  const swapped = replaceLeaf(cur, prevFocused, agentId);
-  return hasLeaf(swapped, agentId) ? swapped : leaf(agentId);
-}
-
-/** Resizable panel sizes (px). Live-updated while dragging a divider, then
- *  persisted to localStorage so the layout survives restarts. */
-interface LayoutSizes {
-  sidebar: number; // left projects sidebar width
-  sessions: number; // chat session rail width
-  right: number; // right (files/changes/checks) panel width
-  dock: number; // bottom terminal dock height
-}
-export const DEFAULT_LAYOUT: LayoutSizes = { sidebar: 264, sessions: 208, right: 380, dock: 300 };
-/** Width of the collapsed right panel's icon rail — must track the `w-12` on
- *  CollapsedRightPanel's <aside>. Layout math outside that component (the
- *  window-control-overlay inset in WorkspaceView) needs it as a number. */
-export const COLLAPSED_RIGHT_RAIL = 48;
-export const LAYOUT_LIMITS: Record<keyof LayoutSizes, { min: number; max: number }> = {
-  sidebar: { min: 200, max: 460 },
-  sessions: { min: 150, max: 380 },
-  right: { min: 280, max: 680 },
-  dock: { min: 120, max: 720 },
-};
-const clampLayoutValue = (n: number, { min, max }: { min: number; max: number }) => Math.min(max, Math.max(min, n));
-const clampLayout = (l: LayoutSizes): LayoutSizes => ({
-  sidebar: clampLayoutValue(l.sidebar, LAYOUT_LIMITS.sidebar),
-  sessions: clampLayoutValue(l.sessions, LAYOUT_LIMITS.sessions),
-  right: clampLayoutValue(l.right, LAYOUT_LIMITS.right),
-  dock: clampLayoutValue(l.dock, LAYOUT_LIMITS.dock),
-});
-function loadLayout(): LayoutSizes {
-  try {
-    const raw = localStorage.getItem('layout');
-    if (raw) return clampLayout({ ...DEFAULT_LAYOUT, ...JSON.parse(raw) });
-  } catch {
-    /* ignore malformed persisted layout */
-  }
-  return { ...DEFAULT_LAYOUT };
-}
-
-// Persisted session-rail order (per workspace → agent ids), so a drag-reorder
-// survives restarts. It's a UI preference like `layout`, hence localStorage
-// rather than the agent DB. Only the *relative* order is used on load: ids no
-// longer open are ignored and newly-seen ids append, so it can never resurrect
-// a closed session or drop a live one (see applyChatOrder / loadWorkspaceData).
-const CHAT_ORDER_KEY = 'chatOrder';
-function loadChatOrders(): Record<string, number[]> {
-  try {
-    const raw = localStorage.getItem(CHAT_ORDER_KEY);
-    if (raw) return JSON.parse(raw) as Record<string, number[]>;
-  } catch {
-    /* ignore malformed persisted order */
-  }
-  return {};
-}
-function saveChatOrder(wsId: string, ids: number[]) {
-  try {
-    const map = loadChatOrders();
-    map[wsId] = ids;
-    localStorage.setItem(CHAT_ORDER_KEY, JSON.stringify(map));
-  } catch {
-    /* storage full / unavailable — order just won't persist */
-  }
-}
-/** Reorder `ids` to match a saved order: known ids first (in saved order), any
- *  unknown ids after (keeping their incoming numeric order). Stable + total, so
- *  the result is always a permutation of `ids`. */
-function applyChatOrder(ids: number[], saved: number[] | undefined): number[] {
-  if (!saved || saved.length === 0) return ids;
-  const rank = new Map(saved.map((id, i) => [id, i]));
-  return [...ids].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity) || a - b);
-}
 
 /**
  * Single-flight per key: run `fn` now unless a run is already in flight, in
@@ -360,7 +202,7 @@ function coalesce(key: string, fn: () => Promise<void>): Promise<void> {
   return entry.run;
 }
 
-interface AppState {
+export interface AppState {
   loaded: boolean;
   projects: Project[];
   workspaces: Workspace[];
@@ -373,8 +215,8 @@ interface AppState {
   openFiles: Record<string, string[]>; // wsId → ordered worktree-relative paths
   activeFile: Record<string, string | null>; // wsId → active tab path
   dirtyFiles: Record<string, Record<string, boolean>>; // wsId → path → dirty
-  chatsMeta: Record<string, Record<string, ChatMeta>>;
-  queued: Record<string, { id: string; text: string }[]>; // key `${wsId}:${agentId}`
+  chatsMeta: ChatsMeta;
+  queued: Record<string, { id: string; text: string; attachments: Attachment[] }[]>; // key `${wsId}:${agentId}`
   /** Messages waiting for a wall-clock time (key `${wsId}:${agentId}`). Unlike
    *  `queued`, main persists these — they survive restarts, so this map is
    *  hydrated on workspace load rather than starting empty. */
@@ -407,6 +249,9 @@ interface AppState {
   /** Bumped by ⌘F / the palette's "Find in Chat"; the focused chat pane opens
    *  (or refocuses) its find bar. */
   chatFindNonce: number;
+  /** Changed file the Diff surface should scroll to — set by a Changes-tab click,
+   *  cleared by the DiffViewer once it has scrolled there. */
+  diffFocus: { wsId: string; path: string } | null;
   /** Bumped by ⌘W in Editor mode; the visible EditorSurface watches it and runs
    *  its dirty-guarded close of the active tab. Mirrors focusComposerNonce. */
   closeActiveFileNonce: number;
@@ -425,6 +270,8 @@ interface AppState {
   appVersion: string;
   /** process.platform (from app:init) — drives shortcut formatting/matching (§9). */
   platform: string;
+  /** GPU facts from app:init, for the `auto` visual-effects level. */
+  gpu: GpuHint | null;
   /** bumped on every ws:updated — components use it to refetch git state */
   wsVersion: Record<string, number>;
 
@@ -470,6 +317,8 @@ interface AppState {
   composerAttachments: Record<string, Attachment[]>; // key `${wsId}:${agentId}` (per-session)
   composerAgent: Record<string, number>;
   composerDrafts: Record<string, string>; // unsent chatbox text per `${wsId}:${agentId}`
+  /** Parked prompts (⌘S), newest first — see lib/promptStash. */
+  promptStash: StashedPrompt[];
   agentCount: Record<string, number>; // monotonic high-water mark for allocating new chat ids
   chatIds: Record<string, number[]>; // open chat-tab ids per workspace (source of truth for tabs)
   // Mosaic layout of the center chat area: a tree of leaves (each an agentId,
@@ -483,6 +332,9 @@ interface AppState {
   /** Chat image lightbox (spotlight); null when closed. */
   lightbox: Lightbox;
   paletteOpen: boolean;
+  /** Count of open floating popovers (hover cards, rail flyouts) — the preview's
+   *  native view hides while > 0, since it paints above all DOM. */
+  popovers: number;
   toasts: Toast[];
   /** The feedback popover (§10): open state + an optional attached error. */
   feedbackPanel: { open: boolean; error?: ErrorRef };
@@ -522,7 +374,7 @@ interface AppState {
 
   // actions
   init: () => Promise<void>;
-  toast: (kind: Toast['kind'], text: string) => void;
+  toast: (kind: Toast['kind'], text: string, action?: Toast['action']) => void;
   dismissToast: (id: number) => void;
   reportError: (ref: ErrorRef, toastId?: number) => Promise<boolean>;
   openFeedback: (error?: ErrorRef) => void;
@@ -534,11 +386,15 @@ interface AppState {
   /** Move the lightbox by `delta` images, clamped to the ends (no-op past them). */
   stepLightbox: (delta: number) => void;
   setPalette: (open: boolean) => void;
+  trackPopover: (delta: 1 | -1) => void;
 
   selectProject: (id: string) => void;
   selectWorkspace: (id: string | null) => void;
   /** Open the full-panel Workspaces browser. */
   openWorkspacesView: () => void;
+  /** Bring one chat on screen from anywhere — switches project and workspace,
+   *  reopens the tab if it was closed (a notification's "Open"). */
+  openChat: (wsId: string, agentId: number | null) => void;
   setTab: (wsId: string, tab: WorkspaceTab) => void;
 
   // ---- integrated browser (Preview surface, §6/§9) ----
@@ -568,6 +424,12 @@ interface AppState {
   /** Close an editor tab (dirty guard is enforced at the call site). Falls back
    *  to a neighbouring tab, and leaves Editor mode when the last tab closes. */
   closeFile: (wsId: string, path: string) => void;
+  /** Switch the center to the Diff surface, scrolled to `path`'s card. */
+  revealDiffFile: (wsId: string, path: string) => void;
+  /** A Files-tab rename/move: repoint every open editor tab at or under `from`
+   *  to its new location (same slot, active + reopen stack follow). The buffer is
+   *  reloaded from the new path, so callers refuse this for dirty tabs. */
+  renameOpenFiles: (wsId: string, from: string, to: string) => void;
   /** ⌘W while the Editor surface is active: close the active editor tab. Bumps
    *  `closeActiveFileNonce` so the mounted EditorSurface runs its own
    *  dirty-guarded close (the confirm modal lives in the component). */
@@ -593,7 +455,8 @@ interface AppState {
   /** Fetch the specialist sub-agent runs a finished orchestrator turn spawned. */
   loadSubagents: (wsId: string, parentMessageId: string) => Promise<void>;
   removeQueued: (wsId: string, agentId: number, itemId: string) => void;
-  editQueued: (wsId: string, agentId: number, itemId: string, text: string) => void;
+  /** `attachments` replaces the item's attachments; omit to keep them. */
+  editQueued: (wsId: string, agentId: number, itemId: string, text: string, attachments?: Attachment[]) => void;
   /** Dismiss a chat's finished background tasks (running ones stay listed). */
   clearBackgroundTasks: (wsId: string, agentId: number) => void;
   refreshDiffStat: (wsId: string) => void;
@@ -604,6 +467,9 @@ interface AppState {
    *  index into the current `chatIds`). Rail order only — pane layout and focus
    *  are untouched. The new order is persisted per workspace (localStorage). */
   reorderChat: (wsId: string, agentId: number, toIndex: number) => void;
+  /** Drag-reorder the sidebar: move `wsId` into `targetId`'s slot within their
+   *  project (also reorders ⌘1–9). Persisted in localStorage. */
+  reorderWorkspace: (wsId: string, targetId: string) => void;
   reopenClosedTab: (wsId: string) => void;
   /** Reopen a specific closed chat by id (the history menu). Re-inserts it at its
    *  old slot when known (else appends), clears the persisted `closed` flag, and
@@ -668,6 +534,8 @@ interface AppState {
   refreshGit: (wsId: string) => Promise<void>;
   refreshDiff: (wsId: string) => Promise<void>;
   refreshPr: (wsId: string, force?: boolean) => Promise<void>;
+  /** Squash-merge the workspace's PR, toasting the outcome. */
+  squashMergePr: (wsId: string, prNumber: number | null) => Promise<void>;
   refreshComments: (wsId: string) => Promise<void>;
   refreshTodos: (wsId: string) => Promise<void>;
 
@@ -688,6 +556,11 @@ interface AppState {
   stopAgent: (wsId: string, agentId: number) => void;
   setComposerAgent: (wsId: string, agentId: number) => void;
   setComposerDraft: (wsId: string, agentId: number, text: string) => void;
+  /** Move this chat's draft (text + attachments) into the stash and clear the box. */
+  stashDraft: (wsId: string, agentId: number) => void;
+  /** Merge a stashed prompt back into this chat's draft and drop it from the stash. */
+  restoreStash: (id: number, wsId: string, agentId: number) => void;
+  dropStash: (id: number) => void;
   addAttachment: (wsId: string, agentId: number, a: Attachment) => void;
   removeAttachment: (wsId: string, agentId: number, index: number) => void;
   sendCommentsToAgent: (wsId: string) => void;
@@ -728,7 +601,8 @@ interface AppState {
   refreshHarnesses: (force?: boolean) => Promise<void>;
   setDefaultModel: (harness: HarnessId, modelId: string) => void;
   setDefaultEffort: (effort: string) => void;
-  /** Stamp settings.theme (variant) + settings.colorTheme (family) onto the DOM. */
+  /** Stamp settings.theme (variant) + settings.colorTheme (family) onto the DOM,
+   *  and the visual-effects level (settings.visualEffects, resolved for `auto`). */
   applyTheme: () => void;
 
   archiveWorkspace: (wsId: string) => Promise<void>;
@@ -756,8 +630,36 @@ const cachedTheme = (() => {
 })();
 applyThemeToElement(document.documentElement, cachedTheme.colorTheme, resolveTheme(cachedTheme.theme) === 'dark');
 
+/** The last resolved visual-effects level, so a machine that needs reduced
+ *  effects never pays for the glass while `app:init` is in flight. */
+const EFFECTS_CACHE_KEY = 'maestro.effectsCache';
+try {
+  if (localStorage.getItem(EFFECTS_CACHE_KEY) === 'reduced') applyEffects('reduced');
+} catch {
+  /* storage unavailable — full until app:init answers */
+}
+
+/** Unsent drafts from the last run, restored into the first frame. */
+const savedDrafts = loadDrafts();
+
 export const useApp = create<AppState>((set, get) => {
   let toastId = 0;
+
+  // After an import: reload projects+workspaces (the onboarding gate closes as
+  // projects.length flips > 0), then focus the most recently active imported
+  // workspace.
+  const focusImported = async (focusWorkspaceId: string | null) => {
+    await get().refreshProjects();
+    const s = get();
+    const focusWs = focusWorkspaceId ? s.workspaces.find((w) => w.id === focusWorkspaceId) : null;
+    const projectId = focusWs?.projectId ?? s.activeProjectId ?? s.projects[0]?.id ?? null;
+    if (projectId) {
+      localStorage.setItem('activeProjectId', projectId);
+      set({ activeProjectId: projectId, showWorkspaces: false });
+      void get().refreshCaps(projectId);
+    }
+    if (focusWs) get().selectWorkspace(focusWs.id);
+  };
 
   // Re-apply when the OS flips its color scheme, but only while following it.
   systemDarkQuery.addEventListener('change', () => {
@@ -831,6 +733,7 @@ export const useApp = create<AppState>((set, get) => {
     dockRunIds: {},
     focusComposerNonce: 0,
     chatFindNonce: 0,
+    diffFocus: null,
     closeActiveFileNonce: 0,
     resolvedTheme: resolveTheme(cachedTheme.theme),
     settings: {
@@ -842,6 +745,7 @@ export const useApp = create<AppState>((set, get) => {
       linearToken: '',
       notifications: true,
       completionSound: DEFAULT_COMPLETION_SOUND,
+      questionSound: true,
       defaultModels: {},
       defaultEffort: 'high',
       sidebarCollapsed: false,
@@ -858,6 +762,7 @@ export const useApp = create<AppState>((set, get) => {
     remoteSetup: {},
     appVersion: '',
     platform: 'darwin',
+    gpu: null,
     wsVersion: {},
     messages: {},
     lastSeenAt: {},
@@ -884,9 +789,10 @@ export const useApp = create<AppState>((set, get) => {
     previewByWs: {},
     portUpByWs: {},
     annotate: null,
-    composerAttachments: {},
+    composerAttachments: savedDrafts.attachments,
     composerAgent: {},
-    composerDrafts: {},
+    composerDrafts: savedDrafts.text,
+    promptStash: loadStash(),
     agentCount: {},
     chatIds: {},
     paneLayout: {},
@@ -896,6 +802,7 @@ export const useApp = create<AppState>((set, get) => {
     lightbox: null,
     feedbackPanel: { open: false },
     paletteOpen: false,
+    popovers: 0,
     toasts: [],
     ghSignIn: null,
     ghSignInReturn: null,
@@ -928,12 +835,13 @@ export const useApp = create<AppState>((set, get) => {
       set({
         loaded: true,
         projects: data.projects,
-        workspaces: data.workspaces,
+        workspaces: applyWorkspaceOrder(data.workspaces),
         settings: data.settings,
         ghAuth: data.ghAuth,
         harnesses: data.harnesses,
         appVersion: data.version,
         platform: data.platform,
+        gpu: data.gpu ?? null,
         activeProjectId,
         activeWorkspaceId,
         projectOwners: data.projectOwners ?? {},
@@ -954,6 +862,12 @@ export const useApp = create<AppState>((set, get) => {
         if (!w.archived && hasDiff) get().refreshDiffStat(w.id);
       }
 
+      // Boot-time origin probes can time out; re-probe the misses once things settle.
+      setTimeout(() => {
+        const { projects, projectOwners } = get();
+        for (const p of projects) if (p.kind === 'git' && !projectOwners[p.id]) void get().refreshCaps(p.id);
+      }, 15_000);
+
       // gh auth + harness detection are slow probes — fill them in after first paint.
       void tryInvoke('github:auth').then((r) => r.data && set({ ghAuth: r.data }));
       void get().refreshHarnesses();
@@ -966,409 +880,17 @@ export const useApp = create<AppState>((set, get) => {
       void tryInvoke('harnessSync:status').then((r) => r.data && set({ harnessSyncStatus: r.data }));
 
       // ---- push event wiring (once) ----
-      on('ws:updated', (ws) => {
-        patchWorkspace(ws);
-        // Persisted PR identity disagrees with the live status this renderer has
-        // shown (agent opened a PR out-of-band) → re-fetch. Cheap: main's forced
-        // refresh just filled the gh cache, so this is a cache hit.
-        const cached = get().prStatus[ws.id];
-        if (cached !== undefined && ((cached?.number ?? null) !== ws.prNumber || (cached?.state ?? null) !== ws.prState)) {
-          void get().refreshPr(ws.id);
-        }
-        const c = capsOf(get(), ws.projectId);
-        if (!ws.archived && (c.git || c.checkpoints)) get().refreshDiffStat(ws.id);
-        // Main owns the truth about running agents: while any agent runs the
-        // status is 'running'. Anything else ⇒ drop stale renderer run state.
-        if (ws.status !== 'running' && ws.status !== 'setting-up') {
-          set((s) => {
-            const staleRunning = (s.runningAgents[ws.id] ?? []).length > 0;
-            const staleTurnKeys = Object.entries(s.liveTurns)
-              .filter(([k, t]) => k.startsWith(`${ws.id}:`) && t?.running)
-              .map(([k]) => k);
-            if (!staleRunning && staleTurnKeys.length === 0) return {};
-            const liveTurns = { ...s.liveTurns };
-            for (const k of staleTurnKeys) delete liveTurns[k];
-            return { runningAgents: { ...s.runningAgents, [ws.id]: [] }, liveTurns };
-          });
-        }
-      });
-      // Main pushes authoritative PR status after any refresh it runs itself
-      // (turn end, background poll, merge) — mirror it so the header action
-      // (Create PR → Merge / Resolve → Merged) flips without a UI-side fetch.
-      on('pr:status', ({ workspaceId, pr }) => {
-        set((s) => ({ prStatus: { ...s.prStatus, [workspaceId]: pr } }));
-      });
-      on('ws:removed', ({ workspaceId }) => {
-        evictEditor(workspaceId);
-        set((s) => {
-          const previewByWs = { ...s.previewByWs };
-          delete previewByWs[workspaceId];
-          return {
-            workspaces: s.workspaces.filter((w) => w.id !== workspaceId),
-            activeWorkspaceId: s.activeWorkspaceId === workspaceId ? null : s.activeWorkspaceId,
-            previewByWs,
-            annotate: s.annotate?.wsId === workspaceId ? null : s.annotate,
-          };
-        });
-      });
-      // Authoritative preview facts (URL, nav, console counts, agent activity).
-      on('preview:state', (p) => get().setPreviewState(p));
-      // Dev-server port liveness for the Preview tab pulse (§5).
-      on('port:state', ({ workspaceId, listening }) =>
-        set((s) => ({ portUpByWs: { ...s.portUpByWs, [workspaceId]: listening } }))
-      );
-      on('chat:message', (msg) => {
-        set((s) => {
-          const list = s.messages[msg.workspaceId];
-          // A workspace whose transcript isn't loaded — never opened, or evicted
-          // (§4.9.5) — has nothing to append to, and seeding it with this one
-          // message would make the lazy loader (`!s.messages[wsId]`, see
-          // loadWorkspaceData) skip `chat:list` and show a one-message chat.
-          // Leave the slice absent: selecting the workspace loads the full
-          // history including this row (main persists before it broadcasts, and
-          // the reply to a `chat:list` sent earlier arrives before this push).
-          // Mirrored (harness-sync) rows use deterministic ids and can re-arrive on
-          // a re-ingest; replace an existing id in place instead of appending a dup.
-          const existingIdx = list ? list.findIndex((m) => m.id === msg.id) : -1;
-          const messages = !list
-            ? s.messages
-            : {
-                ...s.messages,
-                [msg.workspaceId]: existingIdx >= 0 ? list.map((m) => (m.id === msg.id ? msg : m)) : [...list, msg],
-              };
-          const liveTurns = { ...s.liveTurns };
-          const pendingAsks = s.pendingAsks;
-          let asks = pendingAsks;
-          let runningAgents = s.runningAgents;
-          if ((msg.role === 'agent' || msg.role === 'system') && !msg.meta?.midTurn) {
-            // A persisted agent/system message means that agent's run is over —
-            // except a note Maestro posts *during* the turn (`midTurn`).
-            const key = turnKey(msg.workspaceId, msg.agentId);
-            delete liveTurns[key];
-            const wasRunning = s.runningAgents[msg.workspaceId] ?? EMPTY_ARR;
-            const running = wasRunning.filter((a) => a !== msg.agentId);
-            // Keep the old identity when this agent wasn't running anyway (a
-            // mirrored row): every sidebar stack watches this map.
-            runningAgents =
-              running.length === wasRunning.length ? s.runningAgents : { ...s.runningAgents, [msg.workspaceId]: running };
-            // The turn is over, so no question can still be waiting — drop any
-            // stale picker (safety net if an `ask:resolved` was missed).
-            if (pendingAsks[key]) {
-              asks = { ...pendingAsks };
-              delete asks[key];
-            }
-          }
-          return { messages, liveTurns, runningAgents, pendingAsks: asks };
-        });
-      });
-
-      // A specialist run was created or advanced — upsert it under its parent
-      // turn so the response dropdown + preview reflect it live and after reload.
-      on('subagent:updated', (run) => {
-        set((s) => {
-          const list = s.subagentRuns[run.parentMessageId] ?? [];
-          const idx = list.findIndex((r) => r.id === run.id);
-          const next = idx >= 0 ? list.map((r) => (r.id === run.id ? run : r)) : [...list, run];
-          return { subagentRuns: { ...s.subagentRuns, [run.parentMessageId]: next } };
-        });
-      });
-      // An agent is blocked asking the user something — surface the picker in its
-      // live turn. `ask:resolved` (answer, dismiss, or a killed run) clears it.
-      on('ask:question', (payload) => {
-        set((s) => ({
-          pendingAsks: { ...s.pendingAsks, [turnKey(payload.workspaceId, payload.agentId)]: payload },
-        }));
-      });
-      on('ask:resolved', ({ workspaceId, agentId }) => {
-        set((s) => {
-          const pendingAsks = { ...s.pendingAsks };
-          delete pendingAsks[turnKey(workspaceId, agentId)];
-          return { pendingAsks };
-        });
-      });
-      on('chat:event', ({ workspaceId, agentId, event }) => {
-        // Bookkeeping-only events must not create turns or mark agents running —
-        // a trailing one after `done` would leave a zombie "Thinking…" state.
-        // (Main routes background tasks to 'chat:tasks' instead; guarded here too
-        // because those legitimately arrive after the turn's `done`.)
-        if (event.kind === 'session' || event.kind === 'status' || event.kind === 'task' || event.kind === 'limit')
-          return;
-        if (event.kind === 'context') {
-          // Per-API-call measurement — the ring ticks live during long turns.
-          set((st) => ({
-            chatsMeta: {
-              ...st.chatsMeta,
-              [workspaceId]: {
-                ...st.chatsMeta[workspaceId],
-                [String(agentId)]: {
-                  ...st.chatsMeta[workspaceId]?.[String(agentId)],
-                  contextTokens: event.contextTokens,
-                  usage: event.usage,
-                },
-              },
-            },
-          }));
-          return;
-        }
-        if (event.kind === 'done') {
-          // Completion chime — plays ONCE when an agent finishes a turn, in any
-          // workspace. Guarded on the turn still being marked running so a harness
-          // that emits several `done` events (e.g. codex retrying a failed
-          // connection) doesn't replay it 5×. Independent of the OS notification
-          // (which only fires when Maestro is backgrounded); disabled by "No sound".
-          if (get().liveTurns[turnKey(workspaceId, agentId)]?.running) {
-            playCompletionSound(get().settings.completionSound);
-          }
-        }
-        set((s) => {
-          const key = turnKey(workspaceId, agentId);
-          const cur: LiveTurn = s.liveTurns[key] ?? {
-            agentId,
-            finalBlocks: [],
-            deltaBlocks: [],
-            accumType: null,
-            accumText: '',
-            running: true,
-            startedAt: Date.now(),
-          };
-          // Structural sharing (§4.9.4): a streaming turn re-enters this handler
-          // once per token, so copying both block arrays every time is O(turn)
-          // per token. Each case below copies only the array it actually changes
-          // — `seg-delta`, the per-token event, copies neither — which also keeps
-          // the finished blocks' identities stable for the memoised views.
-          const t: LiveTurn = { ...cur };
-          const flush = () => {
-            if (t.accumType && t.accumText) {
-              t.deltaBlocks = [...t.deltaBlocks, { type: t.accumType, text: t.accumText } as AgentBlock];
-            }
-            t.accumType = null;
-            t.accumText = '';
-          };
-          let running = s.runningAgents[workspaceId] ?? [];
-          switch (event.kind) {
-            case 'seg-start':
-              flush();
-              t.accumType = event.segType;
-              break;
-            case 'seg-delta':
-              if (!t.accumType) t.accumType = 'text';
-              t.accumText = t.accumText + event.text;
-              break;
-            case 'tool-start':
-              flush();
-              t.deltaBlocks = [...t.deltaBlocks, { type: 'tool', id: event.toolId, name: event.name, input: event.input }];
-              break;
-            case 'message-final':
-              t.finalBlocks = [...t.finalBlocks, ...event.blocks];
-              t.deltaBlocks = [];
-              t.accumType = null;
-              t.accumText = '';
-              break;
-            case 'tool-result': {
-              // Copy-on-write: only the array that actually holds the newest
-              // block with this tool id is replaced. A result usually lands in a
-              // block the previous `message-final` already moved to finalBlocks.
-              const patched = (arr: AgentBlock[]): AgentBlock[] | null => {
-                for (let i = arr.length - 1; i >= 0; i--) {
-                  const b = arr[i];
-                  if (b.type === 'tool' && b.id === event.toolId) {
-                    const next = [...arr];
-                    next[i] = { ...b, result: { ok: event.ok, summary: event.summary } };
-                    return next;
-                  }
-                }
-                return null;
-              };
-              const finals = patched(t.finalBlocks);
-              if (finals) t.finalBlocks = finals;
-              else {
-                const deltas = patched(t.deltaBlocks);
-                if (deltas) t.deltaBlocks = deltas;
-              }
-              break;
-            }
-            case 'done': {
-              t.running = false;
-              running = running.filter((a) => a !== agentId);
-              if (event.contextTokens) {
-                // context ring data — merged here so it survives without a refetch
-                setTimeout(() =>
-                  set((st) => ({
-                    chatsMeta: {
-                      ...st.chatsMeta,
-                      [workspaceId]: {
-                        ...st.chatsMeta[workspaceId],
-                        [String(agentId)]: {
-                          ...st.chatsMeta[workspaceId]?.[String(agentId)],
-                          contextTokens: event.contextTokens,
-                        },
-                      },
-                    },
-                  }))
-                );
-              }
-              break;
-            }
-            default:
-              break;
-          }
-          if (event.kind !== 'done' && !running.includes(agentId)) {
-            running = [...running, agentId];
-          }
-          const liveTurns = { ...s.liveTurns, [key]: t };
-          if (
-            event.kind === 'done' &&
-            t.finalBlocks.length === 0 &&
-            t.deltaBlocks.length === 0 &&
-            !t.accumText
-          ) {
-            // Nothing was produced (e.g. stopped immediately) — drop the stub;
-            // otherwise the persisted chat:message replaces it.
-            delete liveTurns[key];
-          }
-          // Turn ended — no question can still be waiting on it (main also cancels
-          // + broadcasts ask:resolved; this just guarantees an instant clear).
-          let pendingAsks = s.pendingAsks;
-          if (event.kind === 'done' && pendingAsks[key]) {
-            pendingAsks = { ...pendingAsks };
-            delete pendingAsks[key];
-          }
-          return {
-            liveTurns,
-            pendingAsks,
-            // Same structural sharing as the blocks above: mid-turn the running
-            // list never changes, and a fresh map identity here would re-render
-            // every sidebar status stack on every token.
-            runningAgents:
-              running === s.runningAgents[workspaceId] ? s.runningAgents : { ...s.runningAgents, [workspaceId]: running },
-          };
-        });
-      });
-      on('chat:queue', ({ workspaceId, agentId, items }) => {
-        set((s) => ({ queued: { ...s.queued, [`${workspaceId}:${agentId}`]: items } }));
-      });
-      on('chat:scheduled', ({ workspaceId, agentId, items }) => {
-        set((s) => ({ scheduled: { ...s.scheduled, [`${workspaceId}:${agentId}`]: items } }));
-      });
-      on('chat:tasks', ({ workspaceId, agentId, tasks }) => {
-        set((s) => ({ bgTasks: { ...s.bgTasks, [`${workspaceId}:${agentId}`]: tasks } }));
-      });
-      on('chat:meta:updated', ({ workspaceId, agentId, meta }) => {
-        // Authoritative merged meta from main (titles, attention, read marks…).
-        set((s) => ({
-          chatsMeta: {
-            ...s.chatsMeta,
-            [workspaceId]: { ...s.chatsMeta[workspaceId], [String(agentId)]: meta },
-          },
-        }));
-      });
-      on('harnessSync:status', (status) => set({ harnessSyncStatus: status }));
-      on('gh:auth', (p) => {
-        if (p.phase === 'success' && p.auth) {
-          set((s) => ({
-            ghAuth: p.auth,
-            ghSignIn: null,
-            // Reopen the modal that launched sign-in (e.g. clone-repo), if any.
-            modal: s.modal?.kind === 'github-signin' ? s.ghSignInReturn : s.modal,
-            ghSignInReturn: null,
-          }));
-          get().toast(
-            'success',
-            p.auth.user ? `Signed in to GitHub as @${p.auth.user}` : 'Signed in to GitHub'
-          );
-          // gh auth is a per-host input to the githubRemote rung — re-derive caps
-          // so PR chrome appears without a reload.
-          for (const proj of get().projects) void get().refreshCaps(proj.id);
-        } else if (p.phase === 'error') {
-          set((s) => ({
-            ghSignIn: {
-              userCode: s.ghSignIn?.userCode ?? '',
-              verificationUri: s.ghSignIn?.verificationUri ?? '',
-              status: 'error',
-              message: p.message ?? 'GitHub sign-in failed',
-            },
-          }));
-        }
-      });
-      // A default model/effort/harness or a theme set on Maestro Web lands in
-      // main (settings-sync); adopt it so the composer's chips and the theme
-      // follow at once.
-      on('settings:updated', (next) => {
-        set({ settings: next });
-        get().applyTheme();
-      });
-      on('account:auth', (p) => {
-        // The relay dropped this desktop's link (web "Reset Maestro Web" or a
-        // device revoke). SettingsModal refreshes its own status; surface a toast
-        // too so the sign-out isn't silent. Only the revoked case — an explicit
-        // sign-out and normal link success/error are handled elsewhere.
-        if (p.phase === 'signedout' && p.reason === 'revoked')
-          get().toast('info', 'Signed out of Maestro Web — its cloud data was reset. Link again to reconnect.');
-      });
-      on('script:state', ({ workspaceId, kind, state }) => {
-        set((s) => {
-          const idle = { running: false, exitCode: null, startedAt: null };
-          const cur = s.scripts[workspaceId] ?? { setup: idle, run: idle, spotlight: idle };
-          return { scripts: { ...s.scripts, [workspaceId]: { ...cur, [kind]: state } } };
-        });
-      });
-      on('status:state', ({ key, generating, report, error }) => {
-        set((s) => {
-          const cur = s.statusByKey[key];
-          return {
-            statusByKey: {
-              ...s.statusByKey,
-              [key]: {
-                report: report ?? cur?.report ?? null,
-                stale: report ? false : cur?.stale ?? true,
-                generating,
-                error,
-              },
-            },
-          };
-        });
-      });
-      on('runscript:changed', ({ workspaceId, scripts }) => {
-        set((s) => {
-          // A deleted script takes its dock terminal tab with it; if that tab was
-          // showing, fall back to the Run (cards) tab.
-          const live = new Set(scripts.map((sc) => sc.id));
-          const openIds = s.dockRunIds[workspaceId] ?? EMPTY_ARR;
-          const keptIds = openIds.filter((id) => live.has(id));
-          const patch: Partial<AppState> = { runScripts: { ...s.runScripts, [workspaceId]: scripts } };
-          if (keptIds.length !== openIds.length) {
-            patch.dockRunIds = { ...s.dockRunIds, [workspaceId]: keptIds };
-            const cur = s.dockTab[workspaceId];
-            if (cur?.startsWith('rs:') && !live.has(cur.slice(3))) {
-              patch.dockTab = { ...s.dockTab, [workspaceId]: 'run' };
-            }
-          }
-          return patch;
-        });
-      });
-      on('runscript:state', ({ workspaceId, scriptId, state }) => {
-        set((s) => ({ runScriptStates: { ...s.runScriptStates, [`${workspaceId}:${scriptId}`]: state } }));
-      });
-      on('runscript:generating', ({ workspaceId, generating, error }) => {
-        set((s) => ({
-          rsGenerating: { ...s.rsGenerating, [workspaceId]: generating },
-          rsGenError: { ...s.rsGenError, [workspaceId]: error },
-        }));
-      });
-      on('host:state', ({ hostId, state, message }) => {
-        set((s) => ({ hostStates: { ...s.hostStates, [hostId]: state } }));
-        if (state === 'error' && message) get().toast('error', `SSH: ${message}`);
-      });
+      subscribeToMain(set, get, { patchWorkspace, evictEditor });
 
       // Shed the transcripts / diffs of workspaces the user left long ago
       // (§4.9.5). One timer for the whole store; the policy lives in the evictor.
       setInterval(() => set(evictIdleWorkspaces), EVICT_SWEEP_MS);
     },
 
-    toast: (kind, text) => {
+    toast: (kind, text, action) => {
       const id = ++toastId;
-      set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
-      setTimeout(() => get().dismissToast(id), kind === 'error' ? 8000 : 4000);
+      set((s) => ({ toasts: [...s.toasts, { id, kind, text, action }] }));
+      setTimeout(() => get().dismissToast(id), kind === 'error' || action ? 8000 : 4000);
     },
     dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
@@ -1405,6 +927,7 @@ export const useApp = create<AppState>((set, get) => {
         return { lightbox: { ...s.lightbox, index: next } };
       }),
     setPalette: (open) => set({ paletteOpen: open }),
+    trackPopover: (delta) => set((s) => ({ popovers: Math.max(0, s.popovers + delta) })),
 
     selectProject: (id) => {
       const s = get();
@@ -1437,6 +960,15 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     openWorkspacesView: () => set({ showWorkspaces: true }),
+
+    openChat: (wsId, agentId) => {
+      const ws = get().workspaces.find((w) => w.id === wsId);
+      if (!ws) return;
+      if (ws.projectId !== get().activeProjectId) get().selectProject(ws.projectId);
+      get().selectWorkspace(wsId);
+      if (agentId != null) get().reopenChat(wsId, agentId);
+      get().setTab(wsId, 'chat');
+    },
 
     setTab: (wsId, tab) => set((s) => ({ tabByWs: { ...s.tabByWs, [wsId]: tab } })),
 
@@ -1492,7 +1024,12 @@ export const useApp = create<AppState>((set, get) => {
       get().openPreview(wsId);
     },
 
-    setPreviewState: (p) => set((s) => ({ previewByWs: { ...s.previewByWs, [p.workspaceId]: p } })),
+    setPreviewState: (p) => {
+      // A page that actually loaded joins the project's recent-URL list.
+      const projectId = get().workspaces.find((w) => w.id === p.workspaceId)?.projectId;
+      if (projectId && p.url && !p.loading && !p.error) rememberPreviewUrl(projectId, p.url);
+      set((s) => ({ previewByWs: { ...s.previewByWs, [p.workspaceId]: p } }));
+    },
 
     closePreview: (wsId) => {
       void invoke('preview:close', { workspaceId: wsId });
@@ -1548,6 +1085,11 @@ export const useApp = create<AppState>((set, get) => {
       get().setTab(wsId, 'editor');
     },
 
+    revealDiffFile: (wsId, path) => {
+      set({ diffFocus: { wsId, path } });
+      get().setTab(wsId, 'diff');
+    },
+
     closeFile: (wsId, path) => {
       set((s) => {
         const list = s.openFiles[wsId] ?? EMPTY_ARR;
@@ -1577,6 +1119,19 @@ export const useApp = create<AppState>((set, get) => {
         return patch;
       });
     },
+
+    renameOpenFiles: (wsId, from, to) =>
+      set((s) => {
+        const map = (p: string) => (p === from ? to : p.startsWith(from + '/') ? to + p.slice(from.length) : p);
+        const list = s.openFiles[wsId] ?? EMPTY_ARR;
+        const active = s.activeFile[wsId] ?? null;
+        const stack = s.closedFiles[wsId] ?? [];
+        return {
+          openFiles: { ...s.openFiles, [wsId]: list.map(map) },
+          activeFile: { ...s.activeFile, [wsId]: active && map(active) },
+          closedFiles: { ...s.closedFiles, [wsId]: stack.map((e) => ({ ...e, path: map(e.path) })) },
+        };
+      }),
 
     // ⌘W while Editor is the active surface. The dirty-guard confirm modal lives
     // in EditorSurface, so we just poke it via a nonce (only the visible editor,
@@ -1625,13 +1180,7 @@ export const useApp = create<AppState>((set, get) => {
 
     setChatMeta: (wsId, agentId, patch) => {
       set((s) => ({
-        chatsMeta: {
-          ...s.chatsMeta,
-          [wsId]: {
-            ...s.chatsMeta[wsId],
-            [String(agentId)]: { ...s.chatsMeta[wsId]?.[String(agentId)], ...patch },
-          },
-        },
+        chatsMeta: patchChatMeta(s.chatsMeta, wsId, agentId, patch),
       }));
       void invoke('chat:meta:set', { workspaceId: wsId, agentId, patch });
     },
@@ -1653,13 +1202,7 @@ export const useApp = create<AppState>((set, get) => {
       if (!isUnread(meta)) return; // nothing unread
       // Optimistic: the dot disappears now; main re-broadcasts the same state.
       set((s) => ({
-        chatsMeta: {
-          ...s.chatsMeta,
-          [wsId]: {
-            ...s.chatsMeta[wsId],
-            [String(agentId)]: { ...s.chatsMeta[wsId]?.[String(agentId)], lastReadAt: Date.now() },
-          },
-        },
+        chatsMeta: patchChatMeta(s.chatsMeta, wsId, agentId, { lastReadAt: Date.now() }),
       }));
       void tryInvoke('chat:markRead', { workspaceId: wsId, agentId });
     },
@@ -1739,6 +1282,7 @@ export const useApp = create<AppState>((set, get) => {
       if (!list.includes(agentId)) return;
       const wasLast = list.length <= 1;
       void invoke('chat:stop', { workspaceId: wsId, agentId }); // halt run + clear queue
+      flushChatEvents();
       set((s) => {
         const cur = s.chatIds[wsId] ?? DEFAULT_CHAT_IDS;
         const closedIdx = cur.indexOf(agentId);
@@ -1811,6 +1355,23 @@ export const useApp = create<AppState>((set, get) => {
         return { chatIds: { ...s.chatIds, [wsId]: next } };
       });
       saveChatOrder(wsId, get().chatIds[wsId] ?? []);
+    },
+
+    reorderWorkspace: (wsId, targetId) => {
+      set((s) => {
+        const ws = s.workspaces.find((w) => w.id === wsId);
+        if (!ws || wsId === targetId) return {};
+        const inGroup = (w: Workspace) => w.projectId === ws.projectId && !w.archived;
+        const group = s.workspaces.filter(inGroup);
+        const to = group.findIndex((w) => w.id === targetId);
+        if (to === -1) return {};
+        const next = group.filter((w) => w !== ws);
+        next.splice(to, 0, ws);
+        // Refill the group's slots in the global list; other projects stay put.
+        let k = 0;
+        return { workspaces: s.workspaces.map((w) => (inGroup(w) ? next[k++] : w)) };
+      });
+      saveWorkspaceOrder(get().workspaces.map((w) => w.id));
     },
 
     // ⇧⌘T: reopen the most recently closed tab in this workspace (LIFO, like a
@@ -2103,6 +1664,7 @@ export const useApp = create<AppState>((set, get) => {
       // events got here first).
       if (running.length) {
         const live = await invoke('chat:live', { workspaceId: wsId }).catch(() => ({}));
+        flushChatEvents(); // compare against every event that got here first
         set((st) => {
           const liveTurns = { ...st.liveTurns };
           let changed = false;
@@ -2211,6 +1773,19 @@ export const useApp = create<AppState>((set, get) => {
       const { data } = await tryInvoke('github:prStatus', { workspaceId: wsId, force });
       set((s) => ({ prStatus: { ...s.prStatus, [wsId]: data ?? null } }));
     },
+    squashMergePr: async (wsId, prNumber) => {
+      const res = await tryInvoke('github:prMerge', { workspaceId: wsId, method: 'squash' });
+      if (res.error || !res.data?.ok) {
+        const base = get().prStatus[wsId]?.baseRefName ?? '';
+        get().toast('error', mergeFailureMessage(res.error ?? res.data?.error, base));
+        // Re-ask GitHub: a refusal means our cached mergeability was optimistic,
+        // and the merge buttons should stop offering a merge it can't do.
+        void get().refreshPr(wsId, true);
+        return;
+      }
+      get().toast('success', prNumber != null ? `PR #${prNumber} merged` : 'PR merged');
+      void get().refreshPr(wsId, true);
+    },
 
     refreshComments: async (wsId) => {
       const { data } = await tryInvoke('comment:list', { workspaceId: wsId });
@@ -2223,6 +1798,7 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     sendMessage: async (wsId, text, agentIdArg) => {
+      flushChatEvents(); // a queued `done` decides whether this send starts a turn
       const s = get();
       const agentId = agentIdArg ?? s.composerAgent[wsId] ?? 1;
       const attKey = `${wsId}:${agentId}`;
@@ -2251,16 +1827,7 @@ export const useApp = create<AppState>((set, get) => {
         // tab; attachment-only sends leave it "New chat") so the tab names itself
         // instantly.
         set((st) => ({
-          chatsMeta: {
-            ...st.chatsMeta,
-            [wsId]: {
-              ...st.chatsMeta[wsId],
-              [String(agentId)]: {
-                ...st.chatsMeta[wsId]?.[String(agentId)],
-                title: provisionalTitle(text),
-              },
-            },
-          },
+          chatsMeta: patchChatMeta(st.chatsMeta, wsId, agentId, { title: provisionalTitle(text) }),
         }));
       }
       const { data, error } = await tryInvoke('chat:send', {
@@ -2272,6 +1839,7 @@ export const useApp = create<AppState>((set, get) => {
       // Roll back the optimistic running/live-turn if the send failed or was
       // actually queued behind a running turn (no new turn started for us).
       if (!alreadyRunning && (error || !data?.ok || data?.queued)) {
+        flushChatEvents();
         set((st) => {
           const liveTurns = { ...st.liveTurns };
           delete liveTurns[turnKey(wsId, agentId)];
@@ -2349,8 +1917,8 @@ export const useApp = create<AppState>((set, get) => {
       void invoke('chat:queue:remove', { workspaceId: wsId, agentId, itemId });
     },
 
-    editQueued: (wsId, agentId, itemId, text) => {
-      void invoke('chat:queue:edit', { workspaceId: wsId, agentId, itemId, text });
+    editQueued: (wsId, agentId, itemId, text, attachments) => {
+      void invoke('chat:queue:edit', { workspaceId: wsId, agentId, itemId, text, attachments });
     },
 
     // Steer: interrupt the running turn so this queued message runs next. Main
@@ -2496,6 +2064,47 @@ export const useApp = create<AppState>((set, get) => {
       set((s) => ({ composerDrafts: { ...s.composerDrafts, [`${wsId}:${agentId}`]: text } }));
     },
 
+    stashDraft: (wsId, agentId) => {
+      const key = `${wsId}:${agentId}`;
+      const s = get();
+      const text = s.composerDrafts[key] ?? '';
+      const attachments = s.composerAttachments[key] ?? [];
+      if (!text.trim() && !attachments.length) return;
+      const promptStash = [{ id: Date.now(), text, attachments, workspaceId: wsId, at: Date.now() }, ...s.promptStash].slice(0, STASH_MAX);
+      saveStash(promptStash);
+      set({
+        promptStash,
+        composerDrafts: { ...s.composerDrafts, [key]: '' },
+        composerAttachments: { ...s.composerAttachments, [key]: [] },
+      });
+    },
+
+    restoreStash: (id, wsId, agentId) => {
+      const key = `${wsId}:${agentId}`;
+      const s = get();
+      const entry = s.promptStash.find((e) => e.id === id);
+      if (!entry) return;
+      const cur = s.composerDrafts[key] ?? '';
+      // Attachments live in their workspace's worktree — they can't follow the text elsewhere.
+      const here = entry.workspaceId === wsId;
+      if (!here && entry.attachments.length) get().toast('info', 'Restored the text — its attachments stay with their workspace');
+      const promptStash = s.promptStash.filter((e) => e.id !== id);
+      saveStash(promptStash);
+      set({
+        promptStash,
+        composerDrafts: { ...s.composerDrafts, [key]: cur.trim() ? `${cur}\n\n${entry.text}` : entry.text },
+        composerAttachments: here
+          ? { ...s.composerAttachments, [key]: [...(s.composerAttachments[key] ?? []), ...entry.attachments] }
+          : s.composerAttachments,
+      });
+    },
+
+    dropStash: (id) => {
+      const promptStash = get().promptStash.filter((e) => e.id !== id);
+      saveStash(promptStash);
+      set({ promptStash });
+    },
+
     addAttachment: (wsId, agentId, a) => {
       const key = `${wsId}:${agentId}`;
       set((s) => ({
@@ -2623,7 +2232,7 @@ export const useApp = create<AppState>((set, get) => {
       if (!data) return;
       set((s) => ({
         projects: data.projects,
-        workspaces: data.workspaces,
+        workspaces: applyWorkspaceOrder(data.workspaces),
         projectOwners: data.projectOwners ?? {},
         projectCaps: { ...s.projectCaps, ...(data.projectCaps ?? {}) },
         hosts: data.hosts ?? s.hosts,
@@ -2641,7 +2250,11 @@ export const useApp = create<AppState>((set, get) => {
 
     refreshCaps: async (projectId) => {
       const { data } = await tryInvoke('project:capabilities', { projectId });
-      if (data) set((s) => ({ projectCaps: { ...s.projectCaps, [projectId]: data } }));
+      if (data)
+        set((s) => ({
+          projectCaps: { ...s.projectCaps, [projectId]: data },
+          projectOwners: { ...s.projectOwners, [projectId]: data.githubOwner },
+        }));
     },
 
     scanConductor: async (force) => {
@@ -2676,24 +2289,9 @@ export const useApp = create<AppState>((set, get) => {
         return;
       }
       get().setModal(null);
-      const parts: string[] = [];
-      if (data.projects) parts.push(`${data.projects} project${data.projects === 1 ? '' : 's'}`);
-      if (data.workspaces) parts.push(`${data.workspaces} workspace${data.workspaces === 1 ? '' : 's'}`);
-      if (data.chats) parts.push(`${data.chats} chat${data.chats === 1 ? '' : 's'}`);
-      get().toast('success', parts.length ? `Imported ${parts.join(', ')} from Conductor` : 'Nothing new to import');
-
-      // Reload projects+workspaces (the gate closes as projects.length flips > 0),
-      // then focus the most recently active imported workspace.
-      await get().refreshProjects();
-      const s = get();
-      const focusWs = data.focusWorkspaceId ? s.workspaces.find((w) => w.id === data.focusWorkspaceId) : null;
-      const projectId = focusWs?.projectId ?? s.activeProjectId ?? s.projects[0]?.id ?? null;
-      if (projectId) {
-        localStorage.setItem('activeProjectId', projectId);
-        set({ activeProjectId: projectId, showWorkspaces: false });
-        void get().refreshCaps(projectId);
-      }
-      if (focusWs) get().selectWorkspace(focusWs.id);
+      const summary = importSummary(data);
+      get().toast('success', summary ? `Imported ${summary} from Conductor` : 'Nothing new to import');
+      await focusImported(data.focusWorkspaceId);
       // Refresh the scan so re-opening the panel shows the new "Imported ✓" states.
       void get().scanConductor(true);
     },
@@ -2722,23 +2320,10 @@ export const useApp = create<AppState>((set, get) => {
         return;
       }
       get().setModal(null);
-      const parts: string[] = [];
-      if (data.projects) parts.push(`${data.projects} project${data.projects === 1 ? '' : 's'}`);
-      if (data.workspaces) parts.push(`${data.workspaces} workspace${data.workspaces === 1 ? '' : 's'}`);
-      if (data.chats) parts.push(`${data.chats} chat${data.chats === 1 ? '' : 's'}`);
-      get().toast('success', parts.length ? `Imported ${parts.join(', ')}` : 'Nothing new to import');
+      const summary = importSummary(data);
+      get().toast('success', summary ? `Imported ${summary}` : 'Nothing new to import');
       if (data.errors.length) get().toast('error', data.errors[0]);
-
-      await get().refreshProjects();
-      const s = get();
-      const focusWs = data.focusWorkspaceId ? s.workspaces.find((w) => w.id === data.focusWorkspaceId) : null;
-      const projectId = focusWs?.projectId ?? s.activeProjectId ?? s.projects[0]?.id ?? null;
-      if (projectId) {
-        localStorage.setItem('activeProjectId', projectId);
-        set({ activeProjectId: projectId, showWorkspaces: false });
-        void get().refreshCaps(projectId);
-      }
-      if (focusWs) get().selectWorkspace(focusWs.id);
+      await focusImported(data.focusWorkspaceId);
       void get().scanHarnessSync(true);
       void tryInvoke('harnessSync:status').then((r) => r.data && set({ harnessSyncStatus: r.data }));
     },
@@ -2872,7 +2457,7 @@ export const useApp = create<AppState>((set, get) => {
     saveSettings: async (patch) => {
       const next = await invoke('settings:set', patch);
       set({ settings: next });
-      if (patch.theme || patch.colorTheme) get().applyTheme();
+      if (patch.theme || patch.colorTheme || patch.visualEffects) get().applyTheme();
     },
 
     refreshHarnesses: async (force = false) => {
@@ -2896,8 +2481,12 @@ export const useApp = create<AppState>((set, get) => {
       const family = normalizeColorTheme(colorTheme);
       const resolved = resolveTheme(mode);
       applyThemeToElement(document.documentElement, family, resolved === 'dark');
+      const fxMode = get().settings.visualEffects;
+      const fx = resolveEffects(isEffectsMode(fxMode) ? fxMode : 'auto', get().gpu);
+      applyEffects(fx);
       try {
         localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ theme: mode, colorTheme: family }));
+        localStorage.setItem(EFFECTS_CACHE_KEY, fx);
       } catch {
         /* storage unavailable — the next boot just starts from Classic */
       }
@@ -2979,6 +2568,34 @@ export const useApp = create<AppState>((set, get) => {
       if (data.note) get().toast(data.noteKind ?? 'info', data.note);
     },
   };
+});
+
+persistDrafts(useApp);
+
+// Dock badge: how many workspaces are waiting on the user — a question, an
+// unread finish, or needs-attention (the sidebar's status stack, summed up).
+// Off with notifications; recomputed only when an input to it changes.
+let dockBadge = -1;
+useApp.subscribe((s, prev) => {
+  if (
+    s.chatsMeta === prev.chatsMeta &&
+    s.pendingAsks === prev.pendingAsks &&
+    s.runningAgents === prev.runningAgents &&
+    s.workspaces === prev.workspaces &&
+    s.settings.notifications === prev.settings.notifications
+  )
+    return;
+  const asking = askingAgents(s.pendingAsks);
+  const count = s.settings.notifications
+    ? s.workspaces.filter((w) => {
+        if (w.archived) return false;
+        const c = workspaceStatusCounts(w, s.chatsMeta[w.id], s.runningAgents[w.id] ?? EMPTY_ARR, asking[w.id] ?? EMPTY_ARR);
+        return c.asking + c.unread + c.waiting > 0;
+      }).length
+    : 0;
+  if (count === dockBadge) return;
+  dockBadge = count;
+  void tryInvoke('app:setBadge', { count });
 });
 
 // ---------------- Resolve-conflicts mode: turn-end watch + re-check backoff ----

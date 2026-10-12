@@ -1,8 +1,9 @@
 import { useEffect, useMemo } from 'react';
-import { on } from './lib/api';
+import { on, tryInvoke } from './lib/api';
 import { useApp, useActiveWorkspace, capsOf } from './store/app';
 import { UiHostProvider, type UiHost } from '../shared/ui/host';
 import { hydrateChatMarkdown } from './lib/worktreeImages';
+import { resolveFileHref } from '../shared/ui/format';
 import Sidebar from './components/Sidebar';
 import Onboarding from './components/Onboarding';
 import SetupWizard from './components/SetupWizard';
@@ -25,6 +26,7 @@ import ImageLightbox from './components/ImageLightbox';
 import { GlobalImageMenu } from './components/ImageMenu';
 import { Modal, EmptyHint } from './components/common';
 import { Boxes } from 'lucide-react';
+import { copyText } from './lib/clipboard';
 
 /**
  * Provides the shared-UI host (web-desktop-parity §2.4) once at the root, so the
@@ -36,16 +38,15 @@ export default function App() {
     () => ({
       openFile: (path) => {
         const s = useApp.getState();
-        if (s.activeWorkspaceId) s.openFile(s.activeWorkspaceId, path);
+        const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+        if (!ws) return;
+        // Tool calls carry absolute paths; the editor wants worktree-relative.
+        const rel = resolveFileHref(path, ws.worktreePath);
+        if (rel) s.openFile(ws.id, rel);
+        else s.toast('info', `${path} is outside this workspace`);
       },
       hydrateMarkdown: hydrateChatMarkdown,
-      copyText: async (text) => {
-        try {
-          await navigator.clipboard.writeText(text);
-        } catch {
-          /* clipboard unavailable */
-        }
-      },
+      copyText,
       toast: (t) => useApp.getState().toast(t.kind, t.text),
       isTouch: false,
     }),
@@ -381,7 +382,6 @@ function BranchConflictModal() {
             className="btn btn-accent"
             onClick={async () => {
               setModal(null);
-              const { tryInvoke } = await import('./lib/api');
               const res = await tryInvoke('workspace:switchBranch', {
                 workspaceId: modal.workspaceId,
                 branch: suffixed,

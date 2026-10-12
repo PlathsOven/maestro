@@ -1,4 +1,5 @@
 import type { ExecHost, HostChild } from './types';
+import { shq } from './posix';
 
 /**
  * The journal is the wire protocol (spec §6.3). A per-chat `journal.jsonl` holds
@@ -14,13 +15,9 @@ import type { ExecHost, HostChild } from './types';
  * byte offset and replays it through the exact same adapter pipeline it uses for
  * a live child — a `JournalChild` presents one turn's bytes as a `HostChild`.
  *
- * `parseFrame` + the frame types now live in `src/shared/harness/frames.ts` so
- * the relay ingest parses the same wire protocol with the same code (mobile-web
- * spec §6.4, G7); re-exported here so existing call sites are untouched.
+ * Frame parsing lives in `src/shared/harness/frames.ts` so the relay ingest
+ * parses the same wire protocol with the same code (mobile-web spec §6.4, G7).
  */
-
-export { parseFrame } from '../../shared/harness/frames';
-export type { JournalFrame, TurnStartFrame, TurnEndFrame } from '../../shared/harness/frames';
 
 /** Read `journal.jsonl` from `offset` to EOF in one bounded pass — no persistent
  *  channel (used for catch-up and for the polling follower). Returns the new
@@ -41,10 +38,6 @@ export async function readJournalFrom(
   // remote, and avoids re-reading the whole (possibly large) file over sftp.
   const r = await host.exec('sh', ['-lc', `tail -c +${offset + 1} ${shq(journalPath)}`], { timeout: 20_000 });
   return { data: r.ok ? r.stdout : '', size };
-}
-
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /**

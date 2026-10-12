@@ -11,7 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import { grokAdapter } from '../src/main/services/harness/grok';
-import { finalizeBlocks, newBlockStream, applyBlockEvent } from '../src/main/services/harness/stream';
+import { finalizeBlocks, newBlockStream, applyBlockEvent } from '../src/shared/harness/blocks';
 import { effortLevelsForModel, type AgentBlock, type AgentEvent } from '../src/shared/types';
 
 let failures = 0;

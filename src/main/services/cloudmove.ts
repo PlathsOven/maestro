@@ -25,11 +25,6 @@ import type { Project, Workspace } from '../../shared/types';
  * (the next message seeds a fresh session, at the token cost the UI warned about).
  */
 
-// POSIX single-quote.
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
 const CHECKPOINT = (wsId: string) => `refs/maestro/checkpoint/${wsId}`;
 
 /** The box's $HOME (cheap, uncached — moves are rare). */

@@ -23,7 +23,7 @@ export const PVC_NAME = 'maestro-home';
 /** The single unprivileged account on the node; its home is the PVC. */
 export const NODE_USER = 'maestro';
 export const DEFAULT_NAMESPACE = 'maestro';
-export const DEFAULT_PVC_SIZE = '20Gi';
+const DEFAULT_PVC_SIZE = '20Gi';
 /** The Railway box image, published for clusters (§3.3 — one Dockerfile, two
  *  consumers). Overridable per host row for teams who bake their own toolchain. */
 export const DEFAULT_IMAGE = process.env.MAESTRO_NODE_IMAGE || 'ghcr.io/plathsoven/maestro-workspace-node:latest';
@@ -51,7 +51,7 @@ export function kubectlArgs(k: K8sConfig, namespaced = true): string[] {
 }
 
 /** Run kubectl for a cluster; never throws (the caller reports stderr verbatim). */
-export function kubectl(k: K8sConfig, args: string[], opts: { input?: string; timeout?: number; namespaced?: boolean } = {}) {
+function kubectl(k: K8sConfig, args: string[], opts: { input?: string; timeout?: number; namespaced?: boolean } = {}) {
   return run('kubectl', [...kubectlArgs(k, opts.namespaced ?? true), ...args], {
     timeout: opts.timeout ?? 60_000,
     input: opts.input,
@@ -59,7 +59,7 @@ export function kubectl(k: K8sConfig, args: string[], opts: { input?: string; ti
 }
 
 /** Is kubectl on PATH, and which version? We never install it (§5). */
-export async function kubectlProbe(): Promise<{ ok: boolean; version: string | null; error?: string }> {
+async function kubectlProbe(): Promise<{ ok: boolean; version: string | null; error?: string }> {
   const r = await run('kubectl', ['version', '--client=true', '-o', 'json'], { timeout: 10_000 });
   if (!r.ok) return { ok: false, version: null, error: r.stderr.trim() || 'kubectl not found on PATH' };
   try {

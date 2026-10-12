@@ -146,5 +146,3 @@ function parseHtml(html: string): DocumentFragment {
 function topLevelSources(frag: DocumentFragment): string[] {
   return Array.from(frag.childNodes, (n) => (n instanceof Element ? n.outerHTML : `#${n.nodeType}:${n.textContent}`));
 }
-
-export default Markdown;

@@ -12,6 +12,7 @@ import { scriptEnv } from './scripts';
 import { readRepoSettings } from './settingsToml';
 import { extractRunCommands } from '../../shared/rundoc';
 import type { RunScript, ScriptState, Workspace } from '../../shared/types';
+import { shq } from '../hosts/posix';
 
 // Run scripts live on the workspace (= branch) and are managed from the Run
 // tab — not repo settings. Each script is an instructional markdown doc whose
@@ -273,10 +274,6 @@ function setState(workspaceId: string, scriptId: string, state: ScriptState) {
 // (xterm swallows unknown OSCs, so the user never sees it). This is how we
 // know "done + exit code" even though the terminal itself stays alive.
 const EXIT_SENTINEL = /\x1b\]7777;(\d+)\x07/;
-
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 // tmux session name for a cloud run script (§6.8) — bounded, id-safe.
 function tmuxSession(workspaceId: string, scriptId: string): string {

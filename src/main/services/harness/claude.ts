@@ -74,7 +74,7 @@ export async function readOAuthCreds(
  * only whichever login ran last, so it can't tell logins apart (fact 3). 10s
  * timeout, null on any failure.
  */
-export async function fetchClaudeProfile(loginDir?: string): Promise<{ email?: string; plan?: string } | null> {
+async function fetchClaudeProfile(loginDir?: string): Promise<{ email?: string; plan?: string } | null> {
   const creds = await readOAuthCreds(loginDir);
   if (!creds) return null;
   if (creds.expiresAt && creds.expiresAt < Date.now()) return null;
@@ -122,7 +122,8 @@ function anthropicConfigDir(): string {
   return path.join(os.homedir(), '.config', 'anthropic');
 }
 
-function readJsonSync(file: string): any {
+/** Parse a JSON file; null if it's missing or malformed. */
+export function readJsonSync(file: string): any {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
@@ -308,7 +309,7 @@ export const claudeAdapter: HarnessAdapter = {
   loginIsolation: { env: (dir: string) => ({ CLAUDE_SECURESTORAGE_CONFIG_DIR: dir }) },
 
   // Who a login is, from its own token (fact 3). `loginDir` undefined = default.
-  fetchProfile: (loginDir?: string) => fetchClaudeProfile(loginDir),
+  fetchProfile: fetchClaudeProfile,
 
   // Subscription usage via the endpoint backing the CLI's /usage screen. It is
   // unofficial (no public equivalent exists), hence the defensive parsing. It

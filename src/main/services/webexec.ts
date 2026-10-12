@@ -6,9 +6,7 @@
  * publish the results back to the relay). Each returns the relay `done` body.
  */
 import { Projects, Workspaces } from '../db';
-import { hostForWorkspace } from '../hosts';
-import * as git from './git';
-import * as shadow from './shadow';
+import { workspaceDiff, workspaceDiffStat, workspaceStatus } from './changes';
 import { createPr, mergePr, refreshPr } from './pr';
 import { generateStatus, getStatus } from './status';
 import { archiveWorkspace, restoreWorkspace, deleteWorkspace, continueOnNewBranch } from './workspaces';
@@ -101,19 +99,9 @@ export async function execGitRefresh(wsId: string, withPatch: boolean): Promise<
   if (!ws) return { ok: false, error: 'Workspace not found' };
   const project = Projects.get(ws.projectId);
   if (!project) return { ok: false, error: 'Project not found' };
-  const folder = project.kind === 'folder' && !project.hostId;
-  const host = hostForWorkspace(ws);
   try {
-    const status = folder
-      ? await shadow.shadowStatus(ws)
-      : project.baseBranch == null
-        ? { branch: '', ahead: 0, behind: 0, staged: 0, unstaged: 0, untracked: 0, changedFiles: 0, dirty: false }
-        : await git.statusSummary(ws.worktreePath, project.baseBranch, host);
-    const stat = folder
-      ? await shadow.shadowDiffStat(ws)
-      : project.baseBranch == null
-        ? { additions: 0, deletions: 0 }
-        : await git.diffStat(ws.worktreePath, project.baseBranch, host);
+    const status = await workspaceStatus(ws, project);
+    const stat = await workspaceDiffStat(ws, project);
     await relayFetch(`/api/workspaces/${encodeURIComponent(wsId)}/git`, {
       method: 'PUT',
       body: JSON.stringify({
@@ -124,11 +112,7 @@ export async function execGitRefresh(wsId: string, withPatch: boolean): Promise<
       }),
     });
     if (withPatch) {
-      const diff = folder
-        ? await shadow.shadowDiff(ws)
-        : project.baseBranch == null
-          ? { base: '', files: [] }
-          : await git.workspaceDiff(ws.worktreePath, project.baseBranch, host);
+      const diff = await workspaceDiff(ws, project);
       await relayFetch(`/api/workspaces/${encodeURIComponent(wsId)}/diff`, {
         method: 'PUT',
         body: JSON.stringify({ base: diff.base, files: diff.files, producedBy: 'desktop' }),

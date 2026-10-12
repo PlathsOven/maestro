@@ -1,12 +1,11 @@
 import { broadcast } from '../bus';
 import { capture } from './analytics';
-import { Hosts, Messages, Projects, Queued, Scheduled, Settings, Subagents, Workspaces, now, uid } from '../db';
+import { Hosts, Messages, Projects, Queued, Scheduled, Settings, Workspaces, now, uid } from '../db';
 import { readRepoSettings } from './settingsToml';
-import { isAgentRunning, postSystem, setRunFinishedHook, startAgent, stopAgent, turnModelLabels } from './harness';
+import { isAgentRunning, postSystem, setPrCommandHook, setRunFinishedHook, startAgent, stopAgent, turnModelLabels } from './harness';
 import {
   backgroundTaskPreamble,
   consumeBackgroundTaskNote,
-  dropBackgroundTasks,
   reapBackgroundTasks,
 } from './harness/tasks';
 import { consumeMemoryGuardNote } from './memguard';
@@ -15,7 +14,7 @@ import { liveElsewhere } from './harnessSync/live';
 import { refreshPr } from './pr';
 import {
   cancelScheduled,
-  dropScheduledForAgent,
+  dropDueRemoteForAgent,
   editScheduled,
   scheduleMessage,
   setRemoteScheduleHooks,
@@ -28,7 +27,6 @@ import {
   clearCloudJobs,
   removeScheduledJob,
   stopCloudTurn,
-  stopFollower,
   wakeScheduled,
   writeScheduledJob,
   writeTurnJob,
@@ -41,13 +39,14 @@ import type { Attachment, ChatMessage, Project, QueuedMessage, Workspace } from 
 // ---------- message queue (send while the agent is busy → runs next) ----------
 //
 // Persisted in the `queued_messages` table (spec §6.4) so a quit no longer
-// silently drops queued work. LOCAL chats drain it one-per-turn-end here; CLOUD
+// silently drops queued work. LOCAL chats drain it one turn per turn-end here
+// (agent messages queued in a row share a turn — see dequeue); CLOUD
 // chats don't use it — every cloud send writes a job file the box drains in
 // order (its queue dir IS the pending set), which is what survives the app
 // closing. chat:stop clears both.
 
 function broadcastQueue(workspaceId: string, agentId: number) {
-  const items = Queued.forChat(workspaceId, agentId).map((q) => ({ id: q.id, text: q.text }));
+  const items = Queued.forChat(workspaceId, agentId).map((q) => ({ id: q.id, text: q.text, attachments: q.attachments }));
   broadcast('chat:queue', { workspaceId, agentId, items });
 }
 
@@ -64,21 +63,53 @@ function dropPlaceholder(id: string) {
   if (Messages.get(id)?.meta?.queued) Messages.remove(id);
 }
 
-export function editQueued(workspaceId: string, agentId: number, itemId: string, text: string) {
-  const trimmed = text.trim();
-  // Empty edit → drop the item, matching the remove affordance.
-  if (!trimmed) return removeQueued(workspaceId, agentId, itemId);
-  Queued.setText(itemId, trimmed);
+/** Reword a queued message, replacing its attachments when given (undefined
+ *  keeps them — Maestro Web edits of desktop-queued rows are text-only). An
+ *  edit that leaves nothing to send drops the item, matching remove. */
+export function editQueued(workspaceId: string, agentId: number, itemId: string, text: string, attachments?: Attachment[]) {
+  const item = Queued.get(itemId);
+  if (!item) return;
+  const atts = attachments ?? item.attachments;
+  if (!text.trim() && !atts.length) return removeQueued(workspaceId, agentId, itemId);
+  Queued.update(itemId, text.trim(), atts);
   broadcastQueue(workspaceId, agentId);
 }
 
 /**
- * Run a drained queued message as its own turn, reusing its id/turnId/origin so a
- * web-queued message replaces its relay placeholder on publish instead of showing
- * twice (web-desktop-parity §7.4). Callers attach their own success/failure handling.
+ * Take the chat's next turn off the queue: its oldest message, or — when that's
+ * an agent message — every agent message queued in a row after it. Each was
+ * written before this chat's latest work, and a turn apiece let every one draw
+ * its own reply, so two busy chats messaging each other multiplied
+ * (docs/specs/agent-messaging.md). User and web messages always run alone.
  */
-function runQueued(workspaceId: string, agentId: number, next: QueuedMessage) {
-  return sendChat({ workspaceId, agentId, text: next.text, attachments: next.attachments, id: next.id, turnId: next.turnId, origin: next.origin });
+function dequeue(workspaceId: string, agentId: number): QueuedMessage[] {
+  const queue = Queued.forChat(workspaceId, agentId);
+  let n = queue.length ? 1 : 0;
+  if (queue[0]?.origin === 'agent') while (queue[n]?.origin === 'agent') n++;
+  const batch = queue.slice(0, n);
+  for (const q of batch) Queued.remove(q.id);
+  if (n) broadcastQueue(workspaceId, agentId);
+  return batch;
+}
+
+/**
+ * Run a dequeued batch as one turn, each message reusing its id/turnId/origin so
+ * a web-queued message replaces its relay placeholder on publish instead of
+ * showing twice (web-desktop-parity §7.4). Callers attach their own
+ * success/failure handling.
+ */
+function runQueued(workspaceId: string, agentId: number, batch: QueuedMessage[]) {
+  const last = batch[batch.length - 1];
+  return sendChat({
+    workspaceId,
+    agentId,
+    text: last.text,
+    attachments: last.attachments,
+    id: last.id,
+    turnId: last.turnId,
+    origin: last.origin,
+    earlier: batch.slice(0, -1),
+  });
 }
 
 const MAX_AGENT_STREAK = 10;
@@ -114,6 +145,22 @@ export function clearQueue(workspaceId: string, agentId: number) {
   if (ws && isCloudWorkspace(ws)) void clearCloudJobs(ws, agentId).catch(() => {});
 }
 
+/** Stop is a full halt, from the desktop or Maestro Web: drop anything queued
+ *  behind the run and stop it. */
+export function stopChat(workspaceId: string, agentId: number) {
+  clearQueue(workspaceId, agentId);
+  stopAgent(workspaceId, agentId);
+  // Cloud: also kill the drain group on the box and clear its job files
+  // (the local stopAgent only detaches the tail). A *due* remote row's job was
+  // promoted into the queue, so it's gone from the box now too — drop its row
+  // (§4.5). Future scheduled rows are a standing intent and stay.
+  const ws = Workspaces.get(workspaceId);
+  if (ws && isCloudWorkspace(ws))
+    void stopCloudTurn(ws, agentId)
+      .catch(() => {})
+      .finally(() => dropDueRemoteForAgent(workspaceId, agentId));
+}
+
 /**
  * "Steer" with one queued message: interrupt the running turn so *this* message
  * runs next, instead of waiting for the turn to finish. It's promoted to the
@@ -139,11 +186,9 @@ export function bootDrainLocalQueues() {
   for (const { workspaceId, agentId } of Queued.pendingChats()) {
     const ws = Workspaces.get(workspaceId);
     if (!ws || ws.archived || isCloudWorkspace(ws) || isAgentRunning(workspaceId, agentId)) continue;
-    const next = Queued.oldest(workspaceId, agentId);
-    if (!next) continue;
-    Queued.remove(next.id);
-    broadcastQueue(workspaceId, agentId);
-    void runQueued(workspaceId, agentId, next).catch(() => {});
+    const batch = dequeue(workspaceId, agentId);
+    if (!batch.length) continue;
+    void runQueued(workspaceId, agentId, batch).catch(() => {});
   }
 }
 
@@ -175,27 +220,7 @@ function enqueueLocal(
   broadcastQueue(workspaceId, agentId);
 }
 
-/**
- * Close a chat session: halt any in-flight run, drop its queue, and delete its
- * persisted messages, chat metadata, and harness session. Destructive — the
- * conversation is gone. The renderer removes the tab optimistically.
- */
-export function deleteChat(workspaceId: string, agentId: number) {
-  stopAgent(workspaceId, agentId); // no-op when idle
-  // Cloud: stop tailing + kill the box drain so it can't resurrect a deleted chat.
-  const ws = Workspaces.get(workspaceId);
-  if (ws && isCloudWorkspace(ws)) {
-    stopFollower(workspaceId, agentId);
-    void stopCloudTurn(ws, agentId).catch(() => {});
-  }
-  clearQueue(workspaceId, agentId);
-  dropScheduledForAgent(workspaceId, agentId);
-  dropBackgroundTasks(workspaceId, agentId);
-  Messages.removeForAgent(workspaceId, agentId);
-  Subagents.removeForAgent(workspaceId, agentId);
-  Workspaces.removeChat(workspaceId, agentId);
-  Workspaces.removeSession(workspaceId, agentId);
-}
+setPrCommandHook((workspaceId) => void refreshPr(workspaceId, true).catch(() => {}));
 
 // When a run ends, fire the next queued message for that chat.
 setRunFinishedHook((workspaceId, agentId) => {
@@ -216,13 +241,11 @@ setRunFinishedHook((workspaceId, agentId) => {
   drainNext(workspaceId, agentId);
 });
 
-/** Run the chat's oldest queued message, if any, as its own turn. */
+/** Run the chat's next queued turn, if any. */
 function drainNext(workspaceId: string, agentId: number) {
-  const next = Queued.oldest(workspaceId, agentId);
-  if (!next) return;
-  Queued.remove(next.id);
-  broadcastQueue(workspaceId, agentId);
-  void runQueued(workspaceId, agentId, next).then((res) => {
+  const batch = dequeue(workspaceId, agentId);
+  if (!batch.length) return;
+  void runQueued(workspaceId, agentId, batch).then((res) => {
     if (!res.ok && res.error) postSystem(workspaceId, agentId, `Queued message failed to start: ${res.error}`);
   });
 }
@@ -577,6 +600,9 @@ export async function sendChat(opts: {
   id?: string;
   turnId?: string;
   origin?: NonNullable<ChatMessage['meta']>['origin'];
+  /** Queued messages that run in this same turn, ahead of this one (dequeue):
+   *  each is recorded as its own message, and the agent gets them all, in order. */
+  earlier?: QueuedMessage[];
 }): Promise<{ ok: boolean; error?: string; queued?: boolean }> {
   let ws = Workspaces.get(opts.workspaceId);
   if (!ws) return { ok: false, error: 'Workspace not found' };
@@ -602,7 +628,7 @@ export async function sendChat(opts: {
   if (!cloud && (isAgentRunning(ws.id, opts.agentId) || reserved)) {
     // Queue it — the message runs automatically when the current turn ends.
     if (reserved) held!.queuedBehind = true;
-    enqueueLocal(ws.id, opts.agentId, opts.text, opts.attachments, { id: opts.id, turnId: opts.turnId, origin: opts.origin });
+    for (const m of [...(opts.earlier ?? []), opts]) enqueueLocal(ws.id, opts.agentId, m.text, m.attachments, m);
     return { ok: true, queued: true };
   }
 
@@ -651,16 +677,22 @@ async function startTurn(
   opts: Parameters<typeof sendChat>[0]
 ): Promise<{ ok: boolean; error?: string }> {
   const firstMessage = ws.lastUserMessageAt === null;
-  recordUserMessage(ws, opts.agentId, opts.text, opts.attachments, now(), { id: opts.id, origin: opts.origin });
-  const prep = await prepareTurn(ws, project, opts.agentId, opts.text, opts.attachments, firstMessage);
+  const batch = [...(opts.earlier ?? []), opts];
+  for (const m of batch) recordUserMessage(ws, opts.agentId, m.text, m.attachments, now(), m);
+  const prompt = batch.map((m) => m.text).join('\n\n---\n\n');
+  const prep = await prepareTurn(ws, project, opts.agentId, prompt, batch.flatMap((m) => m.attachments), firstMessage);
   if (!prep.ok) return { ok: false, error: prep.error };
 
   // Cloud turns are handed to the box (detached, journalled) instead of spawned
   // locally; a follower tails the journal and drives the same finalize pipeline.
-  const turnId = uid();
+  // A web send carries the turnId the relay filed its queued message under.
+  // Running the turn under that same id is what lets the relay un-queue the
+  // message the instant the turn opens; a fresh id left the web showing it
+  // "Queued" while the agent was already working.
+  const turnId = opts.turnId ?? uid();
   const res = cloud
     ? await writeTurnJob({ ws, agentId: opts.agentId, turnId, prompt: prep.prompt, systemPrompt: prep.systemPrompt, env: prep.env })
-    : startAgent({ workspace: ws, agentId: opts.agentId, prompt: prep.prompt, systemPrompt: prep.systemPrompt, env: prep.env });
+    : startAgent({ workspace: ws, agentId: opts.agentId, prompt: prep.prompt, systemPrompt: prep.systemPrompt, env: prep.env, turnId });
   if (res.ok) noteTurnStarted(ws, cloud, firstMessage, opts.text);
   else postSystem(ws.id, opts.agentId, `Could not start agent: ${res.error}`);
   return res;

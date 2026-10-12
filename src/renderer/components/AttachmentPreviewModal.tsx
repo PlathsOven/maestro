@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { invoke, tryInvoke } from '../lib/api';
 import { Modal, Spinner } from './common';
+import { AttachmentChip as SharedAttachmentChip } from '../../shared/ui/blocks';
 import type { Attachment, AttachmentPreview } from '../../shared/types';
 
 /**
@@ -86,3 +87,31 @@ export default function AttachmentPreviewModal({
     </Modal>
   );
 }
+
+/**
+ * Desktop attachment chip: the shared chip wired to open an in-app preview modal
+ * (previewable when the attachment has a path or inline text). The composer
+ * imports this for its pending-attachment list (with onRemove).
+ */
+export function AttachmentChip({
+  a,
+  onRemove,
+  workspaceId,
+}: {
+  a: Attachment;
+  onRemove?: () => void;
+  /** when set, the chip is clickable to preview the attachment */
+  workspaceId?: string;
+}) {
+  const [preview, setPreview] = useState(false);
+  const clickable = !!workspaceId && (!!a.path || a.text != null);
+  return (
+    <>
+      <SharedAttachmentChip a={a} onRemove={onRemove} onOpen={clickable ? () => setPreview(true) : undefined} />
+      {preview && workspaceId && (
+        <AttachmentPreviewModal workspaceId={workspaceId} attachment={a} onClose={() => setPreview(false)} />
+      )}
+    </>
+  );
+}
+

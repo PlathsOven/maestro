@@ -15,7 +15,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
-import { basename, renderMarkdown } from '../lib/format';
+import { basename, renderMarkdown } from '../../shared/ui/format';
 import { useZoomableImage, IMG_ZOOM_MIN, IMG_ZOOM_MAX, IMG_ZOOM_STEP } from '../lib/useZoomableImage';
 import { EMPTY_ARR, useApp } from '../store/app';
 import { Modal, Segmented, Spinner } from './common';
@@ -35,6 +35,7 @@ import { ImageContextMenu } from './ImageMenu';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
 import type { Workspace } from '../../shared/types';
+import { copyText } from '../lib/clipboard';
 
 // Free a workspace's buffers when it's archived/removed (spec §6). Registered at
 // chunk-load, so it's a no-op until the editor has actually been opened.
@@ -311,6 +312,8 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
+      // ⌘S in the chat box stashes the prompt instead (composer.stash).
+      if ((e.target as HTMLElement | null)?.closest?.('[data-composer]')) return;
       if (matchesShortcut(e, keys['editor.save'], platform)) {
         e.preventDefault();
         const p = useApp.getState().activeFile[wsId];
@@ -361,7 +364,7 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
 
   const copyPath = () => {
     if (!activeFile) return;
-    void navigator.clipboard?.writeText(activeFile);
+    void copyText(activeFile);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -428,6 +431,13 @@ export default function EditorSurface({ workspace, active }: { workspace: Worksp
             onClick={copyPath}
           >
             {copied ? <Check size={11} className="text-ok" /> : <Copy size={11} />}
+          </button>
+          <button
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-accent-soft hover:text-fg"
+            title="Open in system app"
+            onClick={() => void tryInvoke('fs:open', { workspaceId: wsId, path: activeFile })}
+          >
+            <ExternalLink size={11} />
           </button>
           <div className="flex-1" />
           {isMarkdown && activeFile && (
@@ -650,7 +660,7 @@ function ImagePreview({ view }: { view: { dataUrl: string; name: string } }) {
       }}
     >
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onDoubleClick={toggleFit}>
-        <div className="flex min-h-full min-w-full items-center justify-center p-6">
+        <div className="flex min-h-full w-max min-w-full items-center justify-center p-6">
           <img
             ref={captureImg}
             src={view.dataUrl}

@@ -54,7 +54,7 @@ import { postAttachment } from '../web/lib/handlers/attachments';
 import { deleteAccount, revokeBox } from '../web/lib/handlers/account';
 import { enqueueJob, pruneFinishedJobs } from '../web/lib/jobs';
 import { backfill, putConvTurn, postConvTurnDeltas, putConversation, putDeviceSettings, putWebSettings } from '../web/lib/handlers/desktop';
-import { forgetLinkSummary, hasLiveLink } from '../web/lib/authtokens';
+import { forgetLinkSummary, hasLiveLink, resolveDevice } from '../web/lib/authtokens';
 import { appendEvent, latestSeq, eventsSince } from '../web/lib/events';
 import { MemoryBus, MemoryRedis, RedisBus, getBus, liveKey, pruneKey, seenKey, wakeKey, watchKey, __setBus, type Bus } from '../web/lib/bus';
 import { applyDelta } from '../web/lib/turn-deltas';
@@ -987,6 +987,10 @@ async function linkSummaryTests() {
 
   // A revoked box's shim retried about once a minute, and every 401 was a Postgres
   // read — alone enough to keep Neon awake around the clock (neon-idle-compute).
+  // Run it on the Upstash-shaped bus: Upstash parses stored values, and the old
+  // cached `"null"` came back as a miss there while MemoryBus kept it (round 4).
+  const linkBus = getBus();
+  __setBus(new RedisBus(new MemoryRedis()));
   const deadPoll = () =>
     boxPoll(new Request(`${BASE}/api/box/poll?wait=0`, { headers: { authorization: 'Bearer link-box-token-2' } }));
   check('a revoked box token is rejected', (await deadPoll()).status === 401);
@@ -997,6 +1001,11 @@ async function linkSummaryTests() {
     retry.status === 401 && __dbStatements() === beforeRetry,
     `${__dbStatements() - beforeRetry} statements`
   );
+  const deadDevice = () => resolveDevice(new Request(`${BASE}/api/device/poll`, { headers: { authorization: 'Bearer no-such-desktop' } }));
+  await deadDevice();
+  const beforeDevice = __dbStatements();
+  check('an unknown desktop token is rejected from the bus on retry', (await deadDevice()) === null && __dbStatements() === beforeDevice);
+  __setBus(linkBus);
 
   // The desktop heals a box link the relay revoked by comparing against this list.
   const listed = await jbody(await deviceList(deviceReq('/api/devices')));

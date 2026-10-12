@@ -6,8 +6,8 @@ import { Clipboard, Copy } from 'lucide-react';
 import { invoke, on } from '../lib/api';
 import { useApp } from '../store/app';
 import { subscribeTheme } from '../../shared/themes';
-import { useDismiss } from './common';
-import { MenuItem } from './Sidebar';
+import { ContextMenu, MenuItem } from './common';
+import { copyText } from '../lib/clipboard';
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -22,38 +22,59 @@ function selectionFill(dark: boolean): string {
   return accent + (dark ? '4d' : '40');
 }
 
+/** Lighten (amt > 0) or darken a 6-digit hex toward white / black. */
+function shade(hex: string, amt: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (v: number) => Math.round(amt > 0 ? v + (255 - v) * amt : v * (1 + amt));
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(ch);
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+
 function terminalTheme() {
   const dark = document.documentElement.classList.contains('dark');
+  const classic = document.documentElement.dataset.theme === 'classic';
+  // Classic keeps its tuned ANSI set; every other family draws the terminal
+  // from its own palette (status colours double as the ANSI hues, and
+  // `--ansi-cyan` is the one hue a family names just for this), so a Nord or
+  // Phosphor terminal doesn't break the spell with Classic's colours.
+  const tok = (name: string, fallback: string) => {
+    const v = classic ? '' : cssVar(name);
+    return /^#[0-9a-f]{6}$/i.test(v) ? v : fallback;
+  };
+  const bright = (hex: string) => shade(hex, dark ? 0.22 : -0.14);
+  const red = tok('--err', '#e06a5e');
+  const green = tok('--ok', '#5fb885');
+  const yellow = tok('--warn', '#e0a33a');
+  const blue = tok('--st-running', '#6ba1e0');
+  const magenta = tok('--st-merged', '#b088d6');
+  const cyan = tok('--ansi-cyan', '#5eb8b0');
+  const white = tok('--text', dark ? '#eae8e6' : '#1a1918');
   return {
     background: cssVar('--term-bg') || (dark ? '#201f1e' : '#ffffff'),
     foreground: cssVar('--text'),
     cursor: cssVar('--accent'),
     cursorAccent: cssVar('--term-bg'),
     selectionBackground: selectionFill(dark),
-    black: dark ? '#3a3835' : '#5a5753',
-    red: '#e06a5e',
-    green: '#5fb885',
-    yellow: '#e0a33a',
-    blue: '#6ba1e0',
-    magenta: '#b088d6',
-    cyan: '#5eb8b0',
-    white: dark ? '#eae8e6' : '#1a1918',
-    brightBlack: '#8a867f',
-    brightRed: '#e88a80',
-    brightGreen: '#7fcca0',
-    brightYellow: '#eab866',
-    brightBlue: '#8fb8ea',
-    brightMagenta: '#c4a4e0',
-    brightCyan: '#83ccc5',
-    brightWhite: dark ? '#ffffff' : '#000000',
+    black: tok('--st-idle', dark ? '#3a3835' : '#5a5753'),
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white,
+    brightBlack: tok('--faint', '#8a867f'),
+    brightRed: classic ? '#e88a80' : bright(red),
+    brightGreen: classic ? '#7fcca0' : bright(green),
+    brightYellow: classic ? '#eab866' : bright(yellow),
+    brightBlue: classic ? '#8fb8ea' : bright(blue),
+    brightMagenta: classic ? '#c4a4e0' : bright(magenta),
+    brightCyan: classic ? '#83ccc5' : bright(cyan),
+    brightWhite: classic ? (dark ? '#ffffff' : '#000000') : bright(white),
   };
 }
 
-function copyText(text: string) {
-  if (text) void navigator.clipboard?.writeText(text).catch(() => {});
-}
-
-export interface PtyViewProps {
+interface PtyViewProps {
   workspaceId: string;
   ptyId: string;
   /** true: spawn/attach an interactive shell; false: attach-only (script output) */
@@ -116,7 +137,7 @@ export default function PtyView({ workspaceId, ptyId, ensure, active, interactiv
       if (key === 'v') return false;
       if (key !== 'c' || !term.hasSelection()) return true;
       e.preventDefault();
-      copyText(term.getSelection());
+      void copyText(term.getSelection());
       term.clearSelection();
       return false;
     });
@@ -245,25 +266,13 @@ function TerminalMenu({
   onPaste: (text: string) => void;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(true, onClose, ref);
   return (
-    <div
-      ref={ref}
-      style={{
-        position: 'fixed',
-        left: Math.min(x, window.innerWidth - 168),
-        top: Math.min(y, window.innerHeight - 88),
-        zIndex: 60,
-      }}
-      data-motion="pop"
-      className="glass w-40 origin-top-left overflow-hidden py-1.5"
-    >
+    <ContextMenu x={x} y={y} onClose={onClose} width={160}>
       {selection && (
         <MenuItem
           onClick={() => {
             onClose();
-            copyText(selection);
+            void copyText(selection);
           }}
         >
           <Copy size={15} className="text-muted" /> Copy
@@ -283,6 +292,6 @@ function TerminalMenu({
       >
         <Clipboard size={15} className="text-muted" /> Paste
       </MenuItem>
-    </div>
+    </ContextMenu>
   );
 }

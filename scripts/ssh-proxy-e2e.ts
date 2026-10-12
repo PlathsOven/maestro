@@ -13,7 +13,7 @@
  *
  *   npx esbuild scripts/ssh-proxy-e2e.ts --bundle --platform=node --format=cjs \
  *     --external:electron --external:better-sqlite3 --external:node-pty \
- *     --external:electron-updater --external:ssh2 --external:cpu-features \
+ *     --external:electron-updater --external:ssh2 \
  *     --outfile=dist/ssh-proxy-e2e.cjs
  *   node dist/ssh-proxy-e2e.cjs   # or ELECTRON_RUN_AS_NODE=1 npx electron …
  *                                 # if node_modules are electron-rebuilt
@@ -37,6 +37,9 @@ function check(name: string, ok: boolean, detail = '') {
   if (!ok) failures++;
 }
 
+/** PTY sizes the server saw, in order: the pty request's, then each window-change. */
+const ptySizes: string[] = [];
+
 function startServer(): Promise<{ port: number; close: () => void }> {
   const srv = new Server({ hostKeys: [fs.readFileSync(HOSTKEY)] }, (conn) => {
     conn.on('authentication', (ctx) => {
@@ -45,9 +48,21 @@ function startServer(): Promise<{ port: number; close: () => void }> {
     });
     conn.on('ready', () => {
       conn.on('session', (accept) => {
-        accept().on('exec', (acceptExec: any, _rej: any, info: any) => {
+        const session = accept();
+        let pty = false;
+        session.on('pty', (acceptPty: any, _rej: any, info: any) => {
+          pty = true;
+          ptySizes.push(`${info.cols}x${info.rows}`);
+          acceptPty?.();
+        });
+        session.on('window-change', (acceptWc: any, _rej: any, info: any) => {
+          ptySizes.push(`${info.cols}x${info.rows}`);
+          acceptWc?.();
+        });
+        session.on('exec', (acceptExec: any, _rej: any, info: any) => {
           const stream = acceptExec();
           stream.write(`RAN:${info.command}\n`);
+          if (pty) return; // an interactive terminal stays open until closed
           stream.exit(0);
           stream.end();
         });
@@ -173,6 +188,16 @@ process.exit(255);
     !!row2?.jumpFingerprints?.[`127.0.0.1:${port}`],
     JSON.stringify(row2?.jumpFingerprints)
   );
+
+  // --- 3b. a terminal resized before its channel opens gets that size ---
+  const term = h1.pty({ cols: 80, rows: 24 });
+  term.resize(132, 40); // xterm fits right after spawn, before SSH answers
+  let termOut = '';
+  term.onData((d) => (termOut += d));
+  for (let i = 0; i < 50 && !ptySizes.includes('132x40'); i++) await new Promise((r) => setTimeout(r, 100));
+  check('pty opened', termOut.startsWith('RAN:'), termOut);
+  check('early resize reaches the remote pty', ptySizes.includes('132x40'), JSON.stringify(ptySizes));
+  term.kill();
 
   // --- 4. failing proxy → actionable error ---
   const h3 = sshHostFor('h3')!;

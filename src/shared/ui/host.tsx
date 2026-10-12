@@ -53,7 +53,7 @@ const defaultHost: UiHost = {
   isTouch: false,
 };
 
-export const UiHostContext = React.createContext<UiHost>(defaultHost);
+const UiHostContext = React.createContext<UiHost>(defaultHost);
 
 export function UiHostProvider({ host, children }: { host: UiHost; children: React.ReactNode }) {
   return <UiHostContext.Provider value={host}>{children}</UiHostContext.Provider>;

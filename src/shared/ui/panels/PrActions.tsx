@@ -27,7 +27,7 @@ const PR_STATE_LABEL: Record<string, { text: string; cls: string }> = {
   CLOSED: { text: 'Closed', cls: 'text-err' },
 };
 
-export function PrBadge({ ws }: { ws: PanelWorkspace }) {
+function PrBadge({ ws }: { ws: PanelWorkspace }) {
   const state = ws.prState ?? '';
   const label =
     PR_STATE_LABEL[state]?.text ??

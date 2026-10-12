@@ -14,7 +14,10 @@
  *      message resets it
  *   6. regression guard: a burst queued behind a busy turn is capped at the door
  *      (queued messages count), and the queue then drains completely — no drained
- *      message is refused, and a user message queued behind the burst still runs
+ *      message is refused. Agent messages queued in a row run as ONE turn whose
+ *      prompt has them all, in order, while each keeps its own history row; a
+ *      user message behind them runs alone, and so does an agent message
+ *      queued after that
  *   7. a relay placeholder (queued web row) doesn't reset the guard
  *   8. a bare address is chat 1: with chat 1's tab closed it is refused, never
  *      delivered to chat 2; `#2` still reaches chat 2
@@ -68,12 +71,13 @@ async function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean>
   return pred();
 }
 
-// A fake Claude Code: dump argv + the MAESTRO_MESSAGE_* env, then emit one
+// A fake Claude Code: dump argv + the MAESTRO_MESSAGE_* env, append the prompt
+// (stdin) to a per-workspace log, then emit one
 // stream-json turn so the harness finalizes normally.
 const FAKE_CLAUDE = `#!/bin/sh
 if [ "$1" = auth ]; then echo '{"loggedIn":true}'; exit 0; fi
 if [ "$1" = --version ]; then echo '9.9.9 (Claude Code)'; exit 0; fi
-cat >/dev/null
+{ cat; echo '<<END>>'; } >> "${ROOT}/claude-prompts-$MAESTRO_MESSAGE_WORKSPACE"
 if [ -f "${ROOT}/slow" ]; then sleep 8; fi
 printf '%s\\n' "$@" > "${ROOT}/claude-argv-$MAESTRO_MESSAGE_WORKSPACE"
 env | grep '^MAESTRO_MESSAGE_' > "${ROOT}/claude-env-$MAESTRO_MESSAGE_WORKSPACE"
@@ -150,7 +154,7 @@ async function main() {
   process.env.PATH = `${path.join(ROOT, 'bin')}${path.delimiter}${process.env.PATH}`;
   process.env.MAESTRO_HOME = path.join(ROOT, 'home');
   initDb(path.join(ROOT, 'maestro.db'));
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   startRoleServer();
   await waitFor(() => !!roleServerInfo(), 5000);
 
@@ -237,17 +241,23 @@ async function main() {
     attachments: [],
   });
   check('6: a user message queues behind the burst', human.ok && human.queued === true);
+  const late = await cli(a, ['send', b.name], 'late');
+  check('6: an agent message after the user message queues', late.code === 0 && late.out.includes('queued behind'), late.out);
   fs.rmSync(path.join(ROOT, 'slow'));
   const drained = await waitFor(() => Queued.forChat(b.id, 1).length === 0 && runningAgents(b.id).length === 0, 90_000);
   const rows = Messages.listForAgent(b.id, 1);
-  const delivered = rows.filter((m) => m.role === 'user' && /^burst \d+\n/.test(m.content)).length;
-  const users = rows.filter((m) => m.role === 'user');
+  const tail = rows.slice(rows.findIndex((m) => m.content === 'long task') + 1);
+  const shape = tail
+    .map((m) => (m.role === 'agent' ? 'A' : /^burst \d\n/.test(m.content) ? 'b' : /^late\n/.test(m.content) ? 'l' : m.content === 'user message after the burst' ? 'u' : '?'))
+    .join('');
+  const burstRows = tail.filter((m) => /^burst \d\n/.test(m.content)).map((m) => m.content.slice(0, 7));
+  const prompts = fs.readFileSync(path.join(ROOT, `claude-prompts-${b.id}`), 'utf8').split('<<END>>');
+  const batched = prompts.find((p) => p.includes('burst 0\n')) ?? '';
+  const at = burst.slice(0, 10).map((_, i) => batched.indexOf(`burst ${i}\n`));
   check('6: the whole queue drains', drained, `${Queued.forChat(b.id, 1).length} left`);
-  check('6: every accepted agent message was delivered', delivered === 10, `${delivered}`);
-  check(
-    '6: the user message behind them ran last',
-    users[users.length - 1]?.content === 'user message after the burst'
-  );
+  check('6: burst → one turn, then the user message alone, then the late agent message alone', shape === `A${'b'.repeat(10)}AuAlA`, shape);
+  check('6: every burst message keeps its own row, in order', burstRows.join() === burst.slice(0, 10).map((_, i) => `burst ${i}`).join(), burstRows.join());
+  check('6: the one turn\'s prompt carries every burst message, in order', at.every((x, i) => x >= 0 && (i === 0 || x > at[i - 1])), `${at}`);
   check(
     '6: no drained message failed',
     !rows.some((m) => m.role === 'system' && m.content.includes('failed to start'))

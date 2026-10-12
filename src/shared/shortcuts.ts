@@ -24,6 +24,8 @@ export type ShortcutId =
   | 'create-pr'
   | 'chat.find'
   | 'composer.plan-mode'
+  | 'composer.paste-inline'
+  | 'composer.stash'
   | 'preview.annotate'
   | 'editor.save';
 
@@ -56,6 +58,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'create-pr', label: 'Create Pull Request', group: 'Workspace', default: 'CmdOrCtrl+Shift+P', where: 'menu' },
   { id: 'chat.find', label: 'Find in Chat', group: 'Chat', default: 'CmdOrCtrl+F', where: 'renderer' },
   { id: 'composer.plan-mode', label: 'Toggle Plan Mode', group: 'Composer', default: 'Shift+Tab', where: 'renderer' },
+  { id: 'composer.stash', label: 'Stash / Restore Prompt', group: 'Composer', default: 'CmdOrCtrl+S', where: 'renderer' },
+  { id: 'composer.paste-inline', label: 'Paste Long Text Inline', group: 'Composer', default: 'CmdOrCtrl+Shift+V', where: 'renderer' },
   { id: 'preview.annotate', label: 'Annotate Preview', group: 'Preview', default: 'CmdOrCtrl+Shift+A', where: 'renderer' },
   { id: 'editor.save', label: 'Save File', group: 'Editor', default: 'CmdOrCtrl+S', where: 'renderer' },
 ];

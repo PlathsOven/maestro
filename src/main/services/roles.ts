@@ -6,7 +6,7 @@ import { scriptEnv } from './scripts';
 import { adapters, currentTurnId, setSubagentStopHook } from './harness';
 import { harnessKeyEnv } from './harness/auth';
 import { harnessLoginEnv } from './harness/logins';
-import { applyBlockEvent, finalizeBlocks, newBlockStream, snapshotBlocks } from './harness/stream';
+import { applyBlockEvent, finalizeBlocks, newBlockStream, snapshotBlocks } from '../../shared/harness/blocks';
 import { wireAdapterStream } from './harness/adapter';
 import { trackTurnProcess } from './memguard';
 import {
@@ -111,6 +111,7 @@ export function runRole(req: {
     systemPrompt: def.md.trim() || null,
     model: def.model || undefined,
     effort: def.effort || undefined,
+    apiKeyMode: !!settings.harnessApiKeys?.[def.harness]?.trim(),
   });
 
   // Extras only — the host merges these with its own login env and strips the

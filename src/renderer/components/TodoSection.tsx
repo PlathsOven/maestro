@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import clsx from 'clsx';
 import { CheckCircle2, Circle, Plus, Trash2 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';

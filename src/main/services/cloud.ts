@@ -1,17 +1,17 @@
 import crypto from 'crypto';
-import { Notification } from 'electron';
-import { broadcast, getWindow } from '../bus';
-import { appIconPath } from '../icon';
-import { Messages, Projects, Scheduled, Settings, Workspaces, now } from '../db';
+import { notify } from '../notify';
+import { Messages, Projects, Scheduled, Workspaces, now } from '../db';
 import { hostForWorkspace, isCloudWorkspace } from '../hosts';
 import type { ExecHost } from '../hosts/types';
-import { JournalChild, parseFrame, readJournalFrom } from '../hosts/journal';
+import { JournalChild, readJournalFrom } from '../hosts/journal';
+import { parseFrame } from '../../shared/harness/frames';
 import { adapters, beginTurn, isAgentRunning, resolveTurn, setAwayDigestHook } from './harness';
 import { boxLinkedForHost } from './account';
 import { backgroundFactor, onForeground } from './activity';
 import { fireRemoteScheduled, pokeScheduler } from './schedule';
 import type { BuildOpts } from './harness/adapter';
 import type { Workspace } from '../../shared/types';
+import { ensureShim, homeFor, shq } from '../hosts/posix';
 
 /**
  * Cloud continuation (spec §6.2–6.5). A per-chat directory on the box holds a
@@ -23,27 +23,7 @@ import type { Workspace } from '../../shared/types';
  * turn uses (`beginTurn` → `finalize`), so there is no server twin of anything.
  */
 
-// POSIX single-quote a shell argument.
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
 // ---------- on-box layout ----------
-
-const homeCache = new Map<string, Promise<string>>();
-
-/** The box's $HOME (cached per host). */
-function homeFor(host: ExecHost): Promise<string> {
-  let p = homeCache.get(host.id);
-  if (!p) {
-    p = host
-      .exec('sh', ['-lc', 'printf %s "$HOME"'])
-      .then((r) => r.stdout.trim() || '.')
-      .catch(() => '.');
-    homeCache.set(host.id, p);
-  }
-  return p;
-}
 
 interface ChatPaths {
   dir: string;
@@ -171,7 +151,6 @@ export function getDrainScript(): string {
 }
 
 const DRAIN_HASH = crypto.createHash('sha256').update(DRAIN_SH).digest('hex').slice(0, 12);
-const shimUploaded = new Set<string>(); // `${hostId}:${hash}`
 
 /** Upload maestro-drain once per (host, content-hash) — same mechanism as the
  *  bridge shims (§6.2). Returns its absolute path on the box. Exported so box
@@ -179,18 +158,8 @@ const shimUploaded = new Set<string>(); // `${hostId}:${hash}`
  *  synced box must always be able to *run* the web jobs it accepts, not just
  *  stage them (maestro-sync's ensure_drain silently no-ops when the shim is
  *  absent — the "accepts work it can't run" black hole). */
-export async function ensureDrainShim(host: ExecHost): Promise<string> {
-  const home = await homeFor(host);
-  const bin = host.path.join(home, '.maestro', 'bin');
-  const shim = host.path.join(bin, 'maestro-drain');
-  const key = `${host.id}:${DRAIN_HASH}`;
-  if (!shimUploaded.has(key)) {
-    await host.fs.mkdirp(bin);
-    await host.fs.write(shim, DRAIN_SH);
-    await host.fs.chmod(shim, 0o755);
-    shimUploaded.add(key);
-  }
-  return shim;
+export function ensureDrainShim(host: ExecHost): Promise<string> {
+  return ensureShim(host, 'maestro-drain', DRAIN_SH, DRAIN_HASH);
 }
 
 // ---------- turn.sh + job files ----------
@@ -325,7 +294,7 @@ export async function writeTurnJob(opts: {
 
 /** The scheduled-job filename: epoch SECONDS zero-padded to 10 digits (so
  *  `ls | sort` is chronological), then the turnId (§4.2). */
-export function scheduledJobName(deliverAt: number, turnId: string): string {
+function scheduledJobName(deliverAt: number, turnId: string): string {
   return `${String(Math.floor(deliverAt / 1000)).padStart(10, '0')}-${turnId}.job`;
 }
 
@@ -730,11 +699,9 @@ function cloudChats(): { ws: Workspace; agentId: number }[] {
 function postDigest(): void {
   const { finished, attention } = digest;
   if (!finished) return;
-  const win = getWindow();
-  if (!Settings.global().notifications || !win || win.isFocused() || !Notification.isSupported()) return;
   const bits = [`${finished} conversation${finished === 1 ? '' : 's'} finished`];
   if (attention) bits.push(`${attention} need${attention === 1 ? 's' : ''} attention`);
-  new Notification({ title: 'While you were away', body: bits.join(', ') + '.', icon: appIconPath() }).show();
+  notify({ title: 'While you were away', body: bits.join(', ') + '.' });
 }
 
 /** Stop one chat's follower (delete / bring-local) so it can't re-materialize

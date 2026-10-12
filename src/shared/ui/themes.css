@@ -6,14 +6,29 @@
  * How it layers: theme.css defines Classic on `:root` / `.dark`. A family is
  * `data-theme="…"` on <html>; its light block is `[data-theme='x']:not(.dark)`
  * and its dark block `[data-theme='x'].dark`, so it only overrides the tokens it
- * names and everything else (shadows, radii, the glass geometry) stays Classic.
- * The selectors are not tied to :root, so any element can wear a theme — the
- * Settings picker renders each card's preview that way.
+ * names and everything else stays Classic. The selectors are not tied to :root,
+ * so any element can wear a theme — the Settings picker renders each card's
+ * preview that way.
  *
- * A family only sets the BASE tokens. The translucent ones (glass fills, focus
- * ring, diff rows, …) are derived from them below with color-mix, so a new theme
- * is ~25 hex values per variant. Base tokens must stay 6-digit hex: Monaco reads
- * them (lib/monaco.ts) and only takes hex.
+ * A theme is a mood, not only a palette. Each family is designed around one
+ * idea, stated in its header comment, and pulls the same few levers to say it:
+ *   palette    ~20 base hex tokens per variant (6-digit hex: Monaco and the
+ *              terminal read them — lib/monaco.ts, TerminalPanel.tsx)
+ *   primary    `--ink` / `--on-ink`: the primary pill. Classic's is ink-black;
+ *              most families use their signature colour instead
+ *   shadow     `--shade`, the hue shadows are cast in (derived shadows below)
+ *   shape      `--r-card/ctl/stage/glass/btn/bubble` (theme.css defaults)
+ *   material   glass blur / saturation, or none at all
+ *   atmosphere `.wash` — what the window chrome shows behind the stage
+ *   type       only where the idea calls for it, always with system fallbacks
+ *              (only Inter and JetBrains Mono are bundled)
+ *   terminal   `--ansi-cyan`; the other ANSI hues come from the status tokens
+ * Maestro Web wears the same themes: its chrome is the same `.wash`, its detail
+ * pane `.web-stage` mirrors the desktop `.stage` (web/app/globals.css), and its
+ * workspace screen `.web-sheet` is the sheet that stage textures are drawn on.
+ * Page-level effects (fonts, overlays, the wash) key on `:root[data-theme=…]`
+ * so they never leak into the Settings preview cards; token and shape rules key
+ * on `[data-theme=…]` so the cards preview them.
  *
  * Classic keeps its hand-tuned literal values in theme.css and is excluded from
  * the derivations, so it looks exactly as it always has.
@@ -21,13 +36,14 @@
 
 /* ---- Derived tokens (every family except Classic) ------------------------ */
 /* `:where()` keeps these at the specificity of a plain family block, so a
-   family can still override a derived token with `[data-theme='x']` /
-   `[data-theme='x'].dark` (later in the file wins the tie). */
+   family can still override a derived token with `[data-theme='x']:not(.dark)`
+   / `[data-theme='x'].dark` (later in the file wins the tie). */
 [data-theme]:where(:not([data-theme='classic'])) {
+  --shade: var(--text);
   --canvas-glass: color-mix(in srgb, var(--canvas) 80%, transparent);
   --accent-soft: color-mix(in srgb, var(--text) 6%, transparent);
   --accent-tint: color-mix(in srgb, var(--accent) 12%, transparent);
-  --focus-ring: color-mix(in srgb, var(--accent) 20%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 22%, transparent);
   --ink: var(--text);
   --on-ink: var(--canvas);
   --st-review: var(--ok);
@@ -40,42 +56,87 @@
   --term-bg: var(--canvas);
   --glass-bg: color-mix(in srgb, var(--raised) 62%, transparent);
   --glass-panel-bg: color-mix(in srgb, var(--raised) 82%, transparent);
+  /* Shadows cast in the theme's own hue (its text colour by default) rather
+     than Classic's warm grey, so depth reads as part of the palette. */
+  --shadow: 0 1px 2px color-mix(in srgb, var(--shade) 5%, transparent),
+    0 6px 20px -8px color-mix(in srgb, var(--shade) 11%, transparent);
+  --stage-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 7%, transparent),
+    0 1px 2px color-mix(in srgb, var(--shade) 4%, transparent),
+    0 16px 40px -18px color-mix(in srgb, var(--shade) 16%, transparent);
+  --glass-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 8%, transparent),
+    0 2px 6px color-mix(in srgb, var(--shade) 5%, transparent),
+    0 18px 48px -12px color-mix(in srgb, var(--shade) 22%, transparent);
 }
 [data-theme]:where(:not([data-theme='classic'])).dark {
+  --shade: #000000;
   --accent-soft: color-mix(in srgb, var(--text) 8%, transparent);
   --accent-tint: color-mix(in srgb, var(--accent) 17%, transparent);
-  --focus-ring: color-mix(in srgb, var(--accent) 24%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 26%, transparent);
   --glass-bg: color-mix(in srgb, var(--raised) 60%, transparent);
   --glass-panel-bg: color-mix(in srgb, var(--raised) 84%, transparent);
+  --shadow: 0 1px 2px color-mix(in srgb, var(--shade) 30%, transparent),
+    0 8px 24px -10px color-mix(in srgb, var(--shade) 45%, transparent);
+  --stage-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 6%, transparent),
+    0 20px 50px -20px color-mix(in srgb, var(--shade) 70%, transparent);
+  --glass-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 40%, transparent),
+    0 20px 50px -16px color-mix(in srgb, var(--shade) 70%, transparent);
 }
 
-/* Liquid-glass fills: Classic's are neutral white / graphite, which would grey
-   out a tinted palette — tint them with the theme's own surface instead. */
-[data-theme]:not([data-theme='classic']) .lg-strong::after {
+/* Liquid-glass fills and lifts: Classic's are neutral white / graphite and warm
+   grey, which would grey out a tinted palette — use the theme's own surface and
+   shadow hue instead. `:where()` again, so a family's own rules win. */
+[data-theme]:where(:not([data-theme='classic'])) .lg-strong::after {
   background: color-mix(in srgb, var(--raised) 62%, transparent);
 }
-[data-theme]:not([data-theme='classic']) .lg-panel::after {
+[data-theme]:where(:not([data-theme='classic'])) .lg-panel::after {
   background: color-mix(in srgb, var(--raised) 88%, transparent);
 }
-[data-theme]:not([data-theme='classic']).dark .lg-light::after {
+[data-theme]:where(:not([data-theme='classic'])).dark .lg-light::after {
   background: color-mix(in srgb, var(--raised) 22%, transparent);
 }
-[data-theme]:not([data-theme='classic']).dark .lg-panel::after {
+[data-theme]:where(:not([data-theme='classic'])).dark .lg-panel::after {
   background: color-mix(in srgb, var(--raised) 84%, transparent);
 }
-[data-theme]:not([data-theme='classic']).dark .tab-lit,
-[data-theme]:not([data-theme='classic']).dark .seg-thumb.lg-strong::after {
+[data-theme]:where(:not([data-theme='classic'])).dark .tab-lit,
+[data-theme]:where(:not([data-theme='classic'])).dark .seg-thumb.lg-strong::after {
   background: color-mix(in srgb, var(--text) 13%, transparent);
 }
+[data-theme]:where(:not([data-theme='classic'])) .lg {
+  box-shadow: 0 12px 40px -14px color-mix(in srgb, var(--shade) 24%, transparent),
+    0 2px 6px color-mix(in srgb, var(--shade) 6%, transparent);
+}
+[data-theme]:where(:not([data-theme='classic'])) .lg.lg-float {
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--shade) 8%, transparent),
+    0 1px 2px color-mix(in srgb, var(--shade) 7%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--shade) 26%, transparent);
+}
+[data-theme]:where(:not([data-theme='classic'])).dark .lg {
+  box-shadow: 0 20px 50px -20px color-mix(in srgb, var(--shade) 70%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shade) 30%, transparent);
+}
+[data-theme]:where(:not([data-theme='classic'])).dark .lg.lg-float {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 35%, transparent),
+    0 8px 22px -10px color-mix(in srgb, var(--shade) 75%, transparent);
+}
+/* Most families put their signature colour on the primary pill; it keeps the
+   ink pill's lift but not the white glint, which reads as grey on a hue. */
+[data-theme]:where(:not([data-theme='classic'])) .btn-accent {
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 30%, transparent);
+}
 
-/* ---- Catppuccin — Latte / Mocha ------------------------------------------- */
+/* =========================================================================
+ * Catppuccin — "a cosy pastel study". Latte / Mocha.
+ * Soft and friendly: rounder than Classic, lavender-tinted shadows, mauve on
+ * the primary pill and in every selection, and a pastel wash of pink, mauve,
+ * blue and peach. Mocha keeps the chrome in Mantle and the stage in Base.
+ * ========================================================================= */
 [data-theme='catppuccin']:not(.dark) {
   --bg: #e6e9ef;
-  --surface: #eceef3;
-  --raised: #f7f8fa;
+  --surface: #e9ecf2;
+  --raised: #f8f9fb;
   --canvas: #eff1f5;
-  --user-msg: #e4e7ee;
-  --border: #d6dae3;
+  --user-msg: #e8e4f7;
+  --border: #d9dde6;
   --text: #4c4f69;
   --muted: #6c6f85;
   --faint: #9ca0b0;
@@ -83,20 +144,25 @@
   --st-idle: #acb0be;
   --st-running: #1e66f5;
   --st-attention: #df8e1d;
-  --st-merged: #8839ef;
+  --st-merged: #ea76cb;
   --ok: #40a02b;
   --err: #d20f39;
-  --warn: #df8e1d;
-  --wash-a: rgba(30, 102, 245, 0.18);
-  --wash-b: rgba(234, 118, 203, 0.2);
-  --wash-c: rgba(254, 100, 11, 0.12);
+  --warn: #fe640b;
+  --ansi-cyan: #179299;
+  --ink: #8839ef;
+  --on-ink: #ffffff;
+  --shade: #7287fd;
+  --accent-soft: color-mix(in srgb, #8839ef 7%, transparent);
+  --wash-a: rgba(114, 135, 253, 0.26);
+  --wash-b: rgba(234, 118, 203, 0.24);
+  --wash-c: rgba(254, 100, 11, 0.14);
 }
 [data-theme='catppuccin'].dark {
-  --bg: #11111b;
-  --surface: #262637;
-  --raised: #2a2b3d;
+  --bg: #181825;
+  --surface: #232334;
+  --raised: #28283b;
   --canvas: #1e1e2e;
-  --user-msg: #313244;
+  --user-msg: #2e2b45;
   --border: #313244;
   --text: #cdd6f4;
   --muted: #a6adc8;
@@ -105,36 +171,71 @@
   --st-idle: #585b70;
   --st-running: #89b4fa;
   --st-attention: #f9e2af;
-  --st-merged: #cba6f7;
+  --st-merged: #f5c2e7;
   --ok: #a6e3a1;
   --err: #f38ba8;
   --warn: #fab387;
-  --wash-a: rgba(137, 180, 250, 0.14);
-  --wash-b: rgba(245, 194, 231, 0.1);
-  --wash-c: rgba(250, 179, 135, 0.08);
+  --ansi-cyan: #94e2d5;
+  --ink: #cba6f7;
+  --on-ink: #1e1e2e;
+  --shade: #07070d;
+  --accent-soft: color-mix(in srgb, #cba6f7 9%, transparent);
+  --wash-a: rgba(137, 180, 250, 0.16);
+  --wash-b: rgba(245, 194, 231, 0.13);
+  --wash-c: rgba(250, 179, 135, 0.09);
+}
+[data-theme='catppuccin'] {
+  --r-card: 16px;
+  --r-ctl: 12px;
+  --r-stage: 18px;
+  --r-glass: 16px;
+  --r-bubble: 22px;
+}
+[data-theme='catppuccin'].dark .tab-lit {
+  background: color-mix(in srgb, #cba6f7 15%, transparent);
+}
+:root[data-theme='catppuccin'] .wash {
+  background:
+    radial-gradient(30% 30% at 4% 2%, var(--wash-a), transparent 70%),
+    radial-gradient(24% 26% at 16% 30%, var(--wash-b), transparent 70%),
+    radial-gradient(34% 30% at 62% -4%, var(--wash-b), transparent 70%),
+    radial-gradient(44% 40% at 100% 100%, var(--wash-b), transparent 70%),
+    radial-gradient(36% 32% at 8% 104%, var(--wash-c), transparent 70%),
+    var(--bg);
 }
 
-/* ---- Nord — Snow Storm / Polar Night -------------------------------------- */
+/* =========================================================================
+ * Nord — "arctic stillness". Snow Storm / Polar Night.
+ * Quiet, cool and crisp: tighter geometry, thin cool shadows, frost-blue
+ * primary, and glass frosted rather than refracted (desaturated, blurrier).
+ * The dark sky carries a faint aurora — green, frost and purple ribbons along
+ * the top of the window; the light one is pale snow light.
+ * ========================================================================= */
 [data-theme='nord']:not(.dark) {
   --bg: #e5e9f0;
   --surface: #eceff4;
-  --raised: #ffffff;
-  --canvas: #f6f8fb;
-  --user-msg: #e8ecf2;
+  --raised: #fafbfc;
+  --canvas: #f4f6f9;
+  --user-msg: #e2e9f1;
   --border: #d8dee9;
   --text: #2e3440;
   --muted: #4c566a;
   --faint: #8a93a5;
   --accent: #5e81ac;
   --st-idle: #aab3c3;
-  --st-running: #3f8fb0;
+  --st-running: #5e81ac;
   --st-attention: #c99433;
   --st-merged: #a2789c;
   --ok: #6f9a55;
   --err: #bf616a;
-  --warn: #c99433;
-  --wash-a: rgba(94, 129, 172, 0.22);
-  --wash-b: rgba(136, 192, 208, 0.2);
+  --warn: #c7773f;
+  --ansi-cyan: #5a9d9c;
+  --ink: #5e81ac;
+  --on-ink: #eceff4;
+  --shade: #4c566a;
+  --accent-soft: color-mix(in srgb, #5e81ac 8%, transparent);
+  --wash-a: rgba(136, 192, 208, 0.3);
+  --wash-b: rgba(94, 129, 172, 0.16);
   --wash-c: rgba(180, 142, 173, 0.12);
 }
 [data-theme='nord'].dark {
@@ -142,11 +243,11 @@
   --surface: #353c4a;
   --raised: #3b4252;
   --canvas: #2e3440;
-  --user-msg: #3b4252;
-  --border: #434c5e;
+  --user-msg: #36404f;
+  --border: #3e4656;
   --text: #eceff4;
-  --muted: #b5bdcb;
-  --faint: #6f7a8e;
+  --muted: #c2cad8;
+  --faint: #737e92;
   --accent: #88c0d0;
   --st-idle: #4c566a;
   --st-running: #81a1c1;
@@ -155,33 +256,79 @@
   --ok: #a3be8c;
   --err: #bf616a;
   --warn: #d08770;
-  --wash-a: rgba(94, 129, 172, 0.18);
-  --wash-b: rgba(136, 192, 208, 0.08);
-  --wash-c: rgba(180, 142, 173, 0.08);
+  --ansi-cyan: #8fbcbb;
+  --ink: #88c0d0;
+  --on-ink: #2e3440;
+  --shade: #10131a;
+  --accent-soft: color-mix(in srgb, #88c0d0 9%, transparent);
+  --canvas-glass: color-mix(in srgb, var(--canvas) 76%, transparent);
+  --wash-a: rgba(163, 190, 140, 0.34);
+  --wash-b: rgba(136, 192, 208, 0.3);
+  --wash-c: rgba(180, 142, 173, 0.32);
+}
+[data-theme='nord'] {
+  --r-card: 10px;
+  --r-ctl: 8px;
+  --r-stage: 12px;
+  --r-glass: 12px;
+  --r-bubble: 14px;
+  --glass-blur: 30px;
+  --glass-sat: 110%;
+}
+[data-theme='nord'].dark .tab-lit {
+  background: color-mix(in srgb, #88c0d0 14%, transparent);
+}
+:root[data-theme='nord'] body {
+  letter-spacing: 0.003em;
+}
+:root[data-theme='nord'] .wash {
+  background:
+    radial-gradient(60% 28% at 30% -6%, var(--wash-a), transparent 70%),
+    radial-gradient(40% 16% at 70% 0%, var(--wash-b), transparent 70%),
+    radial-gradient(50% 30% at 100% 100%, var(--wash-b), transparent 70%),
+    var(--bg);
+}
+/* Aurora: three long ribbons low over the dark sky. */
+:root[data-theme='nord'].dark .wash {
+  background:
+    radial-gradient(30% 7% at 10% 9%, var(--wash-a), transparent 100%),
+    radial-gradient(40% 10% at 40% 4%, var(--wash-b), transparent 100%),
+    radial-gradient(34% 9% at 78% 7%, var(--wash-c), transparent 100%),
+    radial-gradient(22% 12% at 4% 16%, var(--wash-b), transparent 100%),
+    radial-gradient(80% 36% at 50% -4%, rgba(136, 192, 208, 0.1), transparent 100%),
+    var(--bg);
 }
 
-/* ---- Solarized — Light / Dark --------------------------------------------- */
+/* =========================================================================
+ * Solarized — "a precision instrument".
+ * Solarized is about exact, measured contrast, so it is the one flat theme:
+ * no glass, no blur, no ambient wash, near-square corners and rectangular
+ * buttons, hairline rules instead of drop shadows, tabular figures, and a
+ * selection marked with a thin blue rule like a cursor in a margin.
+ * ========================================================================= */
 [data-theme='solarized']:not(.dark) {
   --bg: #eee8d5;
   --surface: #f5efdc;
-  --raised: #fffbef;
+  --raised: #fdf6e3;
   --canvas: #fdf6e3;
-  --user-msg: #f3ecd8;
-  --border: #e2dbc3;
+  --user-msg: #f3ecd6;
+  --border: #e0d9c1;
   --text: #073642;
   --muted: #586e75;
   --faint: #93a1a1;
   --accent: #268bd2;
   --st-idle: #adb5ad;
-  --st-running: #2aa198;
+  --st-running: #268bd2;
   --st-attention: #b58900;
   --st-merged: #6c71c4;
   --ok: #859900;
   --err: #dc322f;
   --warn: #cb4b16;
-  --wash-a: rgba(38, 139, 210, 0.16);
-  --wash-b: rgba(211, 54, 130, 0.1);
-  --wash-c: rgba(181, 137, 0, 0.14);
+  --ansi-cyan: #2aa198;
+  --ink: #268bd2;
+  --on-ink: #fdf6e3;
+  --shade: #586e75;
+  --accent-soft: color-mix(in srgb, #93a1a1 16%, transparent);
 }
 [data-theme='solarized'].dark {
   --bg: #00212b;
@@ -189,31 +336,99 @@
   --raised: #073642;
   --canvas: #002b36;
   --user-msg: #073642;
-  --border: #0d3f4c;
-  --text: #e3ddcb;
+  --border: #0b3f4c;
+  --text: #dcd8c6;
   --muted: #93a1a1;
   --faint: #5c747b;
   --accent: #3d9be0;
   --st-idle: #3e5a62;
-  --st-running: #2aa198;
+  --st-running: #268bd2;
   --st-attention: #b58900;
   --st-merged: #8589d6;
   --ok: #859900;
   --err: #dc322f;
   --warn: #cb4b16;
-  --wash-a: rgba(38, 139, 210, 0.16);
-  --wash-b: rgba(211, 54, 130, 0.08);
-  --wash-c: rgba(181, 137, 0, 0.08);
+  --ansi-cyan: #2aa198;
+  --ink: #268bd2;
+  --on-ink: #fdf6e3;
+  --accent-soft: color-mix(in srgb, #93a1a1 10%, transparent);
+}
+[data-theme='solarized'],
+[data-theme='solarized'].dark {
+  --r-card: 5px;
+  --r-ctl: 4px;
+  --r-stage: 6px;
+  --r-glass: 6px;
+  --r-btn: 4px;
+  --r-bubble: 6px;
+  --canvas-glass: var(--canvas);
+  --glass-bg: var(--raised);
+  --glass-panel-bg: var(--raised);
+  --glass-blur: 0px;
+  --glass-rim: 0 0 0 0 transparent;
+  --shadow: none;
+  --stage-shadow: 0 0 0 1px var(--border);
+  --glass-shadow: 0 0 0 1px var(--border), 0 10px 28px -14px color-mix(in srgb, var(--shade) 40%, transparent);
+}
+[data-theme='solarized'] .stage,
+[data-theme='solarized'] .web-stage,
+[data-theme='solarized'] .glass,
+[data-theme='solarized'] .lg-backdrop,
+[data-theme='solarized'] .scroll-edge-top::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+[data-theme='solarized'] .lg::after,
+[data-theme='solarized'] .lg.lg-live::after {
+  background: var(--raised) !important;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+[data-theme='solarized'] .lg-clear::after {
+  background: transparent !important;
+}
+[data-theme='solarized'] .lg,
+[data-theme='solarized'] .lg.lg-float,
+[data-theme='solarized'].dark .lg,
+[data-theme='solarized'].dark .lg.lg-float,
+[data-theme='solarized'] .lg.seg-thumb {
+  box-shadow: none;
+}
+[data-theme='solarized'] .tab-lit,
+[data-theme='solarized'].dark .tab-lit,
+[data-theme='solarized'] .seg-thumb.lg-strong::after,
+[data-theme='solarized'].dark .seg-thumb.lg-strong::after {
+  background: var(--canvas) !important;
+  box-shadow: inset 0 0 0 1px var(--border), inset 2px 0 0 var(--accent);
+}
+[data-theme='solarized'] .btn {
+  box-shadow: none;
+}
+:root[data-theme='solarized'] body {
+  font-variant-numeric: tabular-nums;
+}
+:root[data-theme='solarized'] .wash,
+:root[data-theme='solarized'] .wash-hero {
+  background: var(--bg);
+}
+:root[data-theme='solarized'] .md h1,
+:root[data-theme='solarized'] .md h2 {
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--border);
 }
 
-/* ---- Gruvbox — Light / Dark ----------------------------------------------- */
+/* =========================================================================
+ * Gruvbox — "an analog workshop".
+ * Retro and tactile: a fine paper / film grain over the chrome and the stage,
+ * chunky rounded-rectangle keys that sit on a hard 1px ledge, shadows cast in
+ * warm brown, an orange primary, and a warm lamp glow instead of a cool wash.
+ * ========================================================================= */
 [data-theme='gruvbox']:not(.dark) {
   --bg: #f2e5bc;
-  --surface: #f6ecc3;
+  --surface: #f5ebc6;
   --raised: #fdf8e1;
   --canvas: #fbf1c7;
   --user-msg: #f2e5bc;
-  --border: #e3d4a8;
+  --border: #e0cfa0;
   --text: #3c3836;
   --muted: #7c6f64;
   --faint: #a89984;
@@ -225,9 +440,14 @@
   --ok: #79740e;
   --err: #9d0006;
   --warn: #b57614;
-  --wash-a: rgba(215, 153, 33, 0.18);
-  --wash-b: rgba(214, 93, 14, 0.12);
-  --wash-c: rgba(104, 157, 106, 0.14);
+  --ansi-cyan: #427b58;
+  --ink: #af3a03;
+  --on-ink: #fbf1c7;
+  --shade: #7c4a1a;
+  --accent-soft: color-mix(in srgb, #d79921 13%, transparent);
+  --wash-a: rgba(250, 189, 47, 0.3);
+  --wash-b: rgba(214, 93, 14, 0.14);
+  --wash-c: rgba(152, 151, 26, 0.12);
 }
 [data-theme='gruvbox'].dark {
   --bg: #1d2021;
@@ -247,33 +467,100 @@
   --ok: #b8bb26;
   --err: #fb4934;
   --warn: #fabd2f;
+  --ansi-cyan: #8ec07c;
+  --ink: #fe8019;
+  --on-ink: #282828;
+  --shade: #0d0806;
+  --accent-soft: color-mix(in srgb, #fabd2f 9%, transparent);
   --wash-a: rgba(250, 189, 47, 0.1);
-  --wash-b: rgba(254, 128, 25, 0.08);
-  --wash-c: rgba(142, 192, 124, 0.07);
+  --wash-b: rgba(254, 128, 25, 0.09);
+  --wash-c: rgba(142, 192, 124, 0.05);
+}
+[data-theme='gruvbox'] {
+  --r-card: 8px;
+  --r-ctl: 6px;
+  --r-stage: 10px;
+  --r-glass: 8px;
+  --r-btn: 7px;
+  --r-bubble: 10px;
+  --glass-sat: 120%;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .25 0 0 0 0 .12 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme='gruvbox'].dark {
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 .9 0 0 0 0 .7 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme='gruvbox'] .btn {
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--shade) 22%, transparent);
+}
+[data-theme='gruvbox'] .btn-accent {
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--ink) 55%, #000);
+}
+[data-theme='gruvbox'] .btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+[data-theme='gruvbox'] .tab-lit {
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--border), 0 1px 0 color-mix(in srgb, var(--shade) 18%, transparent);
+}
+[data-theme='gruvbox'].dark .tab-lit {
+  background: #504945;
+  box-shadow: 0 1px 0 #000000;
+}
+:root[data-theme='gruvbox'] .wash {
+  background:
+    var(--grain),
+    radial-gradient(44% 40% at 10% -4%, var(--wash-a), transparent 70%),
+    radial-gradient(40% 36% at 100% 104%, var(--wash-b), transparent 70%),
+    radial-gradient(30% 26% at 60% 110%, var(--wash-c), transparent 70%),
+    var(--bg);
+}
+:root[data-theme='gruvbox'] .stage {
+  background: var(--grain) 40px 40px, var(--canvas-glass);
+}
+/* The web's sheet sits under the glass stage on a tablet and alone on a phone,
+   so it takes the grain over the plain canvas. */
+:root[data-theme='gruvbox'] .web-sheet {
+  background: var(--grain) 40px 40px, var(--canvas);
+}
+@media (min-width: 768px) {
+  :root[data-theme='gruvbox'] .web-sheet {
+    background: var(--grain) 40px 40px;
+  }
 }
 
-/* ---- Rosé Pine — Dawn / Main ---------------------------------------------- */
+/* =========================================================================
+ * Rosé Pine — "twilight elegance". Dawn / Main.
+ * Literary and unhurried: a serif for headings (Iowan Old Style / Palatino /
+ * Georgia), italics that actually look italic, iris selections, a rose
+ * primary, and a dusk wash of rose, iris and a low line of gold.
+ * ========================================================================= */
 [data-theme='rose-pine']:not(.dark) {
   --bg: #f2e9e1;
   --surface: #f4ede8;
   --raised: #fffaf3;
   --canvas: #faf4ed;
   --user-msg: #f2e9e1;
-  --border: #dfdad9;
+  --border: #e4dcd6;
   --text: #575279;
   --muted: #797593;
   --faint: #9893a5;
   --accent: #907aa9;
   --st-idle: #cecacd;
-  --st-running: #56949f;
+  --st-running: #286983;
   --st-attention: #ea9d34;
   --st-merged: #907aa9;
   --ok: #286983;
   --err: #b4637a;
   --warn: #ea9d34;
-  --wash-a: rgba(215, 130, 126, 0.2);
-  --wash-b: rgba(144, 122, 169, 0.16);
-  --wash-c: rgba(234, 157, 52, 0.14);
+  --ansi-cyan: #56949f;
+  --ink: #b4637a;
+  --on-ink: #fffaf3;
+  --shade: #575279;
+  --accent-soft: color-mix(in srgb, #907aa9 8%, transparent);
+  --wash-a: rgba(215, 130, 126, 0.24);
+  --wash-b: rgba(144, 122, 169, 0.2);
+  --wash-c: rgba(234, 157, 52, 0.16);
 }
 [data-theme='rose-pine'].dark {
   --bg: #12101b;
@@ -290,68 +577,163 @@
   --st-running: #9ccfd8;
   --st-attention: #f6c177;
   --st-merged: #c4a7e7;
-  --ok: #3e8fb0;
+  --ok: #9ccfd8;
   --err: #eb6f92;
   --warn: #f6c177;
-  --wash-a: rgba(196, 167, 231, 0.12);
-  --wash-b: rgba(235, 188, 186, 0.1);
-  --wash-c: rgba(246, 193, 119, 0.06);
+  --ansi-cyan: #3e8fb0;
+  --ink: #ebbcba;
+  --on-ink: #191724;
+  --shade: #06050b;
+  --accent-soft: color-mix(in srgb, #c4a7e7 9%, transparent);
+  --wash-a: rgba(235, 188, 186, 0.13);
+  --wash-b: rgba(196, 167, 231, 0.14);
+  --wash-c: rgba(246, 193, 119, 0.08);
+}
+[data-theme='rose-pine'] {
+  --r-card: 14px;
+  --r-ctl: 10px;
+  --r-stage: 16px;
+  --r-glass: 14px;
+  --r-bubble: 20px;
+}
+[data-theme='rose-pine'].dark .tab-lit {
+  background: color-mix(in srgb, #403d52 80%, transparent);
+}
+:root[data-theme='rose-pine'] h1,
+:root[data-theme='rose-pine'] h2,
+:root[data-theme='rose-pine'] h3,
+:root[data-theme='rose-pine'] .md h1,
+:root[data-theme='rose-pine'] .md h2,
+:root[data-theme='rose-pine'] .md h3 {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+:root[data-theme='rose-pine'] .md em {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font-size: 1.06em;
+}
+:root[data-theme='rose-pine'] .md blockquote {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font-style: italic;
+  font-size: 1.04em;
+  border-left-color: var(--accent);
+}
+:root[data-theme='rose-pine'] .wash {
+  background:
+    radial-gradient(46% 40% at 8% 0%, var(--wash-a), transparent 72%),
+    radial-gradient(44% 44% at 100% 30%, var(--wash-b), transparent 72%),
+    radial-gradient(60% 22% at 40% 104%, var(--wash-c), transparent 72%),
+    var(--bg);
 }
 
-/* ---- Tokyo Night — Day / Night -------------------------------------------- */
+/* =========================================================================
+ * Tokyo Night — "a neon city after rain". Day / Night.
+ * Electric and nocturnal: the stage is rimmed in a faint blue neon, the
+ * primary pill and selections glow, and the city's light pools along the
+ * horizon — blue and magenta at the bottom of the window. Day is the same
+ * city under an overcast sky: cool, crisp, blue-inked.
+ * ========================================================================= */
 [data-theme='tokyo-night']:not(.dark) {
   --bg: #dfe1e8;
   --surface: #e9ebf0;
   --raised: #f8f9fb;
   --canvas: #f2f3f7;
-  --user-msg: #e5e7ed;
+  --user-msg: #e3e7f3;
   --border: #d3d6e0;
-  --text: #3760bf;
-  --muted: #6172b0;
+  --text: #343b58;
+  --muted: #5a6594;
   --faint: #8990b3;
   --accent: #2e7de9;
   --st-idle: #a8aecb;
-  --st-running: #007197;
+  --st-running: #2e7de9;
   --st-attention: #8c6c3e;
   --st-merged: #9854f1;
   --ok: #587539;
   --err: #f52a65;
   --warn: #b15c00;
-  --wash-a: rgba(46, 125, 233, 0.2);
-  --wash-b: rgba(152, 84, 241, 0.14);
+  --ansi-cyan: #007197;
+  --ink: #2e7de9;
+  --on-ink: #ffffff;
+  --shade: #3760bf;
+  --accent-soft: color-mix(in srgb, #2e7de9 7%, transparent);
+  --wash-a: rgba(46, 125, 233, 0.22);
+  --wash-b: rgba(152, 84, 241, 0.16);
   --wash-c: rgba(0, 113, 151, 0.12);
 }
 [data-theme='tokyo-night'].dark {
-  --bg: #16161e;
+  --bg: #13141c;
   --surface: #1f2231;
   --raised: #24283b;
   --canvas: #1a1b26;
-  --user-msg: #24283b;
+  --user-msg: #232942;
   --border: #292e42;
   --text: #c0caf5;
   --muted: #9aa5ce;
   --faint: #565f89;
   --accent: #7aa2f7;
   --st-idle: #414868;
-  --st-running: #7dcfff;
+  --st-running: #7aa2f7;
   --st-attention: #e0af68;
   --st-merged: #bb9af7;
   --ok: #9ece6a;
   --err: #f7768e;
   --warn: #ff9e64;
-  --wash-a: rgba(122, 162, 247, 0.16);
-  --wash-b: rgba(187, 154, 247, 0.12);
-  --wash-c: rgba(125, 207, 255, 0.06);
+  --ansi-cyan: #7dcfff;
+  --ink: #7aa2f7;
+  --on-ink: #16161e;
+  --shade: #05050a;
+  --accent-soft: color-mix(in srgb, #7aa2f7 8%, transparent);
+  --canvas-glass: color-mix(in srgb, var(--canvas) 78%, transparent);
+  --stage-shadow: 0 0 0 1px color-mix(in srgb, #7aa2f7 20%, transparent),
+    0 0 44px -14px color-mix(in srgb, #7aa2f7 45%, transparent),
+    0 20px 50px -20px rgba(0, 0, 0, 0.8);
+  --wash-a: rgba(122, 162, 247, 0.22);
+  --wash-b: rgba(187, 154, 247, 0.2);
+  --wash-c: rgba(125, 207, 255, 0.1);
+}
+[data-theme='tokyo-night'] {
+  --r-card: 12px;
+  --r-ctl: 8px;
+  --r-stage: 12px;
+  --r-glass: 12px;
+  --r-bubble: 16px;
+}
+[data-theme='tokyo-night'].dark .btn-accent {
+  box-shadow: 0 0 14px -2px color-mix(in srgb, var(--ink) 70%, transparent);
+}
+[data-theme='tokyo-night'].dark .tab-lit {
+  background: color-mix(in srgb, #7aa2f7 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #7aa2f7 26%, transparent),
+    0 0 16px -6px color-mix(in srgb, #7aa2f7 60%, transparent);
+}
+:root[data-theme='tokyo-night'].dark .md a,
+:root[data-theme='tokyo-night'].dark .md h1,
+:root[data-theme='tokyo-night'].dark .md h2 {
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+:root[data-theme='tokyo-night'] .wash {
+  background:
+    radial-gradient(60% 26% at 12% 104%, var(--wash-b), transparent 72%),
+    radial-gradient(70% 22% at 40% 104%, var(--wash-a), transparent 72%),
+    radial-gradient(50% 20% at 85% 104%, var(--wash-b), transparent 72%),
+    radial-gradient(30% 26% at 95% 0%, var(--wash-c), transparent 72%),
+    var(--bg);
 }
 
-/* ---- Everforest — Light / Dark (medium) ----------------------------------- */
+/* =========================================================================
+ * Everforest — "light through the canopy".
+ * Calm and organic: the softest, roundest shapes of any theme, low contrast,
+ * moss-tinted shadows that spread wide, a leaf-green primary, and a wash of
+ * dappled light — small warm pools scattered as if through leaves.
+ * ========================================================================= */
 [data-theme='everforest']:not(.dark) {
   --bg: #efebd4;
   --surface: #f4f0d9;
   --raised: #fffbef;
   --canvas: #fdf6e3;
-  --user-msg: #f4f0d9;
-  --border: #e0dcc7;
+  --user-msg: #eef0d4;
+  --border: #e2ddc5;
   --text: #5c6a72;
   --muted: #829181;
   --faint: #a6b0a0;
@@ -363,16 +745,21 @@
   --ok: #35a77c;
   --err: #f85552;
   --warn: #f57d26;
-  --wash-a: rgba(141, 161, 1, 0.16);
-  --wash-b: rgba(53, 167, 124, 0.14);
-  --wash-c: rgba(223, 160, 0, 0.12);
+  --ansi-cyan: #35a77c;
+  --ink: #6b8a1a;
+  --on-ink: #fdf6e3;
+  --shade: #4a5a3a;
+  --accent-soft: color-mix(in srgb, #8da101 9%, transparent);
+  --wash-a: rgba(141, 161, 1, 0.2);
+  --wash-b: rgba(223, 160, 0, 0.18);
+  --wash-c: rgba(53, 167, 124, 0.14);
 }
 [data-theme='everforest'].dark {
   --bg: #232a2e;
   --surface: #333c41;
   --raised: #343f44;
   --canvas: #2d353b;
-  --user-msg: #3d484d;
+  --user-msg: #3a4840;
   --border: #3d484d;
   --text: #d3c6aa;
   --muted: #9da9a0;
@@ -385,20 +772,55 @@
   --ok: #83c092;
   --err: #e67e80;
   --warn: #e69875;
-  --wash-a: rgba(167, 192, 128, 0.12);
-  --wash-b: rgba(127, 187, 179, 0.1);
-  --wash-c: rgba(219, 188, 127, 0.06);
+  --ansi-cyan: #83c092;
+  --ink: #a7c080;
+  --on-ink: #2d353b;
+  --shade: #0b100c;
+  --accent-soft: color-mix(in srgb, #a7c080 9%, transparent);
+  --wash-a: rgba(167, 192, 128, 0.07);
+  --wash-b: rgba(219, 188, 127, 0.07);
+  --wash-c: rgba(131, 192, 146, 0.06);
+}
+[data-theme='everforest'] {
+  --r-card: 18px;
+  --r-ctl: 13px;
+  --r-stage: 22px;
+  --r-glass: 18px;
+  --r-bubble: 24px;
+}
+[data-theme='everforest']:not(.dark) {
+  --shadow: 0 2px 4px color-mix(in srgb, var(--shade) 5%, transparent),
+    0 14px 34px -14px color-mix(in srgb, var(--shade) 16%, transparent);
+  --stage-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 6%, transparent),
+    0 24px 60px -24px color-mix(in srgb, var(--shade) 24%, transparent);
+}
+[data-theme='everforest'].dark .tab-lit {
+  background: color-mix(in srgb, #a7c080 13%, transparent);
+}
+:root[data-theme='everforest'] .wash {
+  background:
+    radial-gradient(16% 14% at 6% 4%, var(--wash-b), transparent 100%),
+    radial-gradient(24% 20% at 22% 16%, var(--wash-a), transparent 100%),
+    radial-gradient(12% 10% at 12% 44%, var(--wash-b), transparent 100%),
+    radial-gradient(20% 18% at 4% 70%, var(--wash-a), transparent 100%),
+    radial-gradient(14% 12% at 18% 92%, var(--wash-c), transparent 100%),
+    radial-gradient(40% 40% at 100% 100%, var(--wash-c), transparent 70%),
+    radial-gradient(34% 30% at 90% -6%, var(--wash-a), transparent 70%),
+    var(--bg);
 }
 
 /* =========================================================================
  * Experimental families. These go past a palette swap — type, shape, texture,
- * glow — so each one pairs its tokens with a few scoped rules. Page-level
- * effects (fonts, overlays, textured chrome) key on `:root[data-theme=…]` so
- * they never leak into the Settings preview cards; shape rules (corners,
- * borders) key on `[data-theme=…]` so the cards preview them.
+ * glow — so each one pairs its tokens with more scoped rules.
  * ========================================================================= */
 
-/* ---- Synthwave — vaporwave pastels / neon on a midnight grid -------------- */
+/* =========================================================================
+ * Synthwave — "outrun: a neon sunset over the grid".
+ * Night is the full scene: a striped sun on the horizon, a perspective neon
+ * floor running to it, the stage as a glass pane rimmed in magenta, glowing
+ * headings in a wide geometric face. Light is vaporwave: a pastel sky with the
+ * same sun and floor in pink and lavender.
+ * ========================================================================= */
 [data-theme='synthwave']:not(.dark) {
   --bg: #fbe3f4;
   --surface: #fbeaf6;
@@ -417,11 +839,16 @@
   --ok: #11906b;
   --err: #e01e4f;
   --warn: #d9640b;
+  --ansi-cyan: #0896a6;
   --ink: #d6189f;
   --on-ink: #ffffff;
-  --wash-a: rgba(5, 217, 232, 0.34);
-  --wash-b: rgba(255, 54, 201, 0.32);
-  --wash-c: rgba(255, 211, 25, 0.26);
+  --shade: #7b3fe4;
+  --accent-soft: color-mix(in srgb, #d6189f 7%, transparent);
+  --canvas-glass: color-mix(in srgb, var(--canvas) 74%, transparent);
+  --sky: linear-gradient(to bottom, #ffd6f0 0%, #e7d2ff 56%, #b9ecff 85%);
+  --sun: linear-gradient(to bottom, #ffe45c 10%, #ff9ec7 60%, #ff5fc1);
+  --floor-line: rgba(214, 24, 159, 0.4);
+  --floor-bg: #f3dcff;
 }
 [data-theme='synthwave'].dark {
   --bg: #0d0221;
@@ -441,11 +868,25 @@
   --ok: #3cf9a8;
   --err: #ff4a4a;
   --warn: #ff8f1f;
+  --ansi-cyan: #05d9e8;
   --ink: #ff36c9;
   --on-ink: #ffffff;
-  --wash-a: rgba(5, 217, 232, 0.2);
-  --wash-b: rgba(255, 54, 201, 0.26);
-  --wash-c: rgba(255, 143, 31, 0.24);
+  --shade: #000000;
+  --accent-soft: color-mix(in srgb, #ff36c9 9%, transparent);
+  --canvas-glass: color-mix(in srgb, var(--canvas) 72%, transparent);
+  --stage-shadow: 0 0 0 1px rgba(255, 54, 201, 0.4), 0 0 32px -8px rgba(255, 54, 201, 0.45),
+    0 0 70px -24px rgba(5, 217, 232, 0.45);
+  --sky: linear-gradient(to bottom, #0d0221 0%, #1a0540 52%, #3b0a5c 76%, #6a1470 85%);
+  --sun: linear-gradient(to bottom, #ffd319 8%, #ff8f1f 42%, #ff36c9 88%);
+  --floor-line: rgba(5, 217, 232, 0.55);
+  --floor-bg: #0d0221;
+}
+[data-theme='synthwave'] {
+  --r-card: 12px;
+  --r-ctl: 8px;
+  --r-stage: 12px;
+  --r-glass: 12px;
+  --r-bubble: 14px;
 }
 [data-theme='synthwave'] .btn-accent {
   background: linear-gradient(100deg, #ff36c9, #7b5cff 55%, #05d9e8);
@@ -454,30 +895,90 @@
 [data-theme='synthwave'].dark .btn-accent {
   box-shadow: 0 0 14px rgba(255, 54, 201, 0.55), 0 0 32px -6px rgba(5, 217, 232, 0.5);
 }
+[data-theme='synthwave'].dark .tab-lit {
+  background: color-mix(in srgb, #ff36c9 15%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(255, 54, 201, 0.45), 0 0 14px -3px rgba(255, 54, 201, 0.55);
+}
+:root[data-theme='synthwave'] h1,
+:root[data-theme='synthwave'] h2,
+:root[data-theme='synthwave'] .md h1,
+:root[data-theme='synthwave'] .md h2,
+:root[data-theme='synthwave'] .md h3 {
+  font-family: Futura, 'Avenir Next', 'Century Gothic', 'Trebuchet MS', sans-serif;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
 :root[data-theme='synthwave'].dark .text-accent,
 :root[data-theme='synthwave'].dark .md a,
 :root[data-theme='synthwave'].dark .md h1,
-:root[data-theme='synthwave'].dark .md h2 {
+:root[data-theme='synthwave'].dark .md h2,
+:root[data-theme='synthwave'].dark .md h3 {
   text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
 }
-/* The sunset horizon: a sun glow sinking into a receding neon grid. */
+/* The scene. The sky and sun are the wash's own layers; the floor is a
+   perspective-tilted grid plane (::after) so its lines converge on the sun. */
 :root[data-theme='synthwave'] .wash {
+  position: relative;
+  isolation: isolate;
+  overflow: clip;
+  background: var(--sky), var(--bg);
+}
+:root[data-theme='synthwave'] .wash::before,
+:root[data-theme='synthwave'] .wash::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+:root[data-theme='synthwave'] .wash::before {
+  left: 36px;
+  bottom: 15%;
+  width: 210px;
+  height: 105px;
+  border-radius: 105px 105px 0 0;
+  background: var(--sun);
+  --sun-mask: linear-gradient(#000 0 40%, transparent 40%),
+    repeating-linear-gradient(to bottom, #000 0 8px, transparent 8px 12px);
+  -webkit-mask-image: var(--sun-mask);
+  mask-image: var(--sun-mask);
+  filter: drop-shadow(0 0 24px rgba(255, 90, 170, 0.6));
+}
+:root[data-theme='synthwave'].dark .wash::before {
+  opacity: 0.8;
+}
+/* Hero surfaces (onboarding, the web's landing and settings): the same dusk
+   sky, without the sun and floor. */
+:root[data-theme='synthwave'] .wash-hero {
+  background: var(--sky), var(--bg);
+}
+:root[data-theme='synthwave'] .wash::after {
+  left: -60%;
+  right: -60%;
+  bottom: 0;
+  height: 15%;
+  transform-origin: 50% 0;
+  transform: perspective(220px) rotateX(58deg);
   background:
-    radial-gradient(45% 40% at 15% 0%, var(--wash-a), transparent 70%),
-    radial-gradient(50% 45% at 100% 55%, var(--wash-b), transparent 70%),
-    radial-gradient(50% 26% at 50% 100%, var(--wash-c), transparent 70%),
-    linear-gradient(to top, transparent 0 4%, var(--bg) 36%, transparent 36%),
-    repeating-linear-gradient(to top, color-mix(in srgb, var(--accent) 30%, transparent) 0 1px, transparent 1px 26px) 0 100% / 100% 36% no-repeat,
-    repeating-linear-gradient(90deg, color-mix(in srgb, var(--st-running) 26%, transparent) 0 1px, transparent 1px 56px) 0 100% / 100% 36% no-repeat,
-    var(--bg);
+    linear-gradient(to bottom, var(--floor-bg), transparent 40%),
+    repeating-linear-gradient(90deg, var(--floor-line) 0 1.5px, transparent 1.5px 64px),
+    repeating-linear-gradient(to bottom, var(--floor-line) 0 1.5px, transparent 1.5px 40px),
+    var(--floor-bg);
+  border-top: 2px solid var(--floor-line);
 }
 
-/* ---- Phosphor — greenbar printer paper / a green CRT ----------------------- */
+/* =========================================================================
+ * Phosphor — "a green-screen terminal". Greenbar paper / a green CRT.
+ * Everything in monospace, square corners, no glass. Night is a CRT: glowing
+ * text under scanlines and a vignette, a block caret, and selections drawn in
+ * inverse video. Day is continuous-feed greenbar paper with tractor-feed
+ * holes down both margins.
+ * ========================================================================= */
 [data-theme='phosphor']:not(.dark) {
   --bg: #e4ecdc;
   --surface: #eef4e8;
   --raised: #fbfdf8;
-  --canvas: #f7fbf2;
+  --canvas: #f9fcf5;
   --user-msg: #e3eed8;
   --border: #c9d8bc;
   --text: #1b301b;
@@ -491,9 +992,12 @@
   --ok: #2e7d32;
   --err: #b3261e;
   --warn: #a86b00;
-  --wash-a: rgba(46, 125, 50, 0.1);
-  --wash-b: rgba(46, 125, 50, 0.06);
-  --wash-c: rgba(168, 107, 0, 0.06);
+  --ansi-cyan: #1b7f7a;
+  --ink: #1b301b;
+  --on-ink: #f9fcf5;
+  --shade: #1b301b;
+  --accent-soft: color-mix(in srgb, #2e7d32 8%, transparent);
+  --greenbar: #e2f0d6;
 }
 [data-theme='phosphor'].dark {
   --bg: #010501;
@@ -513,14 +1017,67 @@
   --ok: #4dff7a;
   --err: #ff5555;
   --warn: #ffb000;
-  --wash-a: rgba(77, 255, 122, 0.08);
-  --wash-b: rgba(77, 255, 122, 0.05);
-  --wash-c: rgba(182, 255, 92, 0.04);
+  --ansi-cyan: #5cf2ff;
+  --ink: #4dff7a;
+  --on-ink: #010501;
+  --accent-soft: color-mix(in srgb, #4dff7a 9%, transparent);
+  --stage-shadow: 0 0 0 1px #0f3a14, 0 0 60px -20px rgba(77, 255, 122, 0.25);
+}
+[data-theme='phosphor'],
+[data-theme='phosphor'].dark {
+  --r-card: 3px;
+  --r-ctl: 2px;
+  --r-stage: 4px;
+  --r-glass: 3px;
+  --r-btn: 2px;
+  --r-bubble: 3px;
+  --canvas-glass: var(--canvas);
+  --glass-bg: var(--raised);
+  --glass-panel-bg: var(--raised);
+  --glass-blur: 0px;
+  --glass-rim: inset 0 0 0 1px var(--border);
+}
+[data-theme='phosphor'] .stage,
+[data-theme='phosphor'] .web-stage,
+[data-theme='phosphor'] .glass,
+[data-theme='phosphor'] .lg-backdrop,
+[data-theme='phosphor'] .scroll-edge-top::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+[data-theme='phosphor'] .lg::after,
+[data-theme='phosphor'] .lg.lg-live::after {
+  background: var(--raised) !important;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+[data-theme='phosphor'] .lg-clear::after {
+  background: transparent !important;
+}
+[data-theme='phosphor'].dark .tab-lit,
+[data-theme='phosphor'].dark .seg-thumb.lg-strong::after {
+  background: var(--text) !important;
+  box-shadow: 0 0 12px -2px color-mix(in srgb, var(--text) 60%, transparent);
+}
+[data-theme='phosphor'].dark .tab-lit,
+[data-theme='phosphor'].dark .tab-lit *,
+[data-theme='phosphor'].dark .seg button[aria-pressed='true'] {
+  color: var(--bg) !important;
+  text-shadow: none !important;
+}
+[data-theme='phosphor']:not(.dark) .tab-lit,
+[data-theme='phosphor']:not(.dark) .seg-thumb.lg-strong::after {
+  background: var(--greenbar) !important;
+  box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--accent);
 }
 :root[data-theme='phosphor'] body,
 :root[data-theme='phosphor'] .font-sans {
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+}
+:root[data-theme='phosphor'] textarea,
+:root[data-theme='phosphor'] input {
+  caret-color: var(--accent);
+  caret-shape: block;
 }
 /* CRT: glowing text under scanlines and a soft vignette. */
 :root[data-theme='phosphor'].dark body {
@@ -536,16 +1093,30 @@
     repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
     radial-gradient(120% 90% at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.45));
 }
-/* Greenbar: the stage is continuous-feed paper, in pale green bands. */
-:root[data-theme='phosphor']:not(.dark) .stage {
-  background: repeating-linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--canvas) 85%, transparent) 0 44px,
-    color-mix(in srgb, #cfe6c2 70%, transparent) 44px 88px
-  );
+:root[data-theme='phosphor'].dark .wash {
+  background: radial-gradient(80% 60% at 50% 50%, rgba(77, 255, 122, 0.05), transparent 80%), var(--bg);
+}
+/* Greenbar: the stage is continuous-feed paper — pale green bands, with a
+   margin of tractor-feed holes down each side. */
+:root[data-theme='phosphor']:not(.dark) :is(.stage, .web-sheet) {
+  background:
+    radial-gradient(circle, var(--bg) 3.5px, color-mix(in srgb, var(--border) 80%, transparent) 4px, transparent 4.8px) 3px 0 / 16px 24px repeat-y,
+    radial-gradient(circle, var(--bg) 3.5px, color-mix(in srgb, var(--border) 80%, transparent) 4px, transparent 4.8px) calc(100% - 3px) 0 / 16px 24px repeat-y,
+    repeating-linear-gradient(to bottom, var(--canvas) 0 48px, var(--greenbar) 48px 96px);
+}
+:root[data-theme='phosphor']:not(.dark) .wash,
+:root[data-theme='phosphor']:not(.dark) .wash-hero {
+  background: var(--bg);
+}
+:root[data-theme='phosphor'].dark .wash-hero {
+  background: radial-gradient(70% 60% at 50% 60%, rgba(77, 255, 122, 0.07), transparent 80%), var(--canvas);
 }
 
-/* ---- Brutalist — hard edges, hard shadows, no glass ------------------------ */
+/* =========================================================================
+ * Brutalist — "raw structure". Hard edges, hard shadows, no glass.
+ * Black rules, flat blocks of loud colour, offset shadows that buttons press
+ * into, bold uppercase controls and headings. Nothing is translucent.
+ * ========================================================================= */
 [data-theme='brutalist']:not(.dark) {
   --bg: #ffd93d;
   --surface: #f4f1e8;
@@ -564,13 +1135,14 @@
   --ok: #00a86b;
   --err: #e60023;
   --warn: #ff9f00;
+  --ansi-cyan: #0097a7;
 }
 [data-theme='brutalist'].dark {
   --bg: #000000;
   --surface: #161616;
   --raised: #1c1c1c;
   --canvas: #0d0d0d;
-  --user-msg: #2b2b00;
+  --user-msg: #2436ff;
   --border: #f2f2f2;
   --text: #f2f2f2;
   --muted: #c4c4c4;
@@ -583,6 +1155,7 @@
   --ok: #00e08a;
   --err: #ff3355;
   --warn: #ffb800;
+  --ansi-cyan: #00e5ff;
 }
 [data-theme='brutalist'],
 [data-theme='brutalist'].dark {
@@ -602,6 +1175,7 @@
   border-radius: 0 !important;
 }
 [data-theme='brutalist'] .stage,
+[data-theme='brutalist'] .web-stage,
 [data-theme='brutalist'] .glass,
 [data-theme='brutalist'] .lg-backdrop,
 [data-theme='brutalist'] .glass-scrim,
@@ -611,6 +1185,8 @@
 }
 [data-theme='brutalist'] .lg,
 [data-theme='brutalist'] .lg.lg-float,
+[data-theme='brutalist'].dark .lg,
+[data-theme='brutalist'].dark .lg.lg-float,
 [data-theme='brutalist'] .lg.seg-thumb {
   box-shadow: 0 0 0 2px var(--border), 3px 3px 0 var(--border);
 }
@@ -623,6 +1199,7 @@
   background: transparent !important;
 }
 [data-theme='brutalist'] .tab-lit,
+[data-theme='brutalist'].dark .tab-lit,
 [data-theme='brutalist'] .lg.seg-thumb::after {
   background: var(--accent) !important;
   color: #000000;
@@ -635,6 +1212,16 @@
 [data-theme='brutalist'] .tab-lit *,
 [data-theme='brutalist'] .seg button[aria-pressed='true'] {
   color: #000000 !important;
+}
+[data-theme='brutalist'] .bg-user-msg {
+  box-shadow: 0 0 0 2px var(--border), 4px 4px 0 var(--border);
+}
+[data-theme='brutalist'].dark .bg-user-msg {
+  color: #ffffff;
+}
+[data-theme='brutalist'] .card {
+  border-width: 2px;
+  border-color: var(--border);
 }
 [data-theme='brutalist'] .btn {
   border-width: 2px;
@@ -665,18 +1252,37 @@
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   letter-spacing: 0;
 }
+:root[data-theme='brutalist'] h1,
+:root[data-theme='brutalist'] h2,
+:root[data-theme='brutalist'] .md h1,
+:root[data-theme='brutalist'] .md h2,
+:root[data-theme='brutalist'] .md h3 {
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+:root[data-theme='brutalist'] .md code {
+  background: var(--accent-soft);
+  outline: 1px solid var(--border);
+}
 :root[data-theme='brutalist'] .wash,
 :root[data-theme='brutalist'] .wash-hero {
   background: var(--bg);
 }
 
-/* ---- Blueprint — pencil on graph paper / a cyanotype drafting grid --------- */
+/* =========================================================================
+ * Blueprint — "the drafting table". Pencil on graph paper / a cyanotype.
+ * Technical and exact: a drafting grid over the chrome (fainter on the sheet
+ * itself, so text stays legible), registration marks at the stage's corners,
+ * square corners, dashed construction lines on cards and bubbles, and
+ * uppercase monospaced lettering on labels and headings. No glass — paper.
+ * ========================================================================= */
 [data-theme='blueprint']:not(.dark) {
   --bg: #e6edf7;
   --surface: #eef3fa;
   --raised: #ffffff;
-  --canvas: #f7faff;
-  --user-msg: #e3ebf7;
+  --canvas: #f8fbff;
+  --user-msg: #e8eef8;
   --border: #c3d3ea;
   --text: #0b2e6b;
   --muted: #3f5f95;
@@ -689,16 +1295,22 @@
   --ok: #2b8a3e;
   --err: #c92a2a;
   --warn: #e67700;
-  --wash-a: rgba(28, 126, 214, 0.1);
-  --wash-b: rgba(28, 126, 214, 0.06);
-  --wash-c: rgba(217, 72, 15, 0.05);
+  --ansi-cyan: #1098ad;
+  --ink: #0b2e6b;
+  --on-ink: #f8fbff;
+  --shade: #0b2e6b;
+  --accent-soft: color-mix(in srgb, #1c7ed6 7%, transparent);
+  --grid-fine: color-mix(in srgb, #1c7ed6 10%, transparent);
+  --grid-major: color-mix(in srgb, #1c7ed6 20%, transparent);
+  --grid-sheet: color-mix(in srgb, #1c7ed6 6%, transparent);
+  --mark: color-mix(in srgb, #0b2e6b 45%, transparent);
 }
 [data-theme='blueprint'].dark {
   --bg: #082a5e;
   --surface: #12458f;
   --raised: #154c9c;
   --canvas: #0d3a7d;
-  --user-msg: #15509f;
+  --user-msg: #134a96;
   --border: #3a6fbf;
   --text: #eef5ff;
   --muted: #afc8ee;
@@ -711,22 +1323,58 @@
   --ok: #7ee2a8;
   --err: #ff8a80;
   --warn: #ffb74d;
-  --wash-a: rgba(127, 219, 255, 0.08);
-  --wash-b: rgba(255, 255, 255, 0.04);
-  --wash-c: rgba(255, 210, 74, 0.04);
-}
-/* The drafting grid: fine 12px lines with a heavier line every 60px. */
-[data-theme='blueprint'] {
-  --grid-fine: color-mix(in srgb, var(--st-running) 11%, transparent);
-  --grid-major: color-mix(in srgb, var(--st-running) 22%, transparent);
-}
-[data-theme='blueprint'].dark {
+  --ansi-cyan: #7fdbff;
+  --ink: #ffd24a;
+  --on-ink: #082a5e;
+  --shade: #020c1d;
+  --accent-soft: color-mix(in srgb, #ffffff 9%, transparent);
   --grid-fine: rgba(255, 255, 255, 0.06);
   --grid-major: rgba(255, 255, 255, 0.13);
+  --grid-sheet: rgba(255, 255, 255, 0.045);
+  --mark: rgba(255, 255, 255, 0.55);
+}
+[data-theme='blueprint'],
+[data-theme='blueprint'].dark {
+  --r-card: 3px;
+  --r-ctl: 2px;
+  --r-stage: 3px;
+  --r-glass: 3px;
+  --r-btn: 3px;
+  --r-bubble: 3px;
+  --canvas-glass: var(--canvas);
+  --glass-bg: var(--raised);
+  --glass-panel-bg: var(--raised);
+  --glass-blur: 0px;
+  --glass-rim: inset 0 0 0 1px var(--border);
+}
+[data-theme='blueprint'] .stage,
+[data-theme='blueprint'] .web-stage,
+[data-theme='blueprint'] .glass,
+[data-theme='blueprint'] .lg-backdrop,
+[data-theme='blueprint'] .scroll-edge-top::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+[data-theme='blueprint'] .lg::after,
+[data-theme='blueprint'] .lg.lg-live::after {
+  background: var(--raised) !important;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+[data-theme='blueprint'] .lg-clear::after {
+  background: transparent !important;
+}
+[data-theme='blueprint'] .tab-lit,
+[data-theme='blueprint'].dark .tab-lit,
+[data-theme='blueprint'] .seg-thumb.lg-strong::after,
+[data-theme='blueprint'].dark .seg-thumb.lg-strong::after {
+  background: var(--raised) !important;
+  box-shadow: inset 0 0 0 1px var(--border);
+  outline: 1px dashed var(--muted);
+  outline-offset: 2px;
 }
 :root[data-theme='blueprint'] .wash,
-:root[data-theme='blueprint'] .wash-hero,
-:root[data-theme='blueprint'] .stage {
+:root[data-theme='blueprint'] .wash-hero {
+  background-color: var(--bg);
   background-image:
     linear-gradient(var(--grid-major) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
@@ -734,27 +1382,54 @@
     linear-gradient(90deg, var(--grid-fine) 1px, transparent 1px);
   background-size: 60px 60px, 60px 60px, 12px 12px, 12px 12px;
 }
-:root[data-theme='blueprint'] .wash,
-:root[data-theme='blueprint'] .wash-hero {
-  background-color: var(--bg);
-}
-:root[data-theme='blueprint'] .stage {
-  background-color: var(--canvas-glass);
+/* The sheet: a faint 12px grid, and a registration mark in each corner. */
+:root[data-theme='blueprint'] :is(.stage, .web-sheet) {
+  background:
+    linear-gradient(var(--mark), var(--mark)) top 8px left 8px / 14px 1px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) top 8px left 8px / 1px 14px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) top 8px right 8px / 14px 1px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) top 8px right 8px / 1px 14px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) bottom 8px left 8px / 14px 1px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) bottom 8px left 8px / 1px 14px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) bottom 8px right 8px / 14px 1px no-repeat,
+    linear-gradient(var(--mark), var(--mark)) bottom 8px right 8px / 1px 14px no-repeat,
+    linear-gradient(var(--grid-sheet) 1px, transparent 1px) 0 0 / 12px 12px,
+    linear-gradient(90deg, var(--grid-sheet) 1px, transparent 1px) 0 0 / 12px 12px,
+    var(--canvas);
 }
 [data-theme='blueprint'] .card,
 [data-theme='blueprint'] .md pre,
 [data-theme='blueprint'] .md blockquote {
   border-style: dashed;
 }
+[data-theme='blueprint'] .bg-user-msg {
+  outline: 1px dashed var(--faint);
+  outline-offset: -1px;
+}
 :root[data-theme='blueprint'] .label,
 :root[data-theme='blueprint'] h1,
 :root[data-theme='blueprint'] h2,
-:root[data-theme='blueprint'] h3 {
+:root[data-theme='blueprint'] h3,
+:root[data-theme='blueprint'] .md h1,
+:root[data-theme='blueprint'] .md h2,
+:root[data-theme='blueprint'] .md h3 {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+:root[data-theme='blueprint'] .btn {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
 }
 
-/* ---- Bubblegum — pink, round, unreasonably cheerful ------------------------ */
+/* =========================================================================
+ * Bubblegum — "a candy shop". Pink, round and unreasonably cheerful.
+ * Squishy, toy-like controls in a rounded bold face that sit on a candy-
+ * coloured ledge and bounce when pressed, sprinkles over the chrome, and
+ * user bubbles in a strawberry-to-peach gradient. Night is grape soda.
+ * ========================================================================= */
 [data-theme='bubblegum']:not(.dark) {
   --bg: #ffe3f1;
   --surface: #ffeef7;
@@ -773,69 +1448,122 @@
   --ok: #1fbf86;
   --err: #ff4f6a;
   --warn: #ff9f1c;
+  --ansi-cyan: #20c9c9;
   --ink: #ff3fa4;
   --on-ink: #ffffff;
-  --wash-a: rgba(63, 184, 255, 0.28);
-  --wash-b: rgba(255, 63, 164, 0.3);
-  --wash-c: rgba(255, 214, 10, 0.3);
+  --shade: #ff3fa4;
+  --accent-soft: color-mix(in srgb, #ff3fa4 8%, transparent);
+  --ledge: #ffc8e3;
+  --wash-a: rgba(63, 184, 255, 0.26);
+  --wash-b: rgba(255, 63, 164, 0.28);
+  --wash-c: rgba(255, 201, 63, 0.3);
+  --bubble-fill: linear-gradient(135deg, #ffd9ec, #ffe6d9);
 }
 [data-theme='bubblegum'].dark {
-  --bg: #1c0a1a;
-  --surface: #331330;
-  --raised: #3b1737;
-  --canvas: #2a0f27;
-  --user-msg: #45193f;
-  --border: #4e2046;
-  --text: #ffe4f3;
-  --muted: #e39cc6;
-  --faint: #9c5a86;
+  --bg: #170a2b;
+  --surface: #28124a;
+  --raised: #2f1656;
+  --canvas: #200e3c;
+  --user-msg: #3d1a5c;
+  --border: #45226e;
+  --text: #fff0fa;
+  --muted: #e2a7dc;
+  --faint: #9670ad;
   --accent: #ff6ec7;
-  --st-idle: #6e3563;
+  --st-idle: #5c3a82;
   --st-running: #6fd3ff;
-  --st-attention: #ffc75f;
+  --st-attention: #ffd166;
   --st-merged: #c38cff;
   --ok: #5cf2b5;
   --err: #ff6b81;
   --warn: #ffb35c;
+  --ansi-cyan: #5ef0e6;
   --ink: #ff6ec7;
-  --on-ink: #2a0f27;
+  --on-ink: #200e3c;
+  --shade: #05010d;
+  --accent-soft: color-mix(in srgb, #ff6ec7 10%, transparent);
+  --ledge: #0e0520;
   --wash-a: rgba(111, 211, 255, 0.14);
   --wash-b: rgba(255, 110, 199, 0.2);
-  --wash-c: rgba(255, 199, 95, 0.12);
+  --wash-c: rgba(255, 209, 102, 0.12);
+  --bubble-fill: linear-gradient(135deg, #4a1b63, #3a1d5e);
 }
-:root[data-theme='bubblegum'] body,
-:root[data-theme='bubblegum'] .font-sans {
-  font-family: ui-rounded, 'SF Pro Rounded', 'Nunito', 'Inter', system-ui, sans-serif;
+[data-theme='bubblegum'] {
+  --r-card: 22px;
+  --r-ctl: 16px;
+  --r-stage: 26px;
+  --r-glass: 22px;
+  --r-bubble: 24px;
 }
-[data-theme='bubblegum'] .rounded-card,
-[data-theme='bubblegum'] .card {
-  border-radius: 22px;
-}
-[data-theme='bubblegum'] .rounded-ctl,
-[data-theme='bubblegum'] .input {
-  border-radius: 16px;
-}
-[data-theme='bubblegum'] .stage {
-  border-radius: 26px;
-}
-[data-theme='bubblegum'] .glass {
-  border-radius: 22px;
+[data-theme='bubblegum'] .bg-user-msg {
+  background: var(--bubble-fill);
 }
 [data-theme='bubblegum'] .btn {
-  transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), background 140ms ease;
+  box-shadow: 0 2px 0 var(--ledge);
+  transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), background 140ms ease, box-shadow 140ms ease;
 }
 [data-theme='bubblegum'] .btn:where(:hover:not(:disabled)) {
-  transform: scale(1.05);
+  transform: translateY(-1px) scale(1.04);
 }
 [data-theme='bubblegum'] .btn:active:not(:disabled) {
-  transform: scale(0.9);
+  transform: translateY(2px) scale(0.94);
+  box-shadow: 0 0 0 var(--ledge);
 }
 [data-theme='bubblegum'] .btn-accent {
-  box-shadow: 0 4px 0 color-mix(in srgb, var(--accent) 55%, #000), 0 8px 18px -6px var(--accent);
+  box-shadow: 0 3px 0 color-mix(in srgb, var(--accent) 60%, #000), 0 8px 18px -6px var(--accent);
 }
+[data-theme='bubblegum'] .btn-ghost {
+  box-shadow: none;
+}
+[data-theme='bubblegum'] .tab-lit {
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 35%, transparent), 0 3px 0 var(--ledge);
+}
+[data-theme='bubblegum'].dark .tab-lit {
+  background: color-mix(in srgb, #ff6ec7 18%, var(--raised));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent), 0 3px 0 var(--ledge);
+}
+:root[data-theme='bubblegum'] h1,
+:root[data-theme='bubblegum'] h2,
+:root[data-theme='bubblegum'] h3,
+:root[data-theme='bubblegum'] .md h1,
+:root[data-theme='bubblegum'] .md h2,
+:root[data-theme='bubblegum'] .md h3,
+:root[data-theme='bubblegum'] .btn,
+:root[data-theme='bubblegum'] .label {
+  font-family: 'Arial Rounded MT Bold', 'SF Pro Rounded', ui-rounded, 'Nunito', 'Varela Round', Inter, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+/* Sprinkles: offset lattices of tiny candy dots, settled toward the bottom of
+   the jar — a veil keeps them out from behind the workspace list. */
+:root[data-theme='bubblegum'] .wash {
+  background:
+    radial-gradient(45% 40% at 10% 0%, rgba(255, 63, 164, 0.18), transparent 70%),
+    radial-gradient(45% 40% at 100% 100%, rgba(63, 184, 255, 0.16), transparent 70%),
+    linear-gradient(to bottom, var(--bg) 0 45%, transparent 85%),
+    radial-gradient(circle, #ff3fa4 1.6px, transparent 2.2px) 0 0 / 46px 52px,
+    radial-gradient(circle, #3fb8ff 1.6px, transparent 2.2px) 17px 23px / 58px 44px,
+    radial-gradient(circle, #ffc93f 1.6px, transparent 2.2px) 31px 9px / 50px 62px,
+    radial-gradient(circle, #1fbf86 1.4px, transparent 2px) 8px 37px / 64px 56px,
+    var(--bg);
+}
+:root[data-theme='bubblegum'].dark .wash {
+  background:
+    radial-gradient(45% 40% at 10% 0%, rgba(255, 110, 199, 0.16), transparent 70%),
+    radial-gradient(45% 40% at 100% 100%, rgba(111, 211, 255, 0.12), transparent 70%),
+    linear-gradient(to bottom, var(--bg) 0 45%, transparent 85%),
+    radial-gradient(circle, rgba(255, 110, 199, 0.7) 1.6px, transparent 2.2px) 0 0 / 46px 52px,
+    radial-gradient(circle, rgba(111, 211, 255, 0.6) 1.6px, transparent 2.2px) 17px 23px / 58px 44px,
+    radial-gradient(circle, rgba(255, 209, 102, 0.6) 1.6px, transparent 2.2px) 31px 9px / 50px 62px,
+    radial-gradient(circle, rgba(92, 242, 181, 0.55) 1.4px, transparent 2px) 8px 37px / 64px 56px,
+    var(--bg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-theme='bubblegum'] .btn,
-  [data-theme='brutalist'] .btn {
+  [data-theme='brutalist'] .btn,
+  [data-theme='gruvbox'] .btn {
     transform: none !important;
   }
 }

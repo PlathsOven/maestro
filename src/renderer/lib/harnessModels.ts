@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { HARNESS_MODELS, type HarnessId, type ModelOption } from '../../shared/types';
+import { HARNESS_MODELS } from '../../shared/types';
 import { invoke, on } from './api';
 
 // The pure model helpers moved to the shared UI package (web-desktop-parity spec
@@ -60,6 +60,3 @@ function snapshot(): EffectiveModels | null {
 export function useHarnessModels(): EffectiveModels {
   return useSyncExternalStore(subscribe, snapshot, snapshot) ?? HARNESS_MODELS;
 }
-
-// Re-export the model option type for callers that imported it from here.
-export type { HarnessId, ModelOption };

@@ -34,7 +34,7 @@ export function formatElapsed(ms: number): string {
  * update smoothly. Pairs with a separate loading animation to show how long the
  * current work has been running.
  */
-export function ElapsedTime({ startedAt, className }: { startedAt: number; className?: string }) {
+function ElapsedTime({ startedAt, className }: { startedAt: number; className?: string }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 100);
@@ -52,7 +52,7 @@ export function ElapsedTime({ startedAt, className }: { startedAt: number; class
  * blocks foldBlocks leaves on screen (see answerStart), so what lands on the
  * clipboard is what you were reading, without the folded tool calls and narration.
  */
-export function CopyResponse({ blocks }: { blocks: AgentBlock[] }) {
+function CopyResponse({ blocks }: { blocks: AgentBlock[] }) {
   const host = useUiHost();
   const [copied, setCopied] = useState(false);
   const text = useMemo(
@@ -213,7 +213,7 @@ export function UserMessageView({ message, onResend }: { message: ChatMessage; o
     // sits right-aligned; its meta line (time, origin, hover actions) trails it.
     <div className="fade-in group flex flex-col items-end" data-user-msg={message.id}>
       {editing ? (
-        <div className="w-full rounded-[20px] bg-user-msg px-4 py-3 ring-1 ring-inset ring-accent/40">
+        <div className="w-full rounded-[var(--r-bubble,20px)] bg-user-msg px-4 py-3 ring-1 ring-inset ring-accent/40">
           <textarea
             ref={taRef}
             className="w-full resize-none bg-transparent text-body leading-relaxed outline-none"
@@ -241,7 +241,7 @@ export function UserMessageView({ message, onResend }: { message: ChatMessage; o
           </div>
         </div>
       ) : (
-        <div className="min-w-0 max-w-[85%] rounded-[20px] bg-user-msg px-4 py-2.5">
+        <div className="min-w-0 max-w-[85%] rounded-[var(--r-bubble,20px)] bg-user-msg px-4 py-2.5">
           <Markdown text={message.content} />
           {message.attachments.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -395,7 +395,7 @@ export function LiveTurnView({
 }
 
 /** Dispatch one message to its view by role. */
-export function MessageView({
+function MessageView({
   message,
   onResend,
   onReport,

@@ -1,7 +1,7 @@
 import { WebContentsView, session as electronSessions } from 'electron';
 import type { Session } from 'electron';
 import { broadcast, getWindow } from '../bus';
-import { Projects, Workspaces } from '../db';
+import { Workspaces } from '../db';
 import { hostForWorkspace } from '../hosts';
 import { capture } from './analytics';
 import { toDip } from './zoom';
@@ -311,7 +311,7 @@ function wireNavEvents(s: PreviewSession) {
 
 function createSession(ws: Workspace, byAgent: boolean): PreviewSession {
   const partition = `persist:preview:${ws.projectId}`;
-  const sess = configureSession(partition);
+  configureSession(partition);
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -805,11 +805,7 @@ interface PreviewCliResult {
  *  the agent's own commands never race each other, and animates the "Agent is
  *  testing" chip. `goto`/`status`/… auto-create the view (agent can test before
  *  the user ever opens the surface — the toggle gets the activity dot). */
-export function runPreviewCommand(
-  workspaceId: string,
-  agentId: number,
-  argv: string[]
-): Promise<PreviewCliResult> {
+export function runPreviewCommand(workspaceId: string, argv: string[]): Promise<PreviewCliResult> {
   const ws = Workspaces.get(workspaceId);
   if (!ws) return Promise.resolve({ ok: false, text: 'preview: unknown workspace' });
   // A view released by the idle TTL comes back on the page it was parked on, so
@@ -817,7 +813,7 @@ export function runPreviewCommand(
   // is a no-op while a session is live: parking is the only thing that sets a
   // parked URL, and creating a session clears it.)
   const s = revive(workspaceId, true) ?? ensureSession(ws, true);
-  const run = s.queue.then(() => execCommand(s, ws, agentId, argv));
+  const run = s.queue.then(() => execCommand(s, ws, argv));
   // keep the chain alive even if one command throws
   s.queue = run.then(
     () => undefined,
@@ -840,7 +836,6 @@ function markAgentActive(s: PreviewSession) {
 async function execCommand(
   s: PreviewSession,
   ws: Workspace,
-  agentId: number,
   argv: string[]
 ): Promise<PreviewCliResult> {
   s.lastUsed = Date.now();

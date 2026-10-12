@@ -20,17 +20,8 @@ import {
  * seam and never touches IPC. The desktop passes the live model map (Codex's
  * catalog, resolved over IPC); the web passes the static HARNESS_MODELS.
  */
-export {
-  CONTEXT_WINDOW,
-  CONTEXT_WINDOWS,
-  HARNESS_DISPLAY,
-  HARNESS_MODELS,
-  HARNESS_PLAN_MODE,
-  effortLevelsForModel,
-  resolveDefaultModel,
-  resolveDefaultEffort,
-};
-export type { EffortLevel, HarnessId, ModelOption };
+export { HARNESS_DISPLAY, HARNESS_MODELS, HARNESS_PLAN_MODE, resolveDefaultModel, resolveDefaultEffort };
+export type { HarnessId, ModelOption };
 
 /** The effective per-harness model map for pickers — either the live map the
  *  desktop resolves at runtime, or the static HARNESS_MODELS on the web. */
@@ -55,9 +46,4 @@ export function contextWindowForModel(model: string | undefined, models: Effecti
     if (CONTEXT_WINDOWS[model]) return CONTEXT_WINDOWS[model];
   }
   return CONTEXT_WINDOW;
-}
-
-/** Display label for a harness id (e.g. "Claude Code"). */
-export function harnessLabel(harness: HarnessId): string {
-  return HARNESS_DISPLAY[harness] ?? harness;
 }

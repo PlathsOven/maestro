@@ -1,9 +1,8 @@
-import { Notification } from 'electron';
-import { broadcast, getWindow } from '../../bus';
+import { broadcast } from '../../bus';
 import { hostForWorkspace, isCloudWorkspace } from '../../hosts';
 import type { HostChild } from '../../hosts/types';
 import { checkpoint } from '../shadow';
-import { appIconPath } from '../../icon';
+import { notify } from '../../notify';
 import { Messages, Projects, Settings, Subagents, Workspaces, now, uid } from '../../db';
 import { currentBranch } from '../git';
 import { scriptEnv } from '../scripts';
@@ -25,9 +24,9 @@ import type {
   Workspace,
 } from '../../../shared/types';
 import { wireAdapterStream, type BuildOpts, type HarnessAdapter } from './adapter';
-import { applyBlockEvent, finalizeBlocks, newBlockStream, type BlockStream } from './stream';
+import { applyBlockEvent, finalizeBlocks, newBlockStream, snapshotBlocks, summarizeBlocks, type BlockStream } from '../../../shared/harness/blocks';
 import { applyTaskEvent, reapBackgroundTasks } from './tasks';
-import { setMemGuardReporter, trackTurnProcess } from '../memguard';
+import { setMemGuardReporter, trackTurnProcess, type GuardKill } from '../memguard';
 import { describeProc, formatGb } from '../memguard/policy';
 import { claudeAdapter } from './claude';
 import { codexAdapter } from './codex';
@@ -108,7 +107,6 @@ export function getSubUsage(harness: HarnessId, loginId: string = DEFAULT_LOGIN_
 
 interface RunHandle {
   child: HostChild;
-  adapter: HarnessAdapter;
   workspaceId: string;
   agentId: number;
   // Stable id for this turn, assigned at start and reused as the finalized
@@ -149,6 +147,13 @@ const runKey = (wsId: string, agentId: number) => `${wsId}:${agentId}`;
 let runFinishedHook: ((workspaceId: string, agentId: number) => void) | null = null;
 export function setRunFinishedHook(fn: (workspaceId: string, agentId: number) => void) {
   runFinishedHook = fn;
+}
+
+// Injected by the chat service: the agent just ran gh pr create/merge/close
+// mid-turn — sync the PR now, not only at turn end (a long turn left it hidden).
+let prCommandHook: ((workspaceId: string) => void) | null = null;
+export function setPrCommandHook(fn: (workspaceId: string) => void) {
+  prCommandHook = fn;
 }
 
 // Additional turn-end observers (harness chat sync fast-forwards its cursor past
@@ -216,21 +221,6 @@ function setWorkspaceStatus(ws: Workspace, status: Workspace['status']) {
   fresh.status = status;
   Workspaces.update(fresh);
   broadcast('ws:updated', fresh);
-}
-
-/** First meaningful line of the turn's final text, markdown-stripped. */
-function summarizeBlocks(blocks: AgentBlock[]): string | null {
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const b = blocks[i];
-    if (b.type === 'text' && b.text.trim()) {
-      const line = b.text
-        .split('\n')
-        .map((l) => l.replace(/^[#>*\-\s`]+/, '').replace(/[*`_]/g, '').trim())
-        .find((l) => l.length > 0);
-      if (line) return line.slice(0, 100);
-    }
-  }
-  return null;
 }
 
 /** Fold a resolved `maestro-ask` prompt into its turn as a persisted `ask`
@@ -316,7 +306,15 @@ function applyEvent(h: RunHandle, ev: AgentEvent): boolean {
     applyTaskEvent(h.workspaceId, h.agentId, ev.task, h.doneHandled);
     return false;
   }
-  return applyBlockEvent(h.stream, ev);
+  const changed = applyBlockEvent(h.stream, ev);
+  if (ev.kind === 'tool-result' && ev.ok) {
+    const tool = snapshotBlocks(h.stream).find((b) => b.type === 'tool' && b.id === ev.toolId);
+    // Serialized input: Claude sends `{command}`, Codex may send argv arrays.
+    if (tool?.type === 'tool' && /\bgh(\s+|",\s*")pr(\s+|",\s*")(create|merge|close|reopen|ready)\b/.test(JSON.stringify(tool.input ?? ''))) {
+      prCommandHook?.(h.workspaceId);
+    }
+  }
+  return changed;
 }
 
 /** Drop a system line into a chat — how an automatic send (a queued message, a
@@ -364,7 +362,7 @@ setMemGuardReporter((kill) => {
  * and users read that as Maestro crashing. Whatever stderr left behind (a Bun
  * panic report, an API error) follows, so nothing visible before is lost.
  */
-export function crashError(code: number | null, stderrTail: string, cmdName: string): string {
+function crashError(code: number | null, stderrTail: string, cmdName: string): string {
   const tail = stderrTail.trim();
   const status = code == null ? -1 : code >>> 0; // NTSTATUS codes arrive signed or unsigned
   const what =
@@ -379,12 +377,37 @@ export function crashError(code: number | null, stderrTail: string, cmdName: str
   return `${what} Its output so far was kept — send again to continue; if this recurs, update the CLI.${tail ? `\n${tail}` : ''}`;
 }
 
+/** The error for a turn whose process closed without the adapter emitting
+ *  `done`: none for a user stop, the memory guard's reason when it killed the
+ *  CLI, else the crash description for a non-zero exit. */
+function closeError(
+  stopped: boolean,
+  guardKill: GuardKill | null,
+  code: number | null,
+  stderrTail: string,
+  cmdName: string
+): string | undefined {
+  return stopped
+    ? undefined
+    : guardKill
+      ? `Maestro stopped \`${cmdName}\`: it had grown to ${formatGb(guardKill.victim.mem)} with only ` +
+        `${formatGb(guardKill.state.free)} of ${formatGb(guardKill.state.limit)} left on this machine. ` +
+        `Its output so far was kept — send again to continue.`
+      : code !== 0
+        ? crashError(code, stderrTail, cmdName)
+        : undefined;
+}
+
 /** A usage window's human label for the rotation message. */
 function windowLabel(window?: string): string {
   return window === 'five_hour' ? '5-hour' : window === 'seven_day' ? 'weekly' : 'usage';
 }
 
-async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }>) {
+type DoneEvent = Extract<AgentEvent, { kind: 'done' }>;
+
+/** A turn ended: persist it, rotate on a usage limit, report a bare failure,
+ *  update the chat/workspace bookkeeping, then notify — in that order. */
+async function finalize(h: RunHandle, done: DoneEvent) {
   if (h.doneHandled) return;
   h.doneHandled = true;
   runs.delete(runKey(h.workspaceId, h.agentId));
@@ -407,9 +430,40 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
   const ws = Workspaces.get(h.workspaceId);
   if (!ws) return;
 
+  persistTurnMessage(h, done, blocks);
+
+  const { retried, limitNote } = rotateOnLimit(h, done, ws);
+  if (retried) {
+    h.onFinalized?.();
+    return;
+  }
+
+  if (done.error && blocks.length === 0) postTurnError(h, done, ws, limitNote);
+
+  markChatEnded(h, done, blocks);
+
+  // The agent may have renamed the branch (we ask it to on the first turn).
+  // Awaited here, not in a helper, so the turn end keeps exactly one suspension.
+  try {
+    const branch = await currentBranch(ws.worktreePath, hostForWorkspace(ws));
+    if (branch && branch !== 'HEAD' && branch !== ws.branch) {
+      ws.branch = branch;
+      Workspaces.update(ws);
+    }
+  } catch {}
+
+  updateWorkspaceAfterTurn(h, done, ws, blocks);
+
+  notifyTurnEnd(h, done, ws);
+  h.onFinalized?.();
+}
+
+/** Write the turn's agent message (when it produced output) and tell Maestro Web
+ *  the turn ended. */
+function persistTurnMessage(h: RunHandle, done: DoneEvent, blocks: AgentBlock[]): void {
   // Stop streaming: the terminal publish below is authoritative, and a trailing
   // "running" publish would otherwise re-strand the web on "Thinking…". (doneHandled
-  // is already set above, so a fired-but-pending timer no-ops too.)
+  // is already set by finalize, so a fired-but-pending timer no-ops too.)
   clearTimeout(h.liveTimer);
   h.liveTimer = undefined;
 
@@ -455,12 +509,17 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
     startedAt: h.startedAt,
     endedAt: Date.now(),
   });
+}
 
-  // A local turn that died on a usage limit: mark that login, move to one with
-  // headroom, and run the same turn again under it. The retried run owns the
-  // rest of this turn's bookkeeping (attention, subtitle, notification, queue),
-  // so on a successful re-spawn we return early. `limitNote` (set when there's
-  // no candidate) is appended to the error system message below.
+/**
+ * A local turn that died on a usage limit: mark that login, move to one with
+ * headroom, and run the same turn again under it. The retried run owns the
+ * rest of this turn's bookkeeping (attention, subtitle, notification, queue),
+ * so on a successful re-spawn `retried` is set and finalize returns early.
+ * `limitNote` (set when there's no candidate) is appended to the error system
+ * message.
+ */
+function rotateOnLimit(h: RunHandle, done: DoneEvent, ws: Workspace): { retried: boolean; limitNote: string } {
   let limitNote = '';
   const localTurn = !Projects.get(ws.projectId)?.hostId && !isCloudWorkspace(ws);
   if (done.error && !done.ok && !h.stopped && h.send && localTurn) {
@@ -483,10 +542,7 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
           h.agentId,
           `Switched to **${label(r.to)}** — **${label(r.from)}** hit its ${win} limit${resetText}. Re-sending your message.`
         );
-        if (startAgent(h.send).ok) {
-          h.onFinalized?.();
-          return;
-        }
+        if (startAgent(h.send).ok) return { retried: true, limitNote };
       } else if (logins.length > 1) {
         const from = label(logins.find((l) => l.id === h.loginId) ?? logins[0]);
         limitNote =
@@ -496,44 +552,39 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
       }
     }
   }
+  return { retried: false, limitNote };
+}
 
-  if (done.error && blocks.length === 0) {
-    let content = `Agent error: ${done.error}`;
-    // A remote agent that fails auth (e.g. codex "unexpected status 401
-    // Unauthorized") needs a sign-in on the SERVER, not this Mac — point straight
-    // at the headless login instead of leaving a bare 401.
-    const proj = Projects.get(ws.projectId);
-    const login = HARNESS_LOGIN[ws.harness];
-    const authish = looksLikeAuthError(`${done.error} ${h.stderrTail}`);
-    if (proj?.hostId && login && authish) {
-      content += `\n\nThis looks like a sign-in problem on ${proj.name}. Run \`${login}\` in the terminal (or click “sign in” in the model picker), then send again.`;
-    }
-    // A local run that died on the CLI's own credentials is a dead end inside the
-    // chat — the user can't sign in from in there, and every other workspace is
-    // about to fail the same way. Name what's wrong when we can see it, and mark
-    // the message so it renders with the one-click repair.
-    const local = !proj?.hostId && !isCloudWorkspace(ws) && authish;
-    const fault = local ? harnessAuthFault(ws.harness) : null;
-    if (fault) content += `\n\n${fault.summary}`;
-    // A limit with no rotation candidate (all logins limited, or rotation off).
-    if (limitNote) content += `\n\n${limitNote}`;
-    const offerFix = local && harnessHasLogin(ws.harness);
-    const msg = {
-      id: uid(),
-      workspaceId: h.workspaceId,
-      agentId: h.agentId,
-      role: 'system' as const,
-      content,
-      attachments: [],
-      ts: now(),
-      // Carry the login this turn actually ran under so the fix signs THAT one
-      // back in — not whichever login later happens to be active.
-      ...(offerFix ? { meta: { fix: { kind: 'harness-auth' as const, harness: ws.harness, loginId: h.loginId } } } : {}),
-    };
-    Messages.insert(msg);
-    broadcast('chat:message', msg);
+/** The turn failed with no output: post the error as a system message, with a
+ *  sign-in hint, the one-click auth repair, and any `limitNote` attached. */
+function postTurnError(h: RunHandle, done: DoneEvent, ws: Workspace, limitNote: string): void {
+  let content = `Agent error: ${done.error}`;
+  // A remote agent that fails auth (e.g. codex "unexpected status 401
+  // Unauthorized") needs a sign-in on the SERVER, not this Mac — point straight
+  // at the headless login instead of leaving a bare 401.
+  const proj = Projects.get(ws.projectId);
+  const login = HARNESS_LOGIN[ws.harness];
+  const authish = looksLikeAuthError(`${done.error} ${h.stderrTail}`);
+  if (proj?.hostId && login && authish) {
+    content += `\n\nThis looks like a sign-in problem on ${proj.name}. Run \`${login}\` in the terminal (or click “sign in” in the model picker), then send again.`;
   }
+  // A local run that died on the CLI's own credentials is a dead end inside the
+  // chat — the user can't sign in from in there, and every other workspace is
+  // about to fail the same way. Name what's wrong when we can see it, and mark
+  // the message so it renders with the one-click repair.
+  const local = !proj?.hostId && !isCloudWorkspace(ws) && authish;
+  const fault = local ? harnessAuthFault(ws.harness) : null;
+  if (fault) content += `\n\n${fault.summary}`;
+  // A limit with no rotation candidate (all logins limited, or rotation off).
+  if (limitNote) content += `\n\n${limitNote}`;
+  const offerFix = local && harnessHasLogin(ws.harness);
+  // Carry the login this turn actually ran under so the fix signs THAT one
+  // back in — not whichever login later happens to be active.
+  postSystem(h.workspaceId, h.agentId, content, offerFix ? { fix: { kind: 'harness-auth', harness: ws.harness, loginId: h.loginId } } : undefined);
+}
 
+/** The chat's attention/unread state at turn end. */
+function markChatEnded(h: RunHandle, done: DoneEvent, blocks: AgentBlock[]): void {
   // Session status bookkeeping: a run that ended badly leaves the chat waiting
   // on the user ("attention", cleared by their next send); a clean finish marks
   // fresh unread output. Stopping a run is a user action — neither applies.
@@ -541,16 +592,11 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
     attention: !h.stopped && (!done.ok || !!done.needsAttention),
     ...(blocks.length > 0 || done.error ? { lastAgentAt: now() } : {}),
   });
+}
 
-  // The agent may have renamed the branch (we ask it to on the first turn).
-  try {
-    const branch = await currentBranch(ws.worktreePath, hostForWorkspace(ws));
-    if (branch && branch !== 'HEAD' && branch !== ws.branch) {
-      ws.branch = branch;
-      Workspaces.update(ws);
-    }
-  } catch {}
-
+/** Workspace bookkeeping at turn end: sidebar subtitle, folder checkpoint,
+ *  workspace status. */
+function updateWorkspaceAfterTurn(h: RunHandle, done: DoneEvent, ws: Workspace, blocks: AgentBlock[]): void {
   // Sidebar subtitle: the last thing that happened in this workspace.
   const subtitle = h.stopped
     ? 'Stopped'
@@ -580,24 +626,25 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
   } else {
     broadcast('ws:updated', Workspaces.get(h.workspaceId)!);
   }
+}
 
+/** Tell the user (a notification, or the away digest) and the run-finished
+ *  listeners that the turn ended. */
+function notifyTurnEnd(h: RunHandle, done: DoneEvent, ws: Workspace): void {
   const attentionEnd = !done.ok || !!done.needsAttention;
   if (h.quiet) {
     // A journal turn replayed during catch-up (§6.5): no per-turn notification —
     // the caller posts a single "while you were away" digest instead.
     if (!h.stopped) awayDigestHook?.({ attention: attentionEnd });
-  } else {
-    const win = getWindow();
-    const settings = Settings.global();
-    if (settings.notifications && win && !win.isFocused() && !h.stopped && Notification.isSupported()) {
-      new Notification({
-        // Name the task by its work summary (like every other surface), not the
-        // placeholder directory name — so the user can tell which task finished.
-        title: `${ws.title ?? ws.name} · ${adapters[ws.harness].displayName}`,
-        body: attentionEnd ? 'Agent needs attention' : 'Agent finished',
-        icon: appIconPath(),
-      }).show();
-    }
+  } else if (!h.stopped) {
+    notify({
+      // Name the task by its work summary (like every other surface), not the
+      // placeholder directory name — so the user can tell which task finished.
+      title: `${ws.title ?? ws.name} · ${adapters[ws.harness].displayName}`,
+      body: attentionEnd ? 'Agent needs attention' : 'Agent finished',
+      workspaceId: h.workspaceId,
+      agentId: h.agentId,
+    });
   }
 
   runFinishedHook?.(h.workspaceId, h.agentId);
@@ -606,7 +653,6 @@ async function finalize(h: RunHandle, done: Extract<AgentEvent, { kind: 'done' }
       fn(h.workspaceId, h.agentId);
     } catch {}
   }
-  h.onFinalized?.();
 }
 
 export interface SendOpts {
@@ -616,6 +662,9 @@ export interface SendOpts {
   systemPrompt: string | null;
   /** Extra env for the child (e.g. the orchestrator's role-delegation handshake). */
   env?: Record<string, string>;
+  /** Run the turn under this id instead of a fresh one — a web send's relay-minted
+   *  turnId, so the relay can un-queue that message the moment its turn opens. */
+  turnId?: string;
 }
 
 export interface ResolvedTurn {
@@ -682,6 +731,7 @@ export function resolveTurn(
     systemPrompt,
     model,
     effort,
+    apiKeyMode: !!settings.harnessApiKeys?.[ws.harness]?.trim(),
   };
   // env depends only on model/effort — a probe build yields it prompt-independently.
   const probeEnv = adapter.build({ ...base, prompt: '', sessionId: null }).env ?? {};
@@ -732,15 +782,16 @@ export function startAgent(opts: SendOpts): { ok: boolean; error?: string } {
   const host = hostForWorkspace(ws);
   const child = host.spawnStream(cmd.cmd, cmd.args, { cwd: ws.worktreePath, env: spawnEnv });
 
-  const turnId = uid();
+  const turnId = opts.turnId ?? uid();
   beginTurn(ws, agentId, adapter, child, {
     turnId,
     stdin: cmd.stdin,
     cmdName: cmd.cmd,
     sessionHint: cmd.sessionHint,
     // Snapshot the original send + the login it ran under, so finalize can
-    // rotate to another login and re-run this exact turn on a usage limit.
-    send: opts,
+    // rotate to another login and re-run this exact turn on a usage limit. The
+    // re-run is a new turn (this one is already finalized), so it gets a new id.
+    send: { ...opts, turnId: undefined },
     loginId,
   });
   // Opens the turn on the relay (the row + `turn-started`); its blocks follow as
@@ -787,7 +838,6 @@ export function beginTurn(
 ): void {
   const handle: RunHandle = {
     child,
-    adapter,
     workspaceId: ws.id,
     agentId,
     turnId: opts.turnId,
@@ -852,15 +902,7 @@ export function beginTurn(
       emit({
         kind: 'done',
         ok: handle.stopped || code === 0,
-        error: handle.stopped
-          ? undefined
-          : guardKill
-            ? `Maestro stopped \`${opts.cmdName}\`: it had grown to ${formatGb(guardKill.victim.mem)} with only ` +
-              `${formatGb(guardKill.state.free)} of ${formatGb(guardKill.state.limit)} left on this machine. ` +
-              `Its output so far was kept — send again to continue.`
-            : code !== 0
-              ? crashError(code, handle.stderrTail, opts.cmdName)
-              : undefined,
+        error: closeError(handle.stopped, guardKill, code, handle.stderrTail, opts.cmdName),
       });
     }
   });

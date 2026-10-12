@@ -51,6 +51,7 @@ const recordFps = parseInt(process.argv.find((a) => a.startsWith('--record-fps='
 //   click:<x>.<y>     glide there, pulse, then deliver a real mouse click
 //   type:<base64>     type UTF-8 text into the focused element, char by char
 //   key:<Enter|…>     press one key (keyDown/keyUp, so React handlers fire)
+//   js:<base64>       run a UTF-8 snippet in the renderer (e.g. swap data-theme)
 // slice, don't split('=') — base64 `type:` payloads can end in '=' padding
 const demoScript = (process.argv.find((a) => a.startsWith('--demo-script='))?.slice('--demo-script='.length) ?? '')
   .split(',')
@@ -183,6 +184,8 @@ async function runDemoStep(win: BrowserWindow, step: { verb: string; payload: st
     wc.focus();
     wc.sendInputEvent({ type: 'keyDown', keyCode: step.payload });
     wc.sendInputEvent({ type: 'keyUp', keyCode: step.payload });
+  } else if (step.verb === 'js') {
+    await wc.executeJavaScript(Buffer.from(step.payload, 'base64').toString('utf8')).catch(() => {});
   }
 }
 
@@ -576,7 +579,7 @@ if (!gotLock && !isSmoke) {
           Workspaces.update(ws);
         }
       }
-      registerIpc(() => mainWindow);
+      registerIpc();
       setMenuRebuildHook(buildMenu); // §9: settings:set rebuilds the menu on a shortcut change
       buildMenu();
       createWindow();

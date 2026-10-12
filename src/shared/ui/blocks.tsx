@@ -18,9 +18,11 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { AgentBlock, Attachment } from '../types';
+import { unwrapShellCommand } from '../harness/parse';
 import { Markdown } from './Markdown';
 import { EditDiff, buildEditDiff, parseEditTool } from './EditDiff';
 import { Chevron, Spinner } from './primitives';
+import { useUiHost } from './host';
 
 /**
  * The agent-turn block renderer, moved to the shared UI package (web-desktop-parity
@@ -32,7 +34,7 @@ import { Chevron, Spinner } from './primitives';
 // Memoised on the block's identity: a live turn re-renders its list per token,
 // and a settled block (the store keeps its object stable) must neither re-render
 // nor — worse — have its DOM rebuilt under the user's text selection.
-export const BlockView = memo(function BlockView({ b, running }: { b: AgentBlock; running?: boolean }) {
+const BlockView = memo(function BlockView({ b, running }: { b: AgentBlock; running?: boolean }) {
   if (b.type === 'text') return <Markdown text={b.text} className="px-1" />;
   if (b.type === 'thinking') return <ThinkingBlock text={b.text} />;
   if (b.type === 'ask') return <AskBlock block={b} />;
@@ -103,7 +105,7 @@ export function answerStart(blocks: AgentBlock[]): number {
  * reads as its conclusion, with one click to expand the full trace. Ask blocks
  * stay inline: a question the user answered is part of the record.
  */
-export function foldBlocks(blocks: AgentBlock[]): (AgentBlock | AgentBlock[])[] {
+function foldBlocks(blocks: AgentBlock[]): (AgentBlock | AgentBlock[])[] {
   const answer = answerStart(blocks);
   const out: (AgentBlock | AgentBlock[])[] = [];
   let run: AgentBlock[] = [];
@@ -131,7 +133,7 @@ type ToolCall = Extract<AgentBlock, { type: 'tool' }>;
  * turn reads as "Read ×5" instead of five identical rows. Text and thinking
  * blocks break a run and stay inline; a lone tool call stays a normal row.
  */
-export function groupConsecutiveTools(blocks: AgentBlock[]): (AgentBlock | ToolCall[])[] {
+function groupConsecutiveTools(blocks: AgentBlock[]): (AgentBlock | ToolCall[])[] {
   const rows: (AgentBlock | ToolCall[])[] = [];
   for (const b of blocks) {
     const last = rows[rows.length - 1];
@@ -178,7 +180,7 @@ export function BlockList({ blocks, streaming, folded }: { blocks: AgentBlock[];
   );
 }
 
-export const TOOL_ICONS: [RegExp, LucideIcon][] = [
+const TOOL_ICONS: [RegExp, LucideIcon][] = [
   [/bash|shell|terminal/i, TerminalIcon],
   [/read|write|edit|notebook/i, FileText],
   [/grep|glob|search|^ls$/i, Search],
@@ -256,12 +258,20 @@ function ThinkingBlock({ text }: { text: string }) {
   );
 }
 
-export function toolSummary(input: unknown): string {
+function toolSummary(input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   const s = (v: unknown) => (typeof v === 'string' ? v : '');
   return (
-    s(i.file_path) || s(i.path) || s(i.command) || s(i.pattern) || s(i.query) || s(i.url) || s(i.description) || ''
+    s(i.file_path) || s(i.path) || unwrapShellCommand(s(i.command)) || s(i.pattern) || s(i.query) || s(i.url) || s(i.description) || ''
   );
+}
+
+/** The single file a tool call targets (Read/Write/NotebookEdit…), if any. `path`
+ *  is left out: search tools use it for a directory. */
+function toolFile(input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const s = (v: unknown) => (typeof v === 'string' ? v : '');
+  return s(i.file_path) || s(i.notebook_path) || s(i.filePath);
 }
 
 const ToolBlock = memo(function ToolBlock({ block, running }: { block: ToolCall; running?: boolean }) {
@@ -272,6 +282,10 @@ const ToolBlock = memo(function ToolBlock({ block, running }: { block: ToolCall;
   // the diff/output. (The header already shows the file and its +/− counts.)
   const [open, setOpen] = useState(false);
   const summary = edit ? edit.file.split('/').pop() || edit.file : toolSummary(block.input);
+  // The file a Read/Edit/Write touched opens in the editor from its name (where
+  // the host can open files — the desktop resolves absolute paths itself).
+  const host = useUiHost();
+  const file = edit?.file || toolFile(block.input);
   const failed = block.result && !block.result.ok;
   const Icon = edit
     ? FileText
@@ -286,7 +300,22 @@ const ToolBlock = memo(function ToolBlock({ block, running }: { block: ToolCall;
       >
         <Icon size={12} className="shrink-0 text-faint" />
         <span className={clsx('shrink-0 font-medium', failed ? 'text-err' : 'text-muted')}>{block.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-faint">{summary}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-faint">
+          {host.openFile && file ? (
+            <span
+              className="cursor-pointer underline-offset-2 hover:text-accent hover:underline"
+              title={`Open ${file} in the editor`}
+              onClick={(e) => {
+                e.stopPropagation();
+                host.openFile!(file);
+              }}
+            >
+              {summary}
+            </span>
+          ) : (
+            summary
+          )}
+        </span>
         {diff && (diff.adds > 0 || diff.dels > 0) && (
           <span className="shrink-0 font-mono text-2xs">
             {diff.adds > 0 && <span className="text-ok">+{diff.adds}</span>}

@@ -3,8 +3,6 @@ import type { ExecHost } from '../../hosts/types';
 import { NVM_PATH_SNIPPET } from '../../hosts/ssh';
 import { Settings } from '../../db';
 
-export type { RemoteHarnessStatus };
-
 /**
  * Remote harness detection (spec §6.6). When a project lives on an SSH host, the
  * agent CLI runs *there* — so what matters is whether e.g. `claude` is installed
@@ -83,7 +81,7 @@ const HARNESS_AUTH_CHECK: Record<HarnessId, string> = {
   cursor: '[ -n "$CURSOR_API_KEY" ]',
   opencode: 'grep -q \'"\' "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" 2>/dev/null',
   'kimi-code':
-    '[ -n "$MOONSHOT_API_KEY" ] || grep -q \'"\' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/auth.json" 2>/dev/null || grep -q \'"\' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/credentials.json" 2>/dev/null',
+    '[ -n "$KIMI_MODEL_API_KEY" ] || ls "${KIMI_CODE_HOME:-$HOME/.kimi-code}"/credentials/*.json >/dev/null 2>&1',
   grok: '[ -n "$XAI_API_KEY" ] || [ -s "$HOME/.grok/credentials.json" ] || [ -s "$HOME/.grok/auth.json" ]',
   shell: 'true',
 };

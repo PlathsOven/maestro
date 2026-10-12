@@ -27,6 +27,7 @@ function check(name: string, ok: boolean, detail = '') {
 const events: { channel: string; payload: any }[] = [];
 function captureWindow() {
   setWindow({
+    on: () => {},
     isDestroyed: () => false,
     isFocused: () => true,
     webContents: { send: (channel: string, payload: unknown) => events.push({ channel, payload }) },

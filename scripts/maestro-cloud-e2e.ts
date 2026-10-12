@@ -21,7 +21,7 @@ import { execSync } from 'child_process';
 import { resolveShellEnv } from '../src/main/env';
 import { initDb, Hosts, Messages, Projects, Settings, Workspaces, now, uid } from '../src/main/db';
 import { setWindow } from '../src/main/bus';
-import { initSshHosts } from '../src/main/hosts/ssh';
+import { initRemoteHosts } from '../src/main/hosts/remote';
 import { hostById } from '../src/main/hosts';
 import { addProject } from '../src/main/services/workspaces';
 import { sendChat } from '../src/main/services/chat';
@@ -82,8 +82,8 @@ async function main() {
   execSync('git init -b main && git add -A && git commit -q --allow-empty -m init', { cwd: REPO });
 
   initDb(path.join(ROOT, 'db.sqlite'));
-  initSshHosts();
-  setWindow({ isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
+  initRemoteHosts();
+  setWindow({ on: () => {}, isDestroyed: () => false, isFocused: () => true, webContents: { send: () => {} } } as any);
   Settings.setGlobal({ harnessApiKeys: { 'claude-code': 'test-key' }, notifications: false });
 
   // Save the managed host exactly as the signup client would.

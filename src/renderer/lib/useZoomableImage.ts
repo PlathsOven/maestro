@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 export const IMG_ZOOM_MIN = 0.05;
 export const IMG_ZOOM_MAX = 32;
 export const IMG_ZOOM_STEP = 1.25; // per button click; the wheel uses a gentler ratio
-export const clampImgZoom = (z: number) => Math.min(IMG_ZOOM_MAX, Math.max(IMG_ZOOM_MIN, z));
+const clampImgZoom = (z: number) => Math.min(IMG_ZOOM_MAX, Math.max(IMG_ZOOM_MIN, z));
 
 /**
  * The zoom/fit mechanics shared by the Editor's image tab and the chat lightbox:
@@ -29,10 +29,14 @@ export function useZoomableImage(
   const isFit = zoom === null;
 
   // A fresh image resets to fit; drop stale dims so we don't size against them.
-  useEffect(() => {
+  // During render, not in an effect: an effect runs after captureImg and would
+  // wipe the dims of an already-loaded image, whose onLoad never fires again.
+  const [seenKey, setSeenKey] = useState(resetKey);
+  if (seenKey !== resetKey) {
+    setSeenKey(resetKey);
     setZoom(null);
     setDims(null);
-  }, [resetKey]);
+  }
 
   // Fit = the largest scale (never upscaling) that keeps the image inside the
   // container, tracked as it resizes. Mirrors CSS object-contain, but as a number.

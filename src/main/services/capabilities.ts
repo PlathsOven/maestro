@@ -14,14 +14,16 @@ const ownerCache = new Map<string, string | null>(); // key `${host.id}:${repoPa
 
 /** GitHub owner of a repo's origin (run on the project's host) — powers the repo
  *  avatar in the sidebar and the `githubRemote` capability. Cached per
- *  host+repoPath; null when there's no origin or the origin isn't github.com. */
+ *  host+repoPath; null when there's no origin or the origin isn't github.com.
+ *  Only cached once git actually answered — a timed-out or unspawnable probe
+ *  (exitCode -1, e.g. a boot storm) re-probes next call instead of pinning null. */
 export async function githubOwner(repoPath: string, host: ExecHost = localHost): Promise<string | null> {
   const key = `${host.id}:${repoPath}`;
   if (ownerCache.has(key)) return ownerCache.get(key)!;
   const r = await host.exec('git', ['remote', 'get-url', 'origin'], { cwd: repoPath, timeout: 8_000 });
   const m = r.ok ? r.stdout.match(/github\.com[:/]([^/]+)\//) : null;
   const owner = m ? m[1] : null;
-  ownerCache.set(key, owner);
+  if (r.exitCode >= 0) ownerCache.set(key, owner);
   return owner;
 }
 
@@ -41,9 +43,9 @@ export async function computeCaps(project: Project): Promise<ProjectCaps> {
   const remote = !!project.hostId;
   const worktrees = git && !remote; // remote projects are in-place in v1
   const host = hostForProject(project);
-  const originIsGithub = git && (await githubOwner(project.repoPath, host)) !== null;
-  const githubRemote = originIsGithub && (remote ? await ghAuthedOn(host) : true);
+  const owner = git ? await githubOwner(project.repoPath, host) : null;
+  const githubRemote = owner !== null && (remote ? await ghAuthedOn(host) : true);
   // Shadow-git checkpoints back the Diff/undo story for local folder projects.
   const checkpoints = project.kind === 'folder' && !remote;
-  return { git, worktrees, githubRemote, checkpoints };
+  return { git, worktrees, githubRemote, githubOwner: owner, checkpoints };
 }

@@ -135,6 +135,8 @@ export interface ProjectCaps {
   worktrees: boolean;
   /** origin URL matches github.com */
   githubRemote: boolean;
+  /** GitHub login owning the origin (repo avatar), or null */
+  githubOwner: string | null;
   /** shadow-git checkpoints available (folder projects) — powers a diff-since-
    *  last-checkpoint view + rollback without a real repo (spec §7 Phase 5). */
   checkpoints: boolean;
@@ -240,6 +242,10 @@ export interface AttachmentPreview {
   name?: string;
   /** why it couldn't be previewed inline (binary / missing) */
   error?: string;
+  /** the file's mtime + size when read (images) — echo it back as `ifVersion` */
+  version?: string;
+  /** `ifVersion` still matches: the caller's copy is current, so no `dataUrl` */
+  unchanged?: boolean;
 }
 
 /**
@@ -339,6 +345,10 @@ export interface GlobalSettings {
   /** Sound played when an agent finishes a chat; 'none' disables it. Ids are
    *  defined in the renderer's lib/sounds; falls back to DEFAULT_COMPLETION_SOUND. */
   completionSound: string;
+  /** Play the (distinct) question alert when an agent blocks on a maestro-ask
+   *  question. Independent of completionSound so muting "done" chimes never
+   *  silences "I need you". */
+  questionSound: boolean;
   /** User-pinned default model per harness; falls back to DEFAULT_MODELS. */
   defaultModels: Partial<Record<HarnessId, string>>;
   /** User-pinned default effort level; falls back to DEFAULT_EFFORT. */
@@ -355,6 +365,10 @@ export interface GlobalSettings {
    *  initDb backfills it to true for installs that pre-date the wizard so an
    *  update never re-onboards an existing user. */
   onboarded: boolean;
+  /** Optional "How did you hear about Maestro?" answer from first-run setup.
+   *  Rides along on the setup_completed analytics event — the only attribution
+   *  signal for channels that strip the referrer (AI chats, Discord, word of mouth). */
+  heardFrom?: string;
   /** Per-harness API key (opt-in). When set, injected as that harness's key env
    *  var (e.g. CURSOR_API_KEY) for its runs; empty/absent = use the CLI's own
    *  login. Managed from Settings → Harnesses. */
@@ -375,6 +389,9 @@ export interface GlobalSettings {
    *  opens with no scripts. When off, scripts are only added manually or via
    *  the Sparkles "Detect with AI" button. */
   autoDetectRunScripts: boolean;
+  /** Glass & blur level (src/shared/ui/effects.ts): `auto` drops to reduced on
+   *  older / integrated / software-rendered graphics. Absent = auto. */
+  visualEffects?: EffectsMode;
   /** Cloud continuation defaults (spec §4). `defaultOn` pre-selects Cloud for
    *  new conversations; `hostId` is the saved server they run on (an SSH host
    *  row id), null until the user picks one. */
@@ -1584,9 +1601,11 @@ export function messagingPreamble(): string {
     'Delivery is fire-and-forget: the message starts a turn in the target chat (or queues behind its current one)',
     'and the command returns at once. Any reply arrives later as a new message in this chat — never within this',
     'turn — so do not wait for one. Messages from other agents reach you as user messages that end with a',
-    '"[Sent by the agent in …. Reply with: maestro-message send …]" line — use that exact command to answer. Only',
-    'message another agent when the user asked you to or the task clearly needs it, and do not reply just to',
-    'acknowledge.',
+    '"[Sent by the agent in …. Reply with: maestro-message send …]" line — use that exact command to answer.',
+    'Messages that queued while you were busy can arrive together in one turn, and were written before your latest',
+    'work, so check what is still true before acting on them. Only message another agent when the user asked you',
+    'to or the task clearly needs it; send a chat at most one message per turn, with everything in it; and reply',
+    'only when the other agent needs your answer to act — not to acknowledge, or to say something is already done.',
   ].join('\n');
 }
 
@@ -1820,14 +1839,6 @@ export type SkillLocation = 'user' | 'project';
 
 // ---------- IPC surface ----------
 
-export interface MergeGates {
-  approved: boolean;
-  checksGreen: boolean;
-  commentsResolved: boolean;
-  todosDone: boolean;
-  noConflicts: boolean; // pr.mergeable !== 'CONFLICTING' (UNKNOWN counts green)
-}
-
 interface AppInitData {
   projects: Project[];
   workspaces: Workspace[];
@@ -1848,6 +1859,21 @@ interface AppInitData {
   chatsMeta: Record<string, Record<string, ChatMeta>>;
   /** Currently running agentIds per workspace (survives renderer reloads). */
   runningAgents: Record<string, number[]>;
+  /** What Chromium reports about the GPU, for the `auto` visual-effects level. */
+  gpu?: GpuHint;
+}
+
+/** The glass & blur level picked in Settings (src/shared/ui/effects.ts). */
+export type EffectsMode = 'auto' | 'full' | 'reduced';
+
+/** What the desktop's main process knows about the GPU (Electron's
+ *  getGPUFeatureStatus / getGPUInfo). */
+export interface GpuHint {
+  /** False when Chromium composites in software (blocklisted driver, no GPU,
+   *  a basic display adapter, most VMs) — every blur is then CPU raster. */
+  hardware: boolean;
+  /** Every GPU on the machine is Intel integrated graphics. */
+  intelOnly: boolean;
 }
 
 /** A running turn's blocks so far, in the block accumulator's own shape
@@ -1989,8 +2015,23 @@ export interface HarnessSyncStatus {
   candidates: { root: string; app: HarnessSyncApp; count: number }[];
 }
 
+/** A web server listening on this machine — Preview's "Running on this machine". */
+export interface LocalServer {
+  port: number;
+  /** the listening process's name, e.g. "node" */
+  process: string;
+}
+
+/** An installed editor the "Open in" menus offer. */
+export interface EditorInfo {
+  id: string;
+  label: string;
+}
+
 export interface IpcInvokeMap {
   'app:init': [void, AppInitData];
+  /** Dock / taskbar badge: the number of workspaces waiting on the user (0 clears). */
+  'app:setBadge': [{ count: number }, void];
   /** force bypasses the 5-min detect cache — used right after a login/API-key
    *  change so `connected` flags don't stay stale. */
   'harness:list': [{ force?: boolean }, HarnessInfo[]];
@@ -2033,14 +2074,6 @@ export interface IpcInvokeMap {
    *  re-probes, and — if the fresh CLI is signed out — types its headless login
    *  into terminal 1. null = local project. */
   'harness:remoteInstall': [{ workspaceId: string; harness?: HarnessId }, RemoteInstallResult | null];
-  /** Host-keyed harness probe/install, so the shared HostConnect flow (§6.7)
-   *  works before any project/workspace exists — the workspace-keyed pair above
-   *  generalized to an SSH host id. */
-  'harness:hostProbe': [{ hostId: string; harness: HarnessId; force?: boolean }, RemoteHarnessStatus];
-  'harness:hostInstall': [{ hostId: string; harness: HarnessId }, RemoteInstallResult];
-  /** Readiness panel rows for a host: doctor env/tool/tmux + per-harness state.
-   *  Backs the shared HostReadiness surface (§6.7). */
-  'host:readiness': [{ hostId: string }, { rows: DoctorRow[] }];
 
   // ---------- Maestro Cloud free beta (maestro-cloud-free-beta.md §3) ----------
   /** Live capacity of the shared box for the picker chip; null when unreachable. */
@@ -2146,9 +2179,13 @@ export interface IpcInvokeMap {
     { workspaceId: string },
     { ok: boolean; error?: string; note?: string; noteKind?: 'info' | 'error'; workspace?: Workspace }
   ];
-  'workspace:openInIDE': [{ workspaceId: string }, void];
+  /** `editor` = an id from `ide:list`; picking one also makes it the default. */
+  'workspace:openInIDE': [{ workspaceId: string; editor?: string }, void];
+  /** Editors installed on this machine, for the "Open in" menus. */
+  'ide:list': [void, EditorInfo[]];
+  /** Native clipboard write — works even when the renderer isn't focused. */
+  'clipboard:writeText': [{ text: string }, void];
   'workspace:reveal': [{ workspaceId: string }, void];
-  'workspace:openTerminalApp': [{ workspaceId: string }, void];
   /** Open the workspace's dev-server port in the browser. Local = localhost:PORT;
    *  remote = an SSH `-L` forward to that port on the server (§6.8). */
   'workspace:openPreview': [{ workspaceId: string }, { url?: string; error?: string }];
@@ -2156,7 +2193,6 @@ export interface IpcInvokeMap {
    *  Restores tracked files; new files created since are left in place. */
   'workspace:revertCheckpoint': [{ workspaceId: string }, { ok: boolean; error?: string }];
   'workspace:contextFiles': [{ workspaceId: string }, ContextFile[]];
-  'workspace:refresh': [{ workspaceId: string }, Workspace];
   'workspace:setHarness': [{ workspaceId: string; harness: HarnessId }, Workspace];
   /** Move a conversation on/off the cloud (spec §6.6). hostId set ⇒ run in cloud
    *  on that SSH host (remote worktree, branch + dirty state travel); hostId null
@@ -2217,6 +2253,8 @@ export interface IpcInvokeMap {
   // agent (`maestro-preview` → roleserver). `preview:open` computes the default
   // URL exactly as `workspace:openPreview` does (local port / host.forwardOut).
   'preview:open': [{ workspaceId: string; url?: string }, { url: string; error?: string }];
+  /** Other web servers running on this machine (local workspaces only). */
+  'preview:servers': [{ workspaceId: string }, LocalServer[]];
   'preview:navigate': [
     { workspaceId: string; action: 'goto' | 'back' | 'forward' | 'reload' | 'stop'; url?: string },
     void
@@ -2252,7 +2290,8 @@ export interface IpcInvokeMap {
     { ok: boolean; error?: string; queued?: boolean }
   ];
   'chat:queue:remove': [{ workspaceId: string; agentId: number; itemId: string }, void];
-  'chat:queue:edit': [{ workspaceId: string; agentId: number; itemId: string; text: string }, void];
+  // `attachments` (when set) replaces the item's attachments; omitted keeps them.
+  'chat:queue:edit': [{ workspaceId: string; agentId: number; itemId: string; text: string; attachments?: Attachment[] }, void];
   // Steer: interrupt the running turn so this queued message runs *next* instead
   // of after it finishes (the queue is kept, unlike chat:stop which clears it).
   'chat:queue:sendNow': [{ workspaceId: string; agentId: number; itemId: string }, void];
@@ -2296,8 +2335,6 @@ export interface IpcInvokeMap {
     { workspaceId: string; agentId: number; patch: Partial<ChatMeta> },
     void
   ];
-  // Close a chat session: stop it if running and delete its messages, meta, and session.
-  'chat:delete': [{ workspaceId: string; agentId: number }, void];
   // The user is looking at this chat — clears its unread indicator.
   'chat:markRead': [{ workspaceId: string; agentId: number }, void];
 
@@ -2313,7 +2350,6 @@ export interface IpcInvokeMap {
   'git:status': [{ workspaceId: string }, GitStatusSummary];
   'git:files': [{ workspaceId: string }, string[]];
   'git:diffstat': [{ workspaceId: string }, { additions: number; deletions: number }];
-  'git:commit': [{ workspaceId: string; message: string }, { ok: boolean; error?: string }];
 
   // Working-tree file browser ("All files"): the real on-disk tree (incl. ignored/
   // untracked entries), listed lazily one directory at a time. `path` is relative
@@ -2326,7 +2362,7 @@ export interface IpcInvokeMap {
   // in the configured IDE; `fs:openTerminal` roots a terminal at it (`dir`) or its
   // parent (a file); `fs:absPath` returns the resolved absolute path ("Copy path").
   'fs:reveal': [{ workspaceId: string; path: string }, void];
-  'fs:openInIDE': [{ workspaceId: string; path: string }, void];
+  'fs:openInIDE': [{ workspaceId: string; path: string; editor?: string }, void];
   'fs:openTerminal': [{ workspaceId: string; path: string; dir: boolean }, void];
   'fs:absPath': [{ workspaceId: string; path: string }, { path: string | null }];
 
@@ -2345,6 +2381,14 @@ export interface IpcInvokeMap {
   // Files tab "+": create an empty file (or folder, `dir`) at a worktree-relative
   // path, making missing parents. Local-only; refuses to overwrite.
   'fs:create': [{ workspaceId: string; path: string; dir: boolean }, void];
+  // Files tab management, local-only and confined to the worktree. `fs:rename`
+  // renames/moves (never overwrites, makes missing parents); `fs:copy` copies
+  // into `toDir` ('' = root) with " copy" suffixes on a clash — `paths` are
+  // worktree-relative, or absolute for files dropped in from the OS — and
+  // returns the new paths; `fs:trash` moves entries to the OS trash.
+  'fs:rename': [{ workspaceId: string; from: string; to: string }, void];
+  'fs:copy': [{ workspaceId: string; paths: string[]; toDir: string }, string[]];
+  'fs:trash': [{ workspaceId: string; paths: string[] }, void];
 
   // In-app Jupyter kernel execution for open `.ipynb` tabs. `capabilities`
   // discovers a Python with jupyter_client + ipykernel (worktree venv first,
@@ -2356,11 +2400,9 @@ export interface IpcInvokeMap {
     { workspaceId: string },
     { available: boolean; python?: string; version?: string; reason?: string }
   ];
-  'jupyter:start': [{ workspaceId: string; path: string }, { ok: boolean; status: KernelStatus; error?: string }];
   'jupyter:execute': [{ workspaceId: string; path: string; cellId: string; code: string }, { ok: boolean; error?: string }];
   'jupyter:interrupt': [{ workspaceId: string; path: string }, void];
   'jupyter:restart': [{ workspaceId: string; path: string }, { ok: boolean; error?: string }];
-  'jupyter:shutdown': [{ workspaceId: string; path: string }, void];
   'jupyter:kernelStatus': [{ workspaceId: string; path: string }, { status: KernelStatus; kernelName?: string }];
 
   'comment:list': [{ workspaceId: string }, DiffComment[]];
@@ -2455,15 +2497,13 @@ export interface IpcInvokeMap {
   ];
   'skill:delete': [{ workspaceId: string; path: string }, void];
 
-  'settings:get': [void, GlobalSettings];
   'settings:set': [Partial<GlobalSettings>, GlobalSettings];
 
   'attachment:save': [
     { workspaceId: string; name: string; text?: string; dataBase64?: string },
     { path: string }
   ];
-  'attachment:read': [{ workspaceId: string; path: string }, AttachmentPreview];
-  'linear:issue': [{ id: string }, { title: string; description: string } | null];
+  'attachment:read': [{ workspaceId: string; path: string; ifVersion?: string }, AttachmentPreview];
 
   /** Run an immediate update check and report the outcome to the caller. */
   'update:check': [void, UpdateCheckOutcome];
@@ -2480,8 +2520,6 @@ export interface IpcInvokeMap {
   /** Begin a device link: returns the 8-char code to enter at the relay's /link
    *  page; main polls until approved and pushes `account:auth` on success. */
   'account:linkStart': [{ deviceName?: string }, { code: string; expiresInSec: number; url: string }];
-  /** Cancel an in-flight link attempt. */
-  'account:linkCancel': [void, void];
   /** Sign this desktop out (revokes the local token; box tokens survive). */
   'account:signOut': [void, void];
   /** Unlink ANOTHER linked desktop by its relay device id (Settings → Account).
@@ -2493,9 +2531,6 @@ export interface IpcInvokeMap {
   'account:boxLink': [{ hostId: string; label?: string; cron?: boolean }, { ok: boolean; error?: string }];
   /** Unlink a box: tombstone the token on the relay, kill + remove the shim. */
   'account:boxUnlink': [{ hostId: string }, { ok: boolean; error?: string }];
-  /** The exact crontab lines the "keep running after reboots" option installs,
-   *  shown verbatim before writing (§6.5). */
-  'account:cronPreview': [void, { lines: string[] }];
   /** Toggle whether a project's workspaces sync to Maestro Web. Records the
    *  opt-out (default: all projects sync); when linked, deselect purges that
    *  project's already-published relay rows and select re-publishes them. */
@@ -2510,6 +2545,8 @@ export interface IpcInvokeMap {
 export interface IpcEventMap {
   'ws:updated': Workspace;
   'ws:removed': { workspaceId: string };
+  /** A notification was clicked — bring this chat on screen. */
+  'app:openChat': { workspaceId: string; agentId: number | null };
   /** Authoritative preview facts (URL, nav state, console counts, agent activity)
    *  — the store mirrors these, never asks (§6). */
   'preview:state': PreviewState;
@@ -2558,7 +2595,7 @@ export interface IpcEventMap {
   /** Authoritative PR status after any main-side refresh (turn end, background
    *  poll, merge) — the store mirrors it so Merge/Resolve/Merged stay live. */
   'pr:status': { workspaceId: string; pr: PrStatus | null };
-  'chat:queue': { workspaceId: string; agentId: number; items: { id: string; text: string }[] };
+  'chat:queue': { workspaceId: string; agentId: number; items: { id: string; text: string; attachments: Attachment[] }[] };
   /** This chat's pending scheduled messages changed (added, edited, cancelled,
    *  or delivered). Full items — the card renders text AND time. */
   'chat:scheduled': { workspaceId: string; agentId: number; items: ScheduledMessage[] };

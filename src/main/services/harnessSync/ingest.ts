@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { broadcast } from '../../bus';
-import { Messages, Workspaces, now, uid } from '../../db';
+import { Messages, Workspaces, now } from '../../db';
 import { isAgentRunning } from '../harness';
 import { claudeDir } from '../harness/claude';
 import { codexDir } from '../harness/codex';
@@ -9,7 +9,7 @@ import { findCodexRollout } from '../harnessFiles';
 import { summarizeBlocks } from '../../../shared/harness/blocks';
 import { foldClaudeLines, foldCodexLines, type ExternalTurn, type FoldCarry } from '../../../shared/harness/transcripts';
 import { liveElsewhere } from './live';
-import type { AgentBlock, ChatMessage, HarnessSyncApp, Workspace } from '../../../shared/types';
+import type { ChatMessage, HarnessSyncApp, Workspace } from '../../../shared/types';
 
 // Cursor read → fold → persist / stream, for one mirrored chat
 // (docs/specs/harness-chat-sync.md §6.3). Read-only toward the transcript; the
@@ -112,27 +112,29 @@ function fold(app: HarnessSyncApp, lines: string[], carry?: FoldCarry) {
   return app === 'codex' ? foldCodexLines(lines, carry) : foldClaudeLines(lines, carry);
 }
 
+/** Insert (idempotently) the turn's prompt row. */
+function insertPrompt(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: ExternalTurn): void {
+  const userId = idFor(app, turn.id, 'u');
+  if (Messages.exists(userId)) return;
+  const userMsg: ChatMessage = {
+    id: userId,
+    workspaceId: ws.id,
+    agentId,
+    role: 'user',
+    content: turn.prompt.text,
+    attachments: [],
+    ts: turn.prompt.ts || turn.ts || now(),
+    meta: { origin: app },
+  };
+  Messages.insert(userMsg);
+  broadcast('chat:message', userMsg);
+}
+
 /** Insert (idempotently) the rows for a finished turn and update chat/workspace
  *  bookkeeping. Mirrored turns never set attention and are marked read. */
-function persistTurn(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: ExternalTurn): boolean {
-  let inserted = false;
-  const userId = idFor(app, turn.id, 'u');
+function persistTurn(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: ExternalTurn): void {
   const promptTs = turn.prompt.ts || turn.ts || now();
-  if (!Messages.exists(userId)) {
-    const userMsg: ChatMessage = {
-      id: userId,
-      workspaceId: ws.id,
-      agentId,
-      role: 'user',
-      content: turn.prompt.text,
-      attachments: [],
-      ts: promptTs,
-      meta: { origin: app },
-    };
-    Messages.insert(userMsg);
-    broadcast('chat:message', userMsg);
-    inserted = true;
-  }
+  insertPrompt(ws, agentId, app, turn);
   if (turn.blocks.length) {
     const agentMsgId = idFor(app, turn.id, 'a');
     if (!Messages.exists(agentMsgId)) {
@@ -148,7 +150,6 @@ function persistTurn(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: 
       };
       Messages.insert(agentMsg);
       broadcast('chat:message', agentMsg);
-      inserted = true;
     }
   }
   const ts = turn.ts || promptTs;
@@ -160,7 +161,6 @@ function persistTurn(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: 
     Workspaces.update(fresh);
     broadcast('ws:updated', fresh);
   }
-  return inserted;
 }
 
 /** Stream the delta of an in-progress turn to the renderer as chat:events — it
@@ -168,21 +168,7 @@ function persistTurn(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: 
 function streamOpen(ws: Workspace, agentId: number, app: HarnessSyncApp, turn: ExternalTurn, st: LiveState): void {
   if (turn.by !== 'external') return;
   if (!st.userEmitted) {
-    const userId = idFor(app, turn.id, 'u');
-    if (!Messages.exists(userId)) {
-      const userMsg: ChatMessage = {
-        id: userId,
-        workspaceId: ws.id,
-        agentId,
-        role: 'user',
-        content: turn.prompt.text,
-        attachments: [],
-        ts: turn.prompt.ts || turn.ts || now(),
-        meta: { origin: app },
-      };
-      Messages.insert(userMsg);
-      broadcast('chat:message', userMsg);
-    }
+    insertPrompt(ws, agentId, app, turn);
     st.userEmitted = true;
   }
   const fresh = turn.blocks.slice(st.emitted);

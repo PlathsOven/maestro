@@ -1,69 +1,39 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import {
-  Bot,
-  Brain,
   Check,
-  CheckCircle2,
   Columns2,
-  Copy,
-  FileText,
-  Globe,
   GripVertical,
   History,
-  Image as ImageIcon,
-  KeyRound,
-  ListChecks,
   Maximize,
   MessageSquare,
-  Paperclip,
-  Pencil,
   Plus,
   RotateCcw,
-  Search,
-  Terminal as TerminalIcon,
-  User,
   Waypoints,
-  Wrench,
   X,
   XCircle,
-  type LucideIcon,
 } from 'lucide-react';
-import { formatDuration, timeAgo } from '../lib/format';
-import {
-  DEFAULT_CHAT_IDS,
-  useApp,
-  LAYOUT_LIMITS,
-  DEFAULT_LAYOUT,
-  leaf,
-  paneIds,
-  paneCount,
-  firstLeaf,
-  type LiveTurn,
-  type PaneNode,
-  type DropSide,
-} from '../store/app';
+import { formatDuration, timeAgo } from '../../shared/ui/format';
+import { DEFAULT_CHAT_IDS, EMPTY_ARR, useApp, type LiveTurn } from '../store/app';
+import { askingAgents, turnKey } from '../lib/liveTurn';
+import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
+import { firstLeaf, leaf, paneCount, paneIds, type DropSide, type PaneNode } from '../lib/paneTree';
 import Composer from './Composer';
 import AskCard from './AskCard';
 import AuthFix from './AuthFix';
-import AttachmentPreviewModal from './AttachmentPreviewModal';
 // Transcript rendering now lives in the shared UI package (web-desktop-parity §6);
 // the desktop wraps it with store-bound adapters below.
-import SharedMarkdown from '../../shared/ui/Markdown';
 import { GLASS_FIELD, LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { Chevron } from '../../shared/ui/primitives';
-import { BlockList, AttachmentChip as SharedAttachmentChip } from '../../shared/ui/blocks';
 import { AgentMessageView, UserMessageView, SystemMessageView, LiveTurnView as SharedLiveTurnView } from '../../shared/ui/transcript';
 import { beginPointerDrag, DetailCard, DetailRow, EmptyHint, ReadUnreadMenu, RenameInput, Resizer, ScrollingTitle, Spinner, StatusCircle, useDismiss, useHoverDetail } from './common';
-import { INDICATOR_LABEL, isUnread, sessionIndicator, type IndicatorStatus } from '../lib/status';
+import { INDICATOR_LABEL, isUnread, sessionIndicator, type IndicatorStatus } from '../../shared/ui/status';
 import { roleLabel, roleModelLabel } from '../../shared/types';
-import type { AgentBlock, Attachment, ChatMessage, SubagentRun, Workspace } from '../../shared/types';
+import type { AgentBlock, ChatMessage, SubagentRun, Workspace } from '../../shared/types';
 import { chatDisplayTitle } from '../../shared/chatTitle';
 import { matchesShortcut } from '../../shared/shortcuts';
 import { useShortcuts } from '../lib/shortcuts';
 import { ChatFindBar } from './ChatFind';
-
-export { BlockList };
 
 /**
  * The center chat area: the session rail on the left, then the split view — one
@@ -97,6 +67,31 @@ function beginPaneDrag(e: React.DragEvent, payload: PaneDrag) {
     /* some environments reject custom MIME types — the module copy still works */
   }
   e.dataTransfer.effectAllowed = 'move';
+}
+/**
+ * Use a clean copy of `el` as the drag image. Chromium's default snapshot of a
+ * row inside the glass (backdrop-filtered, composited) chrome grabs the row's
+ * whole screen rect — neighbouring rows, hover chrome and all — so it looks as
+ * if several sessions are being dragged at once. The ghost is painted off-screen
+ * and removed on the next frame, once the browser has captured it.
+ */
+export function setRowDragImage(e: React.DragEvent, el: HTMLElement) {
+  const r = el.getBoundingClientRect();
+  const ghost = el.cloneNode(true) as HTMLElement;
+  ghost.removeAttribute('data-motion');
+  ghost.querySelectorAll('button').forEach((b) => b.remove());
+  Object.assign(ghost.style, {
+    position: 'fixed',
+    top: '-1000px',
+    left: '0px',
+    width: `${r.width}px`,
+    height: `${r.height}px`,
+    pointerEvents: 'none',
+    background: 'var(--surface)',
+  });
+  document.body.appendChild(ghost);
+  e.dataTransfer.setDragImage(ghost, e.clientX - r.left, e.clientY - r.top);
+  requestAnimationFrame(() => ghost.remove());
 }
 function readPaneDrag(e: React.DragEvent): PaneDrag | null {
   try {
@@ -656,15 +651,21 @@ function PaneHeader({
   const messages = useApp((s) => s.messages[workspace.id]);
   const meta = useApp((s) => s.chatsMeta[workspace.id]?.[String(agentId)]);
   const running = useApp((s) => s.runningAgents[workspace.id])?.includes(agentId) ?? false;
+  const asking = useApp((s) => !!s.pendingAsks[turnKey(workspace.id, agentId)]);
   const firstUserMsg = (messages ?? []).find((m) => m.agentId === agentId && m.role === 'user');
   const title = chatDisplayTitle(meta, firstUserMsg?.content);
-  const status = sessionIndicator(meta, running);
+  const status = sessionIndicator(meta, running, asking);
+  const [editing, setEditing] = useState(false);
   return (
     <div
-      draggable
+      draggable={!editing}
       onDragStart={onDragStart}
-      onClick={() => useApp.getState().setComposerAgent(workspace.id, agentId)}
-      title="Drag to rearrange · click to focus"
+      onClick={editing ? undefined : () => useApp.getState().setComposerAgent(workspace.id, agentId)}
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        setEditing(true);
+      }}
+      title={editing ? undefined : 'Drag to rearrange · click to focus · double-click to rename'}
       className={clsx(
         'group mx-2 mt-2 flex h-8 shrink-0 cursor-grab items-center gap-1.5 rounded-full px-2 transition-colors active:cursor-grabbing',
         focused ? 'bg-accent-soft' : 'hover:bg-accent-soft/50'
@@ -676,9 +677,20 @@ function PaneHeader({
       ) : (
         <MessageSquare size={11} className={clsx('shrink-0', focused ? 'text-muted' : 'text-faint')} />
       )}
-      <span className={clsx('min-w-0 flex-1 truncate text-xs', focused ? 'font-medium text-fg' : 'text-muted')}>
-        {title}
-      </span>
+      {editing ? (
+        <RenameInput
+          initial={title}
+          onCommit={(name) => {
+            setEditing(false);
+            renameChat(workspace.id, agentId, name, title);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <span className={clsx('min-w-0 flex-1 truncate text-xs', focused ? 'font-medium text-fg' : 'text-muted')}>
+          {title}
+        </span>
+      )}
       <button
         className="shrink-0 rounded-full p-1 text-faint opacity-0 transition-[opacity,background-color,color] hover:bg-accent-soft hover:text-fg group-hover:opacity-100"
         title="Maximize — show only this chat"
@@ -752,6 +764,7 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
   const messages = useApp((s) => s.messages[workspace.id]);
   const chatsMeta = useApp((s) => s.chatsMeta[workspace.id]);
   const running = useApp((s) => s.runningAgents[workspace.id]) ?? [];
+  const asking = useApp((s) => askingAgents(s.pendingAsks)[workspace.id]) ?? EMPTY_ARR;
   const activeChat = useApp((s) => s.composerAgent[workspace.id] ?? 1);
   const chatIds = useApp((s) => s.chatIds[workspace.id]) ?? DEFAULT_CHAT_IDS;
   const paneLayout = useApp((s) => s.paneLayout[workspace.id]);
@@ -879,24 +892,22 @@ function SessionRail({ workspace }: { workspace: Workspace }) {
           const active = id === activeChat;
           const isRunning = running.includes(id);
           return (
-            <React.Fragment key={id}>
-              {dropIdx === i && <RailDropLine />}
-              <SessionRow
-                workspace={workspace}
-                id={id}
-                index={i}
-                active={active}
-                status={sessionIndicator(chatsMeta?.[String(id)], isRunning)}
-                title={title}
-                preview={firstUserMsg?.content}
-                inSplit={splitActive && visiblePanes.includes(id)}
-                onReorderDragOver={onRowDragOver}
-                onReorderEnd={() => setDropIdx(null)}
-              />
-            </React.Fragment>
+            <SessionRow
+              key={id}
+              workspace={workspace}
+              id={id}
+              index={i}
+              active={active}
+              status={sessionIndicator(chatsMeta?.[String(id)], isRunning, asking.includes(id))}
+              title={title}
+              preview={firstUserMsg?.content}
+              inSplit={splitActive && visiblePanes.includes(id)}
+              dropLine={dropIdx === i ? 'before' : dropIdx === chatIds.length && i === chatIds.length - 1 ? 'after' : null}
+              onReorderDragOver={onRowDragOver}
+              onReorderEnd={() => setDropIdx(null)}
+            />
           );
         })}
-        {dropIdx === chatIds.length && <RailDropLine />}
       </div>
     </div>
   );
@@ -944,13 +955,28 @@ function ClosedSessionsMenu({
   );
 }
 
-/** Insertion marker shown between rows while dragging to reorder the rail. */
-function RailDropLine() {
-  return <div className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />;
+/** Insertion marker shown between rows while dragging to reorder the rail.
+ *  Overlaid on the row's edge (not inserted in flow) so rows never shift under
+ *  the cursor mid-drag — that shift moved row midpoints and made the line jitter. */
+export function RailDropLine({ edge }: { edge: 'before' | 'after' }) {
+  return (
+    <div
+      className={clsx(
+        'pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded-full bg-accent',
+        edge === 'before' ? '-top-px' : '-bottom-px'
+      )}
+    />
+  );
+}
+
+/** Pin a user-chosen chat title (titleCustom keeps the status headline from
+ *  overwriting it). Blank or unchanged input is a no-op. */
+function renameChat(wsId: string, agentId: number, name: string, current: string) {
+  if (name && name !== current) useApp.getState().setChatMeta(wsId, agentId, { title: name, titleCustom: true });
 }
 
 /**
- * One session row: click to focus it, double-click to rename (sets a custom
+ * One session row: click to focus it, double-click or right-click → Rename (sets a custom
  * ChatMeta title, overriding the auto title), and hover for a detail card with
  * the full title and the first message.
  */
@@ -963,6 +989,7 @@ function SessionRow({
   title,
   preview,
   inSplit,
+  dropLine,
   onReorderDragOver,
   onReorderEnd,
 }: {
@@ -976,6 +1003,8 @@ function SessionRow({
   preview?: string;
   /** currently shown as one of several split panes (but not the focused one). */
   inSplit: boolean;
+  /** draw the reorder insertion line on this row's top/bottom edge. */
+  dropLine: 'before' | 'after' | null;
   /** rail reorder: report the hovered insertion point / clear it on drag end. */
   onReorderDragOver: (e: React.DragEvent, index: number) => void;
   onReorderEnd: () => void;
@@ -991,6 +1020,7 @@ function SessionRow({
       onDragStart={(e) => {
         hideHover();
         beginPaneDrag(e, { agentId: id, from: 'rail' });
+        setRowDragImage(e, e.currentTarget);
       }}
       onDragOver={(e) => onReorderDragOver(e, index)}
       onDragEnd={onReorderEnd}
@@ -1013,6 +1043,7 @@ function SessionRow({
       }}
       {...hoverProps}
     >
+      {dropLine && <RailDropLine edge={dropLine} />}
       {status ? (
         <StatusCircle status={status} size={13} />
       ) : (
@@ -1023,7 +1054,7 @@ function SessionRow({
           initial={title}
           onCommit={(name) => {
             setEditing(false);
-            if (name && name !== title) useApp.getState().setChatMeta(workspace.id, id, { title: name, titleCustom: true });
+            renameChat(workspace.id, id, name, title);
           }}
           onCancel={() => setEditing(false)}
         />
@@ -1081,6 +1112,7 @@ function SessionRow({
           unread={unread}
           onRead={() => useApp.getState().markChatRead(workspace.id, id)}
           onUnread={() => useApp.getState().markChatUnread(workspace.id, id)}
+          onRename={() => setEditing(true)}
           onClose={() => setCtxMenu(null)}
         />
       )}
@@ -1101,14 +1133,6 @@ function harnessLabel(ws: Workspace): string {
     }[ws.harness] ?? ws.harness
   );
 }
-
-/**
- * Desktop Markdown = the shared renderer. Worktree-image loading and in-app
- * file-link opening are wired through the UiHost's `hydrateMarkdown` seam
- * (App.tsx → hydrateChatMarkdown), so this is just the shared component.
- * Re-exported for SubagentPreview.
- */
-export const Markdown = SharedMarkdown;
 
 /** Desktop user turn: the shared view + store-driven edit-&-resend. */
 function UserMessage({ msg }: { msg: ChatMessage }) {
@@ -1278,31 +1302,3 @@ function LiveTurnView({ turn }: { turn: LiveTurn }) {
   }
   return <SharedLiveTurnView blocks={blocks} running={turn.running} startedAt={turn.startedAt} />;
 }
-
-/**
- * Desktop attachment chip: the shared chip wired to open an in-app preview modal
- * (previewable when the attachment has a path or inline text). The composer
- * imports this for its pending-attachment list (with onRemove).
- */
-export function AttachmentChip({
-  a,
-  onRemove,
-  workspaceId,
-}: {
-  a: Attachment;
-  onRemove?: () => void;
-  /** when set, the chip is clickable to preview the attachment */
-  workspaceId?: string;
-}) {
-  const [preview, setPreview] = useState(false);
-  const clickable = !!workspaceId && (!!a.path || a.text != null);
-  return (
-    <>
-      <SharedAttachmentChip a={a} onRemove={onRemove} onOpen={clickable ? () => setPreview(true) : undefined} />
-      {preview && workspaceId && (
-        <AttachmentPreviewModal workspaceId={workspaceId} attachment={a} onClose={() => setPreview(false)} />
-      )}
-    </>
-  );
-}
-

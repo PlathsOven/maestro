@@ -4,9 +4,10 @@ import { Check, Copy, Pencil, Play, Sparkles, Square, Terminal as TerminalIcon, 
 import { extractRunCommands, parseRunDoc, isShellSegment } from '../../shared/rundoc';
 import type { Workspace } from '../../shared/types';
 import { tryInvoke } from '../lib/api';
-import { renderMarkdown } from '../lib/format';
+import { renderMarkdown } from '../../shared/ui/format';
 import { useApp } from '../store/app';
 import { Segmented, Spinner } from './common';
+import { copyText } from '../lib/clipboard';
 
 /**
  * Full-width editor for one run script, opened by clicking its card in the Run
@@ -212,7 +213,7 @@ export default function RunScriptEditor({ workspace, scriptId }: { workspace: Wo
 function CommandBlock({ code, executable }: { code: string; executable: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard?.writeText(code).catch(() => {});
+    void copyText(code);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };

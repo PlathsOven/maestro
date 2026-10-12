@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { run } from '../exec';
 import { maestroHome } from '../env';
-import { parseNumstat, parseUnifiedDiff } from './git';
+import { parseNumstat } from './git';
+import { parseUnifiedDiff } from '../../shared/diffparse';
 import type { DiffFile, GitStatusSummary, Workspace, WorkspaceDiff } from '../../shared/types';
 
 /**

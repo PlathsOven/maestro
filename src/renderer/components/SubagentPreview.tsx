@@ -2,8 +2,9 @@ import clsx from 'clsx';
 import { User, Waypoints } from 'lucide-react';
 import { useApp } from '../store/app';
 import { Modal } from './common';
-import { BlockList, Markdown } from './ChatPanel';
-import { formatDuration } from '../lib/format';
+import { BlockList } from '../../shared/ui/blocks';
+import { Markdown } from '../../shared/ui/Markdown';
+import { formatDuration } from '../../shared/ui/format';
 import { roleLabel, roleModelLabel } from '../../shared/types';
 
 /**

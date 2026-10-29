@@ -10,8 +10,7 @@
  * needed, restore refuses a replaced repo, branch/PR mutations are refused
  * (desktop and Maestro Web executors) — and worktree workspaces behave as before.
  *
- *   npm run test:direct   (runs under ELECTRON_RUN_AS_NODE, like scripts/e2e.ts, so
- *                          native modules built by `npm run rebuild` load)
+ *   npm run test:direct   (plain node, native modules as built by `npm ci` — like CI)
  */
 import fs from 'fs';
 import os from 'os';

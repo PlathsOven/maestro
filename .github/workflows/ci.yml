@@ -38,6 +38,15 @@ jobs:
       # Account service against a mock relay (link, publish/backfill, sync, box link).
       - name: Account service e2e
         run: npm run e2e:account
+      # Direct workspaces ("Existing working directory"): throwaway repos — no
+      # worktree/branch created, the checkout untouched through every lifecycle
+      # op, HEAD-relative diff scopes, restore validation, worktree regression.
+      - name: Direct workspace e2e
+        run: npm run test:direct
+      # Renderer entry points (store actions behind palette/shortcut/buttons)
+      # refuse PR/branch actions on a direct workspace; headless store, stub IPC.
+      - name: Direct workspace UI gating
+        run: npm run test:direct-ui
       # Kubernetes workspaces against a fake kubectl (provisioning, host-key pin,
       # supervised port-forward, delegation, selection chain). No cluster needed.
       - name: Kubernetes workspaces e2e

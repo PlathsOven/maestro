@@ -7,6 +7,7 @@ import { parseUnifiedDiff } from '../../shared/diffparse';
 import type {
   BranchInfo,
   DiffFile,
+  DiffScope,
   GitStatusSummary,
   WorkspaceDiff,
 } from '../../shared/types';
@@ -90,6 +91,50 @@ export async function worktreeRemove(repoPath: string, wtPath: string, host: Exe
 export async function currentBranch(wtPath: string, host: ExecHost = localHost): Promise<string> {
   const r = await host.exec('git', ['branch', '--show-current'], { cwd: wtPath });
   return r.stdout.trim() || 'HEAD';
+}
+
+/** A repo's identity for direct workspaces: the root commit of HEAD's history
+ *  (stable across branch switches, pulls and gc), or '' with no commits yet. */
+export async function repoIdentity(repoPath: string, host: ExecHost = localHost): Promise<string> {
+  const r = await host.exec('git', ['rev-list', '--max-parents=0', 'HEAD'], { cwd: repoPath });
+  return r.ok ? (r.stdout.trim().split('\n')[0] ?? '') : '';
+}
+
+/**
+ * Why `dir` is no longer the repo a direct workspace was created on, or null when
+ * it still is: the directory must exist, be the toplevel of a git repo (not a
+ * folder inside some other repo after its .git went away), and — when an identity
+ * was captured — still contain that root commit. Object presence, not "HEAD's
+ * root", so switching to an orphan branch or rewriting recent history is fine. A
+ * shallow clone may lack the commit legitimately, so it isn't held against one.
+ * Never initializes or repairs anything.
+ */
+export async function directRepoProblem(dir: string, identity: string, host: ExecHost = localHost): Promise<string | null> {
+  if (!(await host.fs.exists(dir).catch(() => false))) {
+    return `${dir} is missing — it may have been moved or deleted.`;
+  }
+  const top = await host.exec('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
+  if (!top.ok) return `${dir} is no longer a git repository.`;
+  const real = (p: string) => {
+    try {
+      return fs.realpathSync.native(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  if (real(top.stdout.trim()) !== real(dir)) {
+    return `${dir} is no longer the root of its own git repository (it now sits inside ${top.stdout.trim()}).`;
+  }
+  if (identity) {
+    const has = await host.exec('git', ['cat-file', '-e', `${identity}^{commit}`], { cwd: dir });
+    if (!has.ok) {
+      const shallow = await host.exec('git', ['rev-parse', '--is-shallow-repository'], { cwd: dir });
+      if (shallow.stdout.trim() !== 'true') {
+        return `${dir} now holds a different git repository than the one this workspace was created from.`;
+      }
+    }
+  }
+  return null;
 }
 
 export async function renameBranch(wtPath: string, newName: string, host: ExecHost = localHost) {
@@ -413,10 +458,15 @@ export async function statusSummary(wtPath: string, baseRef: string, host: ExecH
     aheadBehind(),
     host.exec('git', ['--no-optional-locks', 'status', '--porcelain', '-uall'], { cwd: wtPath }),
   ]);
+  return parsePorcelainCounts(st.stdout, branch, ahead, behind);
+}
+
+/** Staged/unstaged/untracked counts from `git status --porcelain` (v1). */
+function parsePorcelainCounts(porcelain: string, branch: string, ahead: number, behind: number): GitStatusSummary {
   let staged = 0;
   let unstaged = 0;
   let untracked = 0;
-  for (const line of st.stdout.split('\n')) {
+  for (const line of porcelain.split('\n')) {
     if (!line) continue;
     const x = line[0];
     const y = line[1];
@@ -446,10 +496,16 @@ export async function changedFilePaths(wtPath: string, baseRef: string, limit = 
   const out = new Set<string>();
   const mb = await resolveMergeBase(wtPath, baseRef, host);
   if (mb) {
-    const r = await host.exec('git', ['diff', '--name-only', mb, '--', '.', ':!.context'], { cwd: wtPath, timeout: 30_000 });
-    for (const f of r.stdout.split('\n')) if (f.trim()) out.add(f.trim());
+    // Plumbing + numstat: names of files whose content differs, without the index
+    // refresh porcelain `git diff` does against the working tree (lock-free; this
+    // runs in the background, and in a direct workspace it's the user's index).
+    const r = await host.exec('git', ['--no-optional-locks', 'diff-index', '--numstat', mb, '--', '.', ':!.context'], { cwd: wtPath, timeout: 30_000 });
+    for (const line of r.stdout.split('\n')) {
+      const f = line.split('\t')[2]?.trim();
+      if (f) out.add(f);
+    }
   }
-  const st = await host.exec('git', ['status', '--porcelain', '-uall'], { cwd: wtPath });
+  const st = await host.exec('git', ['--no-optional-locks', 'status', '--porcelain', '-uall'], { cwd: wtPath });
   for (const line of st.stdout.split('\n')) {
     const f = line.slice(3).trim();
     if (line.startsWith('??') && f && !f.startsWith('.context/')) out.add(f);
@@ -561,6 +617,13 @@ export async function diffStat(
     });
     ({ additions, deletions } = parseNumstat(r.stdout));
   }
+  additions += await untrackedLineCount(wtPath, host);
+  return { additions, deletions };
+}
+
+/** Lines in (up to 50) untracked text files — what `git diff` can't count. */
+async function untrackedLineCount(wtPath: string, host: ExecHost): Promise<number> {
+  let lines = 0;
   const untracked = await untrackedPaths(wtPath, host);
   for (const f of untracked.slice(0, 50)) {
     try {
@@ -569,10 +632,10 @@ export async function diffStat(
       if (fst.size > 1_000_000) continue;
       const content = (await host.fs.read(full)).toString('utf8');
       if (content.includes('\0')) continue; // binary
-      additions += content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+      lines += content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
     } catch {}
   }
-  return { additions, deletions };
+  return lines;
 }
 
 // ---------- diff ----------
@@ -587,7 +650,14 @@ export async function workspaceDiff(wtPath: string, baseRef: string, host: ExecH
     });
     files.push(...parseUnifiedDiff(d.stdout));
   }
-  // Untracked files don't appear in `git diff`; synthesize entries.
+  files.push(...(await untrackedDiffFiles(wtPath, host)));
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { base: baseRef, files };
+}
+
+/** Untracked files don't appear in `git diff`; synthesize entries (up to 200). */
+async function untrackedDiffFiles(wtPath: string, host: ExecHost): Promise<DiffFile[]> {
+  const files: DiffFile[] = [];
   const untracked = await untrackedPaths(wtPath, host);
   for (const file of untracked.slice(0, 200)) {
     const nd = await host.exec('git', ['diff', '--no-color', '--no-index', '--', '/dev/null', file], {
@@ -603,32 +673,163 @@ export async function workspaceDiff(wtPath: string, baseRef: string, host: ExecH
       files.push({ path: file, oldPath: null, status: 'untracked', additions: 0, deletions: 0, hunks: [] });
     }
   }
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return { base: baseRef, files };
+  return files;
+}
+
+// ---------- direct workspaces (the user's own checkout) ----------
+//
+// A direct workspace has no branch of its own to compare against a base: what
+// matters is what's uncommitted, split by where it sits in git, plus what the
+// current branch has that its upstream doesn't. All reads here leave the index
+// alone, so they never contend with the user's own git commands for its lock:
+// --no-optional-locks covers status, but porcelain `git diff` refreshes the index
+// whenever the working tree is one side (vs the index or vs a commit), flag or
+// not — those comparisons use the `diff-files` / `diff-index` plumbing instead.
+
+/** git's empty tree — the "before" of an unborn branch (no commits yet). */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+const gitRead = (args: string[]) => ['--no-optional-locks', ...args];
+
+/** HEAD's commit, or the empty tree on an unborn branch. */
+async function headOrEmpty(wtPath: string, host: ExecHost): Promise<string> {
+  return (await revParse(wtPath, 'HEAD', host)) ?? EMPTY_TREE;
+}
+
+/** The current branch's upstream ("origin/feature"), or null (none / detached). */
+export async function upstreamOf(wtPath: string, host: ExecHost = localHost): Promise<string | null> {
+  const r = await host.exec('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], { cwd: wtPath });
+  return r.ok && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
+/** statusSummary for a direct workspace: same counts, but ahead/behind against the
+ *  branch's own upstream (0/0 when it has none). */
+export async function directStatusSummary(wtPath: string, host: ExecHost = localHost): Promise<GitStatusSummary> {
+  const [branch, upstream, st] = await Promise.all([
+    currentBranch(wtPath, host),
+    upstreamOf(wtPath, host),
+    host.exec('git', gitRead(['status', '--porcelain', '-uall']), { cwd: wtPath }),
+  ]);
+  let ahead = 0;
+  let behind = 0;
+  if (upstream) {
+    const r = await host.exec('git', ['rev-list', '--left-right', '--count', `${upstream}...HEAD`], { cwd: wtPath });
+    if (r.ok) [behind, ahead] = r.stdout.trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
+  }
+  return { ...parsePorcelainCounts(st.stdout, branch, ahead, behind), upstream };
+}
+
+/** Name → DiffFile from a `git diff` over the given args (cwd = wtPath). */
+async function diffFiles(wtPath: string, args: string[], host: ExecHost): Promise<DiffFile[]> {
+  const d = await host.exec('git', gitRead(['diff', '--no-color', '--find-renames', ...args, '--', '.', ':!.context']), {
+    cwd: wtPath,
+    timeout: 60_000,
+  });
+  return parseUnifiedDiff(d.stdout);
+}
+
+/** Working tree vs `against` (the index, or a commit), without refreshing the
+ *  index. Unrefreshed stat info can make a touched-but-identical file show up as
+ *  a bare header; drop those. */
+async function worktreeFiles(wtPath: string, against: 'index' | string, host: ExecHost): Promise<DiffFile[]> {
+  const cmd = against === 'index' ? ['diff-files', '-p'] : ['diff-index', '-p', '-M', against];
+  const d = await host.exec('git', gitRead([...cmd, '--no-color', '--', '.', ':!.context']), { cwd: wtPath, timeout: 60_000 });
+  return parseUnifiedDiff(d.stdout).filter((f) => f.hunks.length > 0 || f.status === 'binary' || f.status === 'deleted');
+}
+const unstagedFiles = (wtPath: string, host: ExecHost) => worktreeFiles(wtPath, 'index', host);
+
+/**
+ * A direct workspace's diff in one of four scopes (see DiffScope). One entry per
+ * path in every scope; in `uncommitted`, each tracked file says whether its
+ * change is staged, unstaged, or both. Unborn HEAD diffs against the empty tree;
+ * `branch` falls back from the upstream to the project's base, then to nothing.
+ */
+export async function directDiff(
+  wtPath: string,
+  scope: DiffScope,
+  baseRef: string | null,
+  host: ExecHost = localHost
+): Promise<WorkspaceDiff> {
+  const head = await headOrEmpty(wtPath, host);
+  const sorted = (base: string, files: DiffFile[]): WorkspaceDiff => ({
+    base,
+    scope,
+    files: files.sort((a, b) => a.path.localeCompare(b.path)),
+  });
+  if (scope === 'staged') return sorted('HEAD (staged changes)', await diffFiles(wtPath, ['--cached', head], host));
+  if (scope === 'unstaged') {
+    return sorted('the index (unstaged changes)', [...(await unstagedFiles(wtPath, host)), ...(await untrackedDiffFiles(wtPath, host))]);
+  }
+  if (scope === 'branch') {
+    const upstream = await upstreamOf(wtPath, host);
+    const from = upstream ?? (baseRef ? await resolveMergeBase(wtPath, baseRef, host) : null);
+    if (!from || head === EMPTY_TREE) return sorted(upstream ?? baseRef ?? 'no upstream', []);
+    // three-dot: what HEAD added since it forked from `from`, committed only.
+    const files = await diffFiles(wtPath, [upstream ? `${upstream}...HEAD` : `${from}..HEAD`], host);
+    return sorted(upstream ?? `${baseRef} (no upstream)`, files);
+  }
+  // uncommitted: working tree vs HEAD, each file tagged by where its change sits.
+  const [all, staged, unstaged, untracked] = await Promise.all([
+    worktreeFiles(wtPath, head, host),
+    host.exec('git', gitRead(['diff', '--name-only', '--cached', head, '--', '.', ':!.context']), { cwd: wtPath }),
+    unstagedFiles(wtPath, host),
+    untrackedDiffFiles(wtPath, host),
+  ]);
+  const inIndex = new Set(staged.stdout.split('\n').filter(Boolean));
+  const inTree = new Set(unstaged.map((f) => f.path));
+  for (const f of all) {
+    const s = inIndex.has(f.path) || (!!f.oldPath && inIndex.has(f.oldPath));
+    const u = inTree.has(f.path);
+    f.stage = s && u ? 'both' : s ? 'staged' : 'unstaged';
+  }
+  return sorted('HEAD', [...all, ...untracked]);
+}
+
+/** Sidebar +/− for a direct workspace: uncommitted changes vs HEAD plus untracked. */
+export async function directDiffStat(wtPath: string, host: ExecHost = localHost): Promise<{ additions: number; deletions: number }> {
+  const head = await headOrEmpty(wtPath, host);
+  const r = await host.exec('git', gitRead(['diff-index', '--numstat', head, '--', '.', ':!.context']), { cwd: wtPath, timeout: 30_000 });
+  const { additions, deletions } = parseNumstat(r.stdout);
+  return { additions: additions + (await untrackedLineCount(wtPath, host)), deletions };
 }
 
 // ---------- misc workspace helpers ----------
 
-/** Create .context/ and make git ignore it for every worktree of the repo. */
-export async function ensureContextDir(wtPath: string, host: ExecHost = localHost) {
+/** Create .context/ and make git ignore it for every worktree of the repo.
+ *  Resolves true once git ignores .context/ (or this isn't a git repo, where
+ *  there's nothing to commit it into); false when that couldn't be arranged —
+ *  callers working in a user's own checkout surface it rather than risk the
+ *  folder being swept into a commit. */
+export async function ensureContextDir(wtPath: string, host: ExecHost = localHost): Promise<boolean> {
   const p = host.path;
-  const dir = p.join(wtPath, '.context');
-  await host.fs.mkdirp(p.join(dir, 'attachments'));
-  const common = await host.exec('git', ['rev-parse', '--git-common-dir'], { cwd: wtPath });
-  if (common.ok) {
-    let commonDir = common.stdout.trim();
-    if (!p.isAbsolute(commonDir)) commonDir = p.join(wtPath, commonDir);
-    const excludePath = p.join(commonDir, 'info', 'exclude');
-    try {
-      await host.fs.mkdirp(p.dirname(excludePath));
-      const cur = (await host.fs.exists(excludePath)) ? (await host.fs.read(excludePath)).toString('utf8') : '';
-      if (!cur.split('\n').includes('.context/')) {
-        await host.fs.write(excludePath, cur + (cur.endsWith('\n') || cur === '' ? '' : '\n') + '.context/\n');
-      }
-    } catch {
-      // non-fatal
-    }
+  await host.fs.mkdirp(p.join(wtPath, '.context', 'attachments'));
+  // A path under .context/: a directory pattern matches what's inside it. Pattern
+  // check only (--no-index), so it holds even if someone committed .context/.
+  const ignored = async () => {
+    const r = await host.exec('git', ['check-ignore', '-q', '--no-index', '.context/.maestro'], { cwd: wtPath });
+    return r.exitCode === 0;
+  };
+  const inRepo = await host.exec('git', ['rev-parse', '--is-inside-work-tree'], { cwd: wtPath });
+  if (!inRepo.ok) return true;
+  // Already ignored (repo .gitignore, global excludes, or an earlier run): touch nothing.
+  if (await ignored()) return true;
+  // info/exclude lives in the common git dir, shared by every linked worktree;
+  // --git-path knows where that is for any layout (gitdir: files, GIT_COMMON_DIR).
+  const where = await host.exec('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: wtPath });
+  if (!where.ok || !where.stdout.trim()) return false;
+  let excludePath = where.stdout.trim();
+  if (!p.isAbsolute(excludePath)) excludePath = p.join(wtPath, excludePath);
+  try {
+    await host.fs.mkdirp(p.dirname(excludePath));
+    const cur = (await host.fs.exists(excludePath)) ? (await host.fs.read(excludePath)).toString('utf8') : '';
+    const line = (cur === '' || cur.endsWith('\n') ? '' : '\n') + '.context/\n';
+    // Append rather than rewrite, so a concurrent edit to the file isn't lost.
+    if (host.id === 'local') await fs.promises.appendFile(excludePath, line);
+    else await host.fs.write(excludePath, cur + line);
+  } catch {
+    // fall through to the re-check
   }
+  return ignored();
 }
 
 /**

@@ -6,7 +6,7 @@ import * as git from './git';
 import * as gh from './github';
 import { generateText } from './llm';
 import type { ExecHost } from '../hosts/types';
-import type { Project, Workspace } from '../../shared/types';
+import { DIRECT_REFUSAL, isDirectWorkspace, type Project, type Workspace } from '../../shared/types';
 
 function friendlyPushError(raw: string): string {
   if (/could not read Username|Authentication failed|HTTP 403|Invalid username or (password|token)/i.test(raw)) {
@@ -32,6 +32,9 @@ export async function createPr(
   const project = Projects.get(ws.projectId);
   if (!project) return { ok: false, error: 'Project not found' };
   if (project.baseBranch == null) return { ok: false, error: 'Not a git repository' };
+  // One-click PR commits *everything* and pushes — on the user's own checkout
+  // that would sweep up unrelated edits, so it's off for direct workspaces.
+  if (isDirectWorkspace(ws, project)) return { ok: false, error: DIRECT_REFUSAL('open pull requests') };
   const host = hostForProject(project);
 
   // gh auth is per-host: local uses the app's gh login; remote uses `gh` on the
@@ -143,6 +146,7 @@ export async function mergePr(
 ): Promise<{ ok: boolean; error?: string }> {
   const ws = Workspaces.get(workspaceId);
   if (!ws) return { ok: false, error: 'Workspace not found' };
+  if (isDirectWorkspace(ws, Projects.get(ws.projectId))) return { ok: false, error: DIRECT_REFUSAL('merge pull requests') };
   const res = await gh.prMerge(ws.worktreePath, method, hostForWorkspace(ws));
   if (res.ok) {
     const fresh = Workspaces.get(workspaceId)!;

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { GitHubMark } from '../../shared/ui/brandIcons';
 import { useApp, capsOf } from '../store/app';
+import { isDirectIn } from '../store/helpers';
 import { StatusDot } from './common';
 import { LiquidGlass } from '../../shared/ui/LiquidGlass';
 import { formatShortcut, type ShortcutId } from '../../shared/shortcuts';
@@ -79,7 +80,8 @@ export default function CommandPalette() {
     // Gate git/PR commands on the active workspace's project rung.
     const activeWs = workspaces.find((w) => w.id === activeWsId);
     const caps = capsOf({ projectCaps, projects }, activeWs?.projectId);
-    const showPr = caps.githubRemote && ghAuthed;
+    // No one-click PR in a direct workspace (the user's own checkout).
+    const showPr = caps.githubRemote && ghAuthed && !isDirectIn({ workspaces, projects }, activeWsId);
     const wsActions: Item[] = activeWsId
       ? ([
           { id: 'a-chat', label: 'Go to Chat', hint: hk('focus-composer'), icon: <MessageSquare size={13} />, action: () => { s.setTab(activeWsId, 'chat'); s.focusComposer(); }, show: true },

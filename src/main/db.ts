@@ -230,6 +230,9 @@ export function initDb(dbPath: string) {
     // Archive disk reclaim: the archived worktree's files were offloaded
     // (docs/specs/archive-disk-reclaim.md). Written only via setFilesFreed.
     'ALTER TABLE workspaces ADD COLUMN filesFreed INTEGER NOT NULL DEFAULT 0',
+    // Direct workspaces ("Existing working directory"): the repo identity captured
+    // at creation. NULL ⇒ not direct — every existing row. Written only via setDirectRepo.
+    'ALTER TABLE workspaces ADD COLUMN directRepo TEXT',
   ]) {
     try {
       db.exec(stmt);
@@ -291,6 +294,7 @@ function rowToWorkspace(r: any): Workspace {
     port: r.port,
     archived: !!r.archived,
     filesFreed: !!r.filesFreed,
+    directRepo: r.directRepo ?? null,
     createdAt: r.createdAt,
     lastUserMessageAt: r.lastUserMessageAt ?? null,
     prNumber: r.prNumber ?? null,
@@ -493,6 +497,11 @@ export const Workspaces = {
    *  stale row object written back by anyone else must not flip it. */
   setFilesFreed(id: string, freed: boolean) {
     stmt('UPDATE workspaces SET filesFreed=? WHERE id=?').run(freed ? 1 : 0, id);
+  },
+  /** Mark a just-inserted workspace as direct, with its repo identity (see
+   *  Workspace.directRepo). Never cleared: the marker is fixed at creation. */
+  setDirectRepo(id: string, directRepo: string) {
+    stmt('UPDATE workspaces SET directRepo=? WHERE id=?').run(directRepo, id);
   },
   usedPorts(): number[] {
     return (stmt('SELECT port FROM workspaces').all() as any[]).map((r) => r.port);

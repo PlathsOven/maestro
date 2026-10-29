@@ -43,7 +43,7 @@ import { invoke, tryInvoke } from '../lib/api';
 import { useEditors } from '../lib/editors';
 import { timeAgo, fmtStat } from '../../shared/ui/format';
 import { mergeabilityUnknown } from '../lib/resolveConflicts';
-import { DEFAULT_TERM_IDS, EMPTY_ARR, useApp, useCaps, useShowPr } from '../store/app';
+import { DEFAULT_TERM_IDS, EMPTY_ARR, useApp, useCaps, useIsDirect, useShowPr } from '../store/app';
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
 import { TodoSection } from './TodoSection';
 import { ContextMenu, CountBadge, MenuDivider, MenuItem, Resizer, Segmented, Spinner } from './common';
@@ -54,6 +54,7 @@ import RunPanel from './RunPanel';
 import SkillsPanel from './SkillsPanel';
 import StatusPanel from './StatusPanel';
 import ChangedFileTree from './ChangedFileTree';
+import { StageTag } from './DiffViewer';
 import PtyView from './TerminalPanel';
 import type { ContextFile, FsEntry, PrStatus, Workspace } from '../../shared/types';
 import { copyText } from '../lib/clipboard';
@@ -66,7 +67,9 @@ export default function RightPanel({ workspace }: { workspace: Workspace }) {
   const rightW = useApp((s) => s.layout.right);
   const collapsed = useApp((s) => s.settings.rightPanelCollapsed);
   const caps = useCaps(workspace.projectId);
-  const showPr = useShowPr(workspace.projectId);
+  // A direct workspace is the user's own checkout: no one-click PR/merge there.
+  const direct = useIsDirect(workspace);
+  const showPr = useShowPr(workspace.projectId) && !direct;
   // Diff/Changes surfaces: real git, or a folder project's shadow checkpoints.
   const showDiff = caps.git || caps.checkpoints;
   // The header (PR strip + tabs) floats over the tab content; the scroller is
@@ -207,7 +210,8 @@ function CollapsedRightPanel({ workspace }: { workspace: Workspace }) {
   const rightTab = useApp((s) => s.rightTab[workspace.id] ?? 'status');
   const changed = useApp((s) => s.gitStatus[workspace.id]?.changedFiles ?? 0);
   const caps = useCaps(workspace.projectId);
-  const showPr = useShowPr(workspace.projectId);
+  const direct = useIsDirect(workspace);
+  const showPr = useShowPr(workspace.projectId) && !direct;
 
   const expand = (tab?: 'status' | 'files' | 'changes' | 'skills') => {
     if (tab) useApp.getState().setRightTab(workspace.id, tab);
@@ -634,6 +638,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const comments = useApp((s) => s.comments[workspace.id]) ?? EMPTY_ARR;
   const pr = useApp((s) => s.prStatus[workspace.id]);
   const project = useApp((s) => s.projects.find((p) => p.id === workspace.projectId));
+  const direct = useIsDirect(workspace);
   const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const wsVersion = useApp((s) => s.wsVersion[workspace.id] ?? 0);
 
@@ -650,9 +655,17 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
     <div className="space-y-3 px-3 pb-4 pt-3.5">
       {/* summary line — folder projects diff against their last shadow checkpoint */}
       <div className="flex items-center justify-between px-1.5 text-xs text-muted">
-        <span>
-          vs <span className="font-mono">{project?.baseBranch ?? diff?.base ?? 'last checkpoint'}</span>
-        </span>
+        {direct ? (
+          // The user's own checkout: changes vs HEAD; ahead/behind vs the branch's upstream.
+          <span title={gitStatus?.upstream ? `Ahead/behind ${gitStatus.upstream}` : 'This branch has no upstream — ahead/behind not tracked'}>
+            vs <span className="font-mono">{diff?.base ?? 'HEAD'}</span>
+            {gitStatus && !gitStatus.upstream && <span className="ml-1.5 text-faint">· no upstream</span>}
+          </span>
+        ) : (
+          <span>
+            vs <span className="font-mono">{project?.baseBranch ?? diff?.base ?? 'last checkpoint'}</span>
+          </span>
+        )}
         {project?.kind === 'folder' ? (
           <button
             className="btn h-6 gap-1 px-2.5 text-2xs"
@@ -712,9 +725,12 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
           files={files.slice(0, 100)}
           onSelect={(f) => useApp.getState().revealDiffFile(workspace.id, f.path)}
           trailing={(f) => (
-            <span className="shrink-0 font-mono text-2xs">
-              <span className="text-ok">+{f.additions}</span> <span className="text-err">−{f.deletions}</span>
-            </span>
+            <>
+              <StageTag file={f} />
+              <span className="shrink-0 font-mono text-2xs">
+                <span className="text-ok">+{f.additions}</span> <span className="text-err">−{f.deletions}</span>
+              </span>
+            </>
           )}
         />
       </div>

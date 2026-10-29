@@ -20,11 +20,18 @@ import { watchWorkspace, unwatchWorkspace } from './watcher';
 import { ensureShadow, removeShadow } from './shadow';
 import * as offload from './offload';
 import { reuseDependencies } from './depreuse';
-import type { Attachment, CreateWorkspaceOpts, HarnessId, Project, ProjectKind, Workspace } from '../../shared/types';
+import { maxAgentId } from './harnessFiles';
+import { DIRECT_REFUSAL, isDirectWorkspace, type Attachment, type CreateWorkspaceOpts, type HarnessId, type Project, type ProjectKind, type Workspace } from '../../shared/types';
 import { provisionalTitle } from '../../shared/chatTitle';
 
 function projectSlug(p: Project): string {
   return slugify(p.name);
+}
+
+/** Server-side backstop for the renderer hiding these actions (Maestro Web and
+ *  the IPC surface reach them too). */
+function assertNotDirect(ws: Workspace, what: string): void {
+  if (isDirectWorkspace(ws, Projects.get(ws.projectId))) throw new Error(DIRECT_REFUSAL(what));
 }
 
 function workspacesRoot(p: Project): string {
@@ -184,6 +191,15 @@ export async function createWorkspace(opts: CreateWorkspaceOpts): Promise<Worksp
   // / fetch / setup. Ignored on folder & remote projects (already in-place).
   const adopt = opts.adopt && project.kind === 'git' && !project.hostId ? opts.adopt : undefined;
 
+  // "Existing working directory": work in the repo's own checkout, on whatever
+  // is checked out — the same in-place shape as adopt, pointed at repoPath.
+  if (opts.from?.type === 'direct') {
+    if (project.kind !== 'git' || project.hostId) {
+      throw new Error('Working directly in the existing directory is only available for local git projects.');
+    }
+    return withDirectCreateLock(project.id, () => createDirectWorkspace(project, opts));
+  }
+
   // Folder projects — and all remote projects in v1 — have exactly one in-place
   // workspace (the folder/repo itself). It's auto-created when the project is
   // added; extra workspaces are refused (there's no worktree model to isolate
@@ -234,6 +250,63 @@ export async function createWorkspace(opts: CreateWorkspaceOpts): Promise<Worksp
   return insertAndProvision(project, ws, opts);
 }
 
+/**
+ * One direct workspace per repo: its chats are the parallel sessions. A live one
+ * is reused — the task, if any, starts in a fresh chat there — so repeated
+ * "Existing working directory" creates don't stack up rows, watchers and ports
+ * on one directory. Archived ones are left alone (a new one is made).
+ */
+async function createDirectWorkspace(project: Project, opts: CreateWorkspaceOpts): Promise<Workspace> {
+  const existing = Workspaces.forProject(project.id).find((w) => !w.archived && isDirectWorkspace(w, project));
+  if (existing) {
+    const problem = await git.directRepoProblem(existing.worktreePath, existing.directRepo ?? '');
+    if (problem) throw new Error(problem);
+    const attachments: Attachment[] = [];
+    for (const a of opts.initialAttachments ?? []) {
+      attachments.push({ kind: a.kind, path: await writeWorkspaceAttachment(existing, a), label: a.name });
+    }
+    const text = (opts.initialPrompt ?? '').trim();
+    if (text || attachments.length) {
+      // Same allocation as the renderer's newChat: never chat 1 (its tab may hold a draft).
+      const agentId = Math.max(1, maxAgentId(existing.id), ...Messages.list(existing.id).map((m) => m.agentId)) + 1;
+      const { sendChat } = await import('./chat');
+      await sendChat({ workspaceId: existing.id, agentId, text, attachments });
+    }
+    return Workspaces.get(existing.id) ?? existing;
+  }
+
+  const problem = await git.directRepoProblem(project.repoPath, '');
+  if (problem) throw new Error(problem);
+  const siblings = Workspaces.forProject(project.id).map((w) => w.name);
+  const name = opts.name?.trim() ? slugify(opts.name) : generateWorkspaceName(siblings);
+  if (siblings.includes(name)) throw new Error(`Workspace "${name}" already exists`);
+  const branch = await git.currentBranch(project.repoPath).catch(() => '');
+  // Never off this machine: a cloud move would mirror the user's checkout away.
+  const local = { ...opts, hostId: null };
+  const ws = newWorkspaceRow(project, local, {
+    name,
+    branch: branch === 'HEAD' ? '' : branch,
+    wsKind: 'in-place',
+    worktreePath: project.repoPath,
+  });
+  ws.directRepo = await git.repoIdentity(project.repoPath);
+  return insertAndProvision(project, ws, local);
+}
+
+// Direct creates for one project run one at a time, so two quick requests can't
+// both miss the live workspace and each make one.
+const directCreateLocks = new Map<string, Promise<unknown>>();
+function withDirectCreateLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const next = (directCreateLocks.get(projectId) ?? Promise.resolve()).catch(() => {}).then(fn);
+  directCreateLocks.set(projectId, next);
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (directCreateLocks.get(projectId) === next) directCreateLocks.delete(projectId);
+    });
+  return next;
+}
+
 /** Build a fresh workspace row from the fields that differ between in-place and
  *  worktree creation; everything else is a constant setup default. Calls
  *  Settings.nextPort() exactly once per creation. */
@@ -270,6 +343,7 @@ function newWorkspaceRow(
 /** Insert a freshly-built workspace, announce it, and start provisioning. */
 function insertAndProvision(project: Project, ws: Workspace, opts: CreateWorkspaceOpts): Workspace {
   Workspaces.insert(ws);
+  if (ws.directRepo != null) Workspaces.setDirectRepo(ws.id, ws.directRepo);
   broadcast('ws:updated', ws);
   provisionAsync(project, ws, opts);
   return ws;
@@ -331,11 +405,18 @@ async function provisionWorkspace(project: Project, ws: Workspace, opts: CreateW
   // restoring ignored files a fresh worktree lacks — an in-place folder already
   // has them). Just ensure .context/ and honor the first prompt. (§6.3, G4)
   if (ws.wsKind === 'in-place') {
-    await git.ensureContextDir(ws.worktreePath, hostForProject(project)); // .git/info/exclude step no-ops without git
+    const ignored = await git.ensureContextDir(ws.worktreePath, hostForProject(project)); // .git/info/exclude step no-ops without git
+    // In the user's own checkout an unignored .context/ (attachments, agent notes)
+    // could be swept into their next `git add -A` — say so instead of shrugging.
+    if (!ignored && isDirectWorkspace(ws, project)) {
+      ws.setupError =
+        'Maestro couldn’t make git ignore .context/ in this repository (is .git/info/exclude writable?). ' +
+        'Chat attachments and agent notes go there — add ".context/" to .gitignore or .git/info/exclude so they stay out of your commits.';
+    }
     // Baseline shadow-git checkpoint for local folder projects (§7 Phase 5) so
     // the Diff tab shows changes since the folder was opened. Best-effort.
     if (project.kind === 'folder' && !project.hostId) await ensureShadow(ws).catch(() => {});
-    ws.status = 'idle';
+    ws.status = ws.setupError ? 'needs-attention' : 'idle';
     Workspaces.update(ws);
     broadcast('ws:updated', ws);
     watchWorkspace(ws);
@@ -523,7 +604,12 @@ export async function restoreWorkspace(workspaceId: string): Promise<{ workspace
   let warning: string | undefined;
 
   if (host.id === 'local') {
-    if (ws.wsKind === 'in-place') {
+    if (isDirectWorkspace(ws, project)) {
+      // The user's own checkout: it must still be the same repo, at its root. A
+      // replacement at that path is refused, never adopted or repaired.
+      const problem = await git.directRepoProblem(ws.worktreePath, ws.directRepo ?? '');
+      if (problem) throw new Error(problem);
+    } else if (ws.wsKind === 'in-place') {
       // An in-place folder that's gone was moved or deleted by the user — never
       // recreate it (there's no branch to rebuild it from). Surface the gap.
       if (!fs.existsSync(ws.worktreePath)) throw new Error('This folder is missing — it may have been moved or deleted.');
@@ -571,9 +657,16 @@ function offloadTarget(ws: Workspace, project: Project): offload.OffloadTarget {
   };
 }
 
-/** Only Maestro-owned local worktrees: never an in-place folder (G4) or a cloud one. */
+/** Only Maestro-owned local worktrees: never an in-place folder (G4), the repo's
+ *  own checkout, or a cloud one. */
 function offloadable(ws: Workspace, project: Project): boolean {
-  return project.kind === 'git' && !project.hostId && ws.wsKind === 'worktree' && !isCloudWorkspace(ws);
+  return (
+    project.kind === 'git' &&
+    !project.hostId &&
+    ws.wsKind === 'worktree' &&
+    path.resolve(ws.worktreePath) !== path.resolve(project.repoPath) &&
+    !isCloudWorkspace(ws)
+  );
 }
 
 // Offload and rehydrate of one workspace never overlap: a restore issued while
@@ -599,6 +692,11 @@ function setFilesFreed(ws: Workspace, freed: boolean) {
 
 /** Delete a worktree for good, whether it's on disk or offloaded. */
 function destroyWorktree(project: Project, ws: Workspace): Promise<void> {
+  // Callers skip in-place rows already; this is the last line before
+  // `git worktree remove --force`, so refuse the user's own checkout outright.
+  if (ws.wsKind !== 'worktree' || path.resolve(ws.worktreePath) === path.resolve(project.repoPath)) {
+    return Promise.resolve();
+  }
   return withDiskLock(ws.id, async () => {
     await git.worktreeRemove(project.repoPath, ws.worktreePath);
     await offload.discardOffload(offloadTarget(ws, project));
@@ -695,7 +793,7 @@ export async function recreateAdoptedFromBranch(
   if (!project) return { ok: false, error: 'Project not found' };
   // Only adopted in-place workspaces on a local git project qualify (they alone
   // have a real branch to rebuild from).
-  if (ws.wsKind !== 'in-place' || project.kind !== 'git' || project.hostId || !ws.branch) {
+  if (ws.wsKind !== 'in-place' || project.kind !== 'git' || project.hostId || !ws.branch || isDirectWorkspace(ws, project)) {
     return { ok: false, error: 'This workspace can’t be recreated from a branch.' };
   }
   if (fs.existsSync(ws.worktreePath)) {
@@ -752,6 +850,7 @@ export async function switchBranch(
   create: boolean
 ): Promise<{ ok: boolean; conflict?: string; workspace?: Workspace }> {
   const ws = mustWorkspace(workspaceId);
+  assertNotDirect(ws, 'switch branches');
   const host = hostForProject(Projects.get(ws.projectId)!);
   const res = await git.checkout(ws.worktreePath, branch, create, host);
   if (!res.ok) return { ok: false, conflict: res.conflict };
@@ -786,6 +885,7 @@ export async function continueOnNewBranch(
   if (!ws) return { ok: false, error: 'Workspace not found' };
   const project = Projects.get(ws.projectId);
   if (!project) return { ok: false, error: 'Project not found' };
+  if (isDirectWorkspace(ws, project)) return { ok: false, error: DIRECT_REFUSAL('start a new branch') };
   const base = project.baseBranch;
   if (base == null) return { ok: false, error: 'Not a git repository' };
   const oldBranch = ws.branch;
@@ -888,6 +988,7 @@ export async function continueOnNewBranch(
 
 export async function renameWorkspaceBranch(workspaceId: string, branch: string): Promise<Workspace> {
   const ws = mustWorkspace(workspaceId);
+  assertNotDirect(ws, 'rename the branch');
   await git.renameBranch(ws.worktreePath, branch, hostForProject(Projects.get(ws.projectId)!));
   ws.branch = branch;
   Workspaces.update(ws);

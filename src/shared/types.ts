@@ -190,6 +190,12 @@ export interface Workspace {
   /** Archived and its worktree offloaded to save disk (docs/specs/archive-disk-reclaim.md):
    *  nothing on disk until restored. */
   filesFreed?: boolean;
+  /** Set only on workspaces created via "Create from → Existing working directory"
+   *  (see isDirectWorkspace): the repo's identity when it was created — the root
+   *  commit of HEAD's history, or '' when the repo had no commits yet. Restore
+   *  checks it so an unrelated repo at the same path is refused. null/undefined ⇒
+   *  not a direct workspace (every row that pre-dates the column). */
+  directRepo?: string | null;
   createdAt: number;
   lastUserMessageAt: number | null;
   prNumber: number | null;
@@ -512,11 +518,23 @@ export interface DiffFile {
   additions: number;
   deletions: number;
   hunks: DiffHunk[];
+  /** Direct workspaces' "uncommitted" scope only: where the change sits in git
+   *  (`both` = partly staged). Absent everywhere else. */
+  stage?: 'staged' | 'unstaged' | 'both';
 }
+
+/** What a direct workspace's Diff compares (worktree workspaces have one view:
+ *  the branch vs its base). `uncommitted` = working tree vs HEAD (default);
+ *  `staged` = index vs HEAD; `unstaged` = working tree vs index, plus untracked;
+ *  `branch` = commits on the current branch not yet in its upstream (or, with no
+ *  upstream, since the project's base branch). */
+export type DiffScope = 'uncommitted' | 'staged' | 'unstaged' | 'branch';
 
 export interface WorkspaceDiff {
   base: string;
   files: DiffFile[];
+  /** Set on direct workspaces' diffs: which comparison `files` holds. */
+  scope?: DiffScope;
 }
 
 /** One entry in the working-tree file browser ("All files" tab). */
@@ -527,8 +545,12 @@ export interface FsEntry {
 
 export interface GitStatusSummary {
   branch: string;
-  ahead: number; // vs merge-base with base branch
+  ahead: number; // vs merge-base with base branch (direct workspaces: vs `upstream`)
   behind: number;
+  /** Direct workspaces only: the current branch's upstream (e.g. "origin/feature")
+   *  that ahead/behind count against; null when it has none (or HEAD is
+   *  detached), in which case both are 0. */
+  upstream?: string | null;
   staged: number;
   unstaged: number;
   untracked: number;
@@ -1013,6 +1035,37 @@ export function effectiveCloudHostId(
   const cloud = settings?.cloud;
   return cloud?.defaultOn ? (cloud.hostId ?? null) : null;
 }
+
+/**
+ * A direct workspace works in a local git project's own checkout — "Create from →
+ * Existing working directory": no worktree, no new branch, whatever is checked
+ * out stays checked out. It's an `in-place` workspace whose path IS the repo, so
+ * every in-place guard (never removed/offloaded on disk) already covers it; this
+ * predicate additionally switches off the branch/PR lifecycle (rename, switch,
+ * continue, create/merge PR), which would rewrite the user's own checkout, and
+ * gives it a HEAD-relative diff. Explicitly marked at creation (`directRepo`):
+ * other in-place rows at the repo root — e.g. a harness-chat-sync import — keep
+ * the classification they always had.
+ */
+export function isDirectWorkspace(
+  ws: Pick<Workspace, 'wsKind' | 'worktreePath' | 'hostId' | 'directRepo'>,
+  project: Pick<Project, 'kind' | 'hostId' | 'repoPath'> | null | undefined
+): boolean {
+  return (
+    !!project &&
+    ws.directRepo != null &&
+    ws.wsKind === 'in-place' &&
+    project.kind === 'git' &&
+    !project.hostId &&
+    !ws.hostId &&
+    ws.worktreePath === project.repoPath
+  );
+}
+
+/** Refusal text for a branch/PR operation on a direct workspace (the user's own
+ *  checkout): Maestro leaves its branch and history to the user. */
+export const DIRECT_REFUSAL = (what: string) =>
+  `This workspace works directly in your project directory — Maestro doesn't ${what} there. Use your own git tools in the terminal.`;
 
 /** One selectable reasoning-effort level: a stable id (persisted, passed to the
  *  harness adapter), a display label, and a 1–5 bar count for the EffortBars glyph. */
@@ -1708,7 +1761,10 @@ export type CreateFrom =
   | { type: 'branch'; ref: string }
   | { type: 'pr'; ref: number }
   | { type: 'issue'; ref: number }
-  | { type: 'linear'; ref: string };
+  | { type: 'linear'; ref: string }
+  /** Work in the project's own checkout on its current branch — no worktree, no
+   *  new branch (see isDirectWorkspace). Local git projects only. */
+  | { type: 'direct' };
 
 export interface CreateWorkspaceOpts {
   projectId: string;
@@ -2346,7 +2402,7 @@ export interface IpcInvokeMap {
   // dropdown. parentMessageId is the parent agent turn's ChatMessage id.
   'subagent:list': [{ workspaceId: string; parentMessageId: string }, SubagentRun[]];
 
-  'git:diff': [{ workspaceId: string }, WorkspaceDiff];
+  'git:diff': [{ workspaceId: string; scope?: DiffScope }, WorkspaceDiff];
   'git:status': [{ workspaceId: string }, GitStatusSummary];
   'git:files': [{ workspaceId: string }, string[]];
   'git:diffstat': [{ workspaceId: string }, { additions: number; deletions: number }];

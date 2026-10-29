@@ -143,6 +143,7 @@ function AppInner() {
         s.openDockTerminal(wsId);
       } else if (action === 'create-pr' && wsId) {
         const caps = capsOf(s, s.workspaces.find((w) => w.id === wsId)?.projectId);
+        // createPr itself refuses a direct workspace (with an explanation, no progress toast).
         if (caps.githubRemote && s.ghAuth.authenticated) void s.createPr(wsId);
       }
       else if (action === 'archive' && wsId) {

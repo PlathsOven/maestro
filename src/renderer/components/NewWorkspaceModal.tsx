@@ -5,6 +5,7 @@ import { Check, ChevronDown, Cloud, ImageIcon, Laptop, Paperclip, X } from 'luci
 import { HarnessLogo } from '../../shared/ui/brandIcons';
 import { tryInvoke } from '../lib/api';
 import { useApp, useActiveProject, useCaps, useShowPr } from '../store/app';
+import { liveDirectWorkspace } from '../store/helpers';
 import { EffortBars, EffortOptions, Modal, PickerOption, Spinner, readFilesAsBase64, useFileDrop } from './common';
 import { effortLevelsFor, useHarnessModels } from '../lib/harnessModels';
 import {
@@ -12,15 +13,17 @@ import {
   resolveDefaultEffort,
   resolveDefaultModel,
   resolveEffortLevel,
+  type Attachment,
   type BranchInfo,
   type CreateFrom,
+  type Workspace,
   type HarnessId,
   type HarnessInfo,
   type IssueListItem,
   type PrListItem,
 } from '../../shared/types';
 
-type FromMode = 'base' | 'branch' | 'pr' | 'issue' | 'linear';
+type FromMode = 'base' | 'branch' | 'pr' | 'issue' | 'linear' | 'direct';
 
 const FROM_LABELS: Record<FromMode, string> = {
   base: 'Create from…',
@@ -28,6 +31,7 @@ const FROM_LABELS: Record<FromMode, string> = {
   pr: 'From pull request',
   issue: 'From GitHub issue',
   linear: 'From Linear issue',
+  direct: 'Existing working directory (no worktree)',
 };
 
 /** Conductor-style "new workspace" floating chatbox: describe the task, pick
@@ -46,6 +50,7 @@ export default function NewWorkspaceModal() {
   const toast = useApp((s) => s.toast);
   const HM = useHarnessModels();
 
+  const liveDirect = useApp((s) => (project ? liveDirectWorkspace(s, project.id) : undefined));
   const [harness, setHarness] = useState<HarnessId>(settings.defaultHarness);
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState(() => resolveDefaultEffort(settings.defaultEffort));
@@ -71,7 +76,7 @@ export default function NewWorkspaceModal() {
   // project default → app-wide default → local — is pre-selected and always
   // overridable here; k8s clusters are ordinary entries in the same list.
   const hosts = useApp((s) => s.hosts);
-  const cloudEligible = !!project && caps.worktrees && !project.hostId;
+  const cloudEligible = !!project && caps.worktrees && !project.hostId && fromMode !== 'direct';
   const [hostId, setHostId] = useState<string | null>(() => effectiveCloudHostId(project, settings));
   const [hostMenu, setHostMenu] = useState(false);
   const runHost = hostId ? hosts.find((h) => h.id === hostId) : undefined;
@@ -142,8 +147,48 @@ export default function NewWorkspaceModal() {
     );
   const { dragDepth, dropProps } = useFileDrop(ingestFiles);
 
+  /** A repo has one direct workspace; its chats are the parallel sessions. Rather
+   *  than a second row on the same directory, open the live one and start this
+   *  task in a fresh chat there (main enforces the same reuse). */
+  const openInDirect = async (ws: Workspace) => {
+    const text = prompt.trim();
+    setBusy(true);
+    const st = useApp.getState();
+    st.selectProject(project.id);
+    st.selectWorkspace(ws.id);
+    if (text || atts.length) {
+      st.newChat(ws.id);
+      const agentId = useApp.getState().composerAgent[ws.id] ?? 1;
+      // A chat runs on its workspace's harness; switching it would reset every
+      // other chat's session, so a different pick only keeps the workspace's.
+      if (harness === ws.harness && (effModel || effort !== defaultEffort)) st.setChatMeta(ws.id, agentId, { model: effModel, effort });
+      const attachments: Attachment[] = [];
+      for (const a of atts) {
+        const r = await tryInvoke('attachment:save', { workspaceId: ws.id, name: a.name, dataBase64: a.dataBase64 });
+        if (r.error || !r.data) {
+          setBusy(false);
+          return toast('error', r.error ?? `Couldn't attach ${a.name}`);
+        }
+        attachments.push({ kind: a.kind, path: r.data.path, label: a.name });
+      }
+      useApp.setState((s) => ({ composerAttachments: { ...s.composerAttachments, [`${ws.id}:${agentId}`]: attachments } }));
+      await useApp.getState().sendMessage(ws.id, text, agentId);
+    }
+    setBusy(false);
+    const harnessNote = harness !== ws.harness ? ` It keeps its ${harnesses.find((h) => h.id === ws.harness)?.displayName ?? ws.harness} agent.` : '';
+    toast('info', `Opened ${ws.name}, this repository's direct workspace${text || atts.length ? ', in a new chat' : ''}.${harnessNote}`);
+    if (createMore) {
+      setPrompt('');
+      setAtts([]);
+    } else setModal(null);
+  };
+
   const create = async () => {
     if (busy) return;
+    if (fromMode === 'direct') {
+      const live = liveDirectWorkspace(useApp.getState(), project.id);
+      if (live) return openInDirect(live);
+    }
     let from: CreateFrom | undefined;
     if (fromMode === 'branch') {
       if (!fromRef) return toast('error', 'Pick a branch');
@@ -158,8 +203,11 @@ export default function NewWorkspaceModal() {
       if (!fromRef.trim()) return toast('error', 'Enter a Linear issue ID (e.g. ENG-123)');
       if (!settings.linearToken.trim()) return toast('error', 'Add a Linear API token in Settings → Integrations first');
       from = { type: 'linear', ref: fromRef.trim() };
+    } else if (fromMode === 'direct') {
+      from = { type: 'direct' };
     }
     setBusy(true);
+    const startedAt = Date.now();
     const res = await tryInvoke('workspace:create', {
       projectId: project.id,
       harness,
@@ -175,7 +223,10 @@ export default function NewWorkspaceModal() {
     }
     // Provisioning takes a moment — the chat meta lands well before the first send.
     const ws = res.data!;
-    if (effModel || effort !== defaultEffort) {
+    // Main reused an existing direct workspace this window hadn't heard of yet;
+    // it already started the task in a new chat, so chat 1's settings stay put.
+    const reused = ws.createdAt < startedAt;
+    if (!reused && (effModel || effort !== defaultEffort)) {
       useApp.getState().setChatMeta(ws.id, 1, { model: effModel, effort });
     }
     if (createMore) {
@@ -231,8 +282,12 @@ export default function NewWorkspaceModal() {
           {fromMenu && (
             <DownMenu onClose={() => setFromMenu(false)} right>
               {(Object.keys(FROM_LABELS) as FromMode[])
-                // From PR/issue require github+auth; from branch requires git.
-                .filter((m) => (m === 'pr' || m === 'issue' ? showPr : m === 'branch' ? caps.git : true))
+                // From PR/issue require github+auth; from branch requires git;
+                // the existing directory is a local checkout's (remote projects
+                // are already in-place).
+                .filter((m) =>
+                  m === 'pr' || m === 'issue' ? showPr : m === 'branch' ? caps.git : m === 'direct' ? caps.git && !project.hostId : true
+                )
                 .map((m) => (
                   <MenuRow
                     key={m}
@@ -289,7 +344,7 @@ export default function NewWorkspaceModal() {
       )}
 
       {/* from picker when needed */}
-      {fromMode !== 'base' && (
+      {fromMode !== 'base' && fromMode !== 'direct' && (
         <div className="mb-1 mt-2">
           {fromMode === 'branch' &&
             (branches === null ? (
@@ -521,10 +576,24 @@ export default function NewWorkspaceModal() {
         </button>
       </div>
 
-      <p className="mt-3 text-2xs leading-relaxed text-faint">
-        Creates an isolated worktree on a fresh branch from {fromMode === 'base' ? (project.baseBranch ?? 'main') : 'the selected source'} —
-        the task is sent to {harnessLabel} once setup finishes.
-      </p>
+      {fromMode === 'direct' ? (
+        <p className="mt-3 text-2xs leading-relaxed text-faint">
+          {liveDirect ? (
+            <>
+              Opens <span className="font-medium">{liveDirect.name}</span>, this repository's direct workspace, and starts the task in
+              a new chat there.{' '}
+            </>
+          ) : null}
+          Works directly in <span className="font-mono">{project.repoPath}</span> on its current branch — no worktree or branch
+          is created, and your uncommitted changes stay as they are. Every session in this directory shares the same files,
+          so simultaneous edits can conflict.
+        </p>
+      ) : (
+        <p className="mt-3 text-2xs leading-relaxed text-faint">
+          Creates an isolated worktree on a fresh branch from {fromMode === 'base' ? (project.baseBranch ?? 'main') : 'the selected source'} —
+          the task is sent to {harnessLabel} once setup finishes.
+        </p>
+      )}
       </div>
     </Modal>
   );

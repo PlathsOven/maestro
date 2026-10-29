@@ -12,6 +12,7 @@ import { generateStatus, getStatus } from './status';
 import { archiveWorkspace, restoreWorkspace, deleteWorkspace, continueOnNewBranch } from './workspaces';
 import { sendChat } from './chat';
 import { relayFetch, publishWorkspace } from './account';
+import { DIRECT_REFUSAL, isDirectWorkspace } from '../../shared/types';
 
 type StatusScope = 'session' | 'workspace' | 'project';
 type Done = { ok: boolean; result?: unknown; error?: string };
@@ -46,7 +47,10 @@ export async function execPrMerge(wsId: string, method: 'merge' | 'squash' | 're
 
 export async function execContinueBranch(wsId: string): Promise<Done> {
   try {
-    await continueOnNewBranch(wsId);
+    // continueOnNewBranch reports most refusals (a direct workspace, no base
+    // branch, a failed checkout) as { ok: false } rather than throwing.
+    const r = await continueOnNewBranch(wsId);
+    if (!r.ok) return { ok: false, error: r.error ?? 'Could not start a new branch' };
     republish(wsId);
     return { ok: true };
   } catch (e) {
@@ -58,6 +62,8 @@ export async function execResolveConflicts(wsId: string): Promise<Done> {
   const ws = Workspaces.get(wsId);
   const project = ws ? Projects.get(ws.projectId) : null;
   const base = project?.baseBranch ?? 'the base branch';
+  // Merging the base into the user's own checkout is theirs to decide.
+  if (ws && isDirectWorkspace(ws, project)) return { ok: false, error: DIRECT_REFUSAL('merge the base branch') };
   // Send the agent a concrete instruction to merge the base and resolve conflicts.
   const r = await sendChat({
     workspaceId: wsId,

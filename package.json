@@ -30,6 +30,8 @@
     "test:shortcuts": "esbuild scripts/shortcuts-test.ts --bundle --platform=node --format=cjs --outfile=dist/shortcuts-test.cjs && node dist/shortcuts-test.cjs",
     "test:memguard": "esbuild scripts/memguard-test.ts --bundle --platform=node --format=cjs --outfile=dist/memguard-test.cjs && node dist/memguard-test.cjs",
     "test:shim": "esbuild scripts/shim-test.ts --bundle --platform=node --format=cjs --outfile=dist/shim-test.cjs && node dist/shim-test.cjs",
+    "test:direct": "esbuild scripts/direct-workspace-test.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --outfile=dist/direct-workspace-test.cjs && cross-env ELECTRON_RUN_AS_NODE=1 electron dist/direct-workspace-test.cjs",
+    "test:direct-ui": "esbuild scripts/direct-ui-test.ts --bundle --platform=node --format=cjs --loader:.css=empty --outfile=dist/direct-ui-test.cjs && node dist/direct-ui-test.cjs",
     "test:fileops": "esbuild scripts/fileops-test.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --outfile=dist/fileops-test.cjs && node dist/fileops-test.cjs",
     "build:renderer": "vite build",
     "build:main": "esbuild src/main/index.ts src/main/preload.ts src/main/role-cli.ts src/main/ask-cli.ts src/main/preview-cli.ts src/main/message-cli.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:node-pty --external:electron-updater --external:ssh2 --outdir=dist/main --out-extension:.js=.cjs --sourcemap=inline",

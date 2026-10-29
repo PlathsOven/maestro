@@ -33,7 +33,7 @@ import {
 } from './cloud';
 import { ensureRemoteBridge } from '../hosts/bridge';
 import { probeRemoteHarnessFast } from './harness/remote';
-import { ASK_ENV, MESSAGE_ENV, PREVIEW_ENV, ROLE_ENV, askUserPreamble, messagingPreamble, orchestratorPrompt, previewPreamble, resolveRoles, showImagesPreamble, specialistRoleIds } from '../../shared/types';
+import { ASK_ENV, MESSAGE_ENV, PREVIEW_ENV, ROLE_ENV, askUserPreamble, isDirectWorkspace, messagingPreamble, orchestratorPrompt, previewPreamble, resolveRoles, showImagesPreamble, specialistRoleIds } from '../../shared/types';
 import type { Attachment, ChatMessage, Project, QueuedMessage, Workspace } from '../../shared/types';
 
 // ---------- message queue (send while the agent is busy → runs next) ----------
@@ -427,7 +427,17 @@ async function prepareTurn(
   // The shell fallback executes the prompt verbatim — instructions would be
   // parsed as shell syntax, so only real agents get the workspace preamble.
   if (firstMessage && ws.harness !== 'shell') {
-    if (ws.wsKind === 'in-place') {
+    if (isDirectWorkspace(ws, project)) {
+      // Direct workspace: the user's own checkout, possibly shared with other chats.
+      prompt +=
+        `\n\n<maestro-workspace>` +
+        `You are working directly in the user's own git checkout at ${ws.worktreePath}` +
+        (ws.branch ? `, on their current branch "${ws.branch}"` : '') +
+        `. There is no isolated worktree: your edits change the user's files in place, and other agent sessions may be editing this same directory at the same time. ` +
+        `Do not create, switch, rename, or delete branches, and do not commit, stash, reset, rebase, merge, or discard changes unless the user explicitly asks — leave existing modified, staged, and untracked files as they are. ` +
+        `Use the .context/ directory (git-ignored) for scratch notes or handoffs to other agents.` +
+        `</maestro-workspace>`;
+    } else if (ws.wsKind === 'in-place') {
       // Folder project: the agent edits the user's own directory directly — no
       // worktree, no branch, no first-turn branch-rename convention.
       prompt +=

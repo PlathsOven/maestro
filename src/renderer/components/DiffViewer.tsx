@@ -10,16 +10,38 @@ import {
 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
 import { highlightLine, langForPath } from '../../shared/ui/format';
-import { EMPTY_ARR, useApp } from '../store/app';
+import { EMPTY_ARR, useApp, useIsDirect } from '../store/app';
 import { EmptyHint, Segmented, Spinner } from './common';
 import ChangedFileTree, { StatusGlyph } from './ChangedFileTree';
-import type { DiffComment, DiffFile, DiffLine, Workspace } from '../../shared/types';
+import type { DiffComment, DiffFile, DiffLine, DiffScope, Workspace } from '../../shared/types';
 import { Chevron } from '../../shared/ui/primitives';
 
 type ViewMode = 'unified' | 'split';
 
+/** A direct workspace's comparisons (DiffScope), with what each empty state means. */
+const SCOPES: { value: DiffScope; label: string; title: string; empty: string }[] = [
+  { value: 'uncommitted', label: 'Uncommitted', title: 'Working tree vs HEAD — staged and unstaged changes, plus untracked files', empty: 'No uncommitted changes' },
+  { value: 'staged', label: 'Staged', title: 'What the next commit would contain (index vs HEAD)', empty: 'Nothing staged' },
+  { value: 'unstaged', label: 'Unstaged', title: 'Changes not yet staged (working tree vs index), plus untracked files', empty: 'No unstaged changes' },
+  { value: 'branch', label: 'Branch', title: "Commits on this branch that its upstream doesn't have yet", empty: 'No commits ahead of the upstream' },
+];
+
+/** Where an uncommitted change sits in git — shown beside the file in direct workspaces. */
+export function StageTag({ file }: { file: DiffFile }) {
+  if (!file.stage) return null;
+  const label = file.stage === 'both' ? 'partly staged' : file.stage;
+  return (
+    <span className={clsx('shrink-0 rounded-full px-1.5 text-2xs', file.stage === 'unstaged' ? 'bg-accent-soft text-muted' : 'bg-accent-tint text-accent')}>
+      {label}
+    </span>
+  );
+}
+
 export default function DiffViewer({ workspace, active }: { workspace: Workspace; active: boolean }) {
   const diff = useApp((s) => s.diffs[workspace.id]);
+  const direct = useIsDirect(workspace);
+  const scope = useApp((s) => s.diffScope[workspace.id] ?? 'uncommitted');
+  const scopeInfo = SCOPES.find((x) => x.value === scope)!;
   const comments = useApp((s) => s.comments[workspace.id]) ?? EMPTY_ARR;
   const wsVersion = useApp((s) => s.wsVersion[workspace.id] ?? 0);
   const [mode, setMode] = useState<ViewMode>('unified');
@@ -83,15 +105,20 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
             files={files}
             selected={selected}
             onSelect={(f) => scrollToFile(f.path)}
-            trailing={(f) =>
-              commentsFor(comments, f).length > 0 && (
-                <span className="shrink-0 rounded-full bg-accent-tint px-1.5 text-2xs font-medium text-accent">
-                  {commentsFor(comments, f).length}
-                </span>
-              )
-            }
+            trailing={(f) => (
+              <>
+                <StageTag file={f} />
+                {commentsFor(comments, f).length > 0 && (
+                  <span className="shrink-0 rounded-full bg-accent-tint px-1.5 text-2xs font-medium text-accent">
+                    {commentsFor(comments, f).length}
+                  </span>
+                )}
+              </>
+            )}
           />
-          {files.length === 0 && !loading && <div className="px-2.5 py-2 text-xs text-faint">No changes vs {diff?.base}</div>}
+          {files.length === 0 && !loading && (
+            <div className="px-2.5 py-2 text-xs text-faint">{direct ? scopeInfo.empty : `No changes vs ${diff?.base}`}</div>
+          )}
         </div>
       </div>
 
@@ -106,6 +133,13 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
               { value: 'split', label: 'Split' },
             ]}
           />
+          {direct && (
+            <Segmented<DiffScope>
+              value={scope}
+              onChange={(v) => useApp.getState().setDiffScope(workspace.id, v)}
+              options={SCOPES.map(({ value, label, title }) => ({ value, label, title }))}
+            />
+          )}
           <div className="flex-1" />
           {unresolved.length > 0 && (
             <button
@@ -131,8 +165,8 @@ export default function DiffViewer({ workspace, active }: { workspace: Workspace
           {diff && files.length === 0 && (
             <EmptyHint
               icon={<FileDiff size={30} strokeWidth={1.5} />}
-              title="Working tree matches the base branch"
-              body={`No differences between this workspace and ${diff.base}.`}
+              title={direct ? scopeInfo.empty : 'Working tree matches the base branch'}
+              body={direct ? `${scopeInfo.title}. Compared with ${diff.base}.` : `No differences between this workspace and ${diff.base}.`}
             />
           )}
           <div className="space-y-3 px-4 pb-6 pt-2">
@@ -193,6 +227,7 @@ const FileDiffCard = React.memo(function FileDiffCard({
       >
         <Chevron open={open} size={13} className="text-muted" />
         <StatusGlyph status={file.status} />
+        <StageTag file={file} />
         <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium">
           {/* the name opens the file (a deleted one has nothing to open); the rest of the row toggles */}
           <span

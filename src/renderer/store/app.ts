@@ -59,11 +59,11 @@ import type {
   WorkspaceScripts,
   WorkspaceTab,
 } from '../../shared/types';
-import { DEFAULT_COMPLETION_SOUND, statusKey } from '../../shared/types';
+import { DEFAULT_COMPLETION_SOUND, DIRECT_REFUSAL, isDirectWorkspace, statusKey, type DiffScope } from '../../shared/types';
 import { provisionalTitle } from '../../shared/chatTitle';
 import { isUnread, workspaceStatusCounts } from '../../shared/ui/status';
 import { askingAgents, turnKey } from '../lib/liveTurn';
-import { EMPTY_ARR, capsOf, patchChatMeta, type ChatsMeta } from './helpers';
+import { EMPTY_ARR, capsOf, isDirectIn, patchChatMeta, type ChatsMeta } from './helpers';
 import { flushChatEvents, subscribeToMain } from './events';
 import { loadDrafts, persistDrafts } from '../lib/composerDrafts';
 import { STASH_MAX, loadStash, saveStash, type StashedPrompt } from '../lib/promptStash';
@@ -122,7 +122,7 @@ interface StatusSlot {
 }
 
 type Modal =
-  | { kind: 'new-workspace'; from?: 'branch' | 'pr' | 'issue' | 'linear' }
+  | { kind: 'new-workspace'; from?: 'branch' | 'pr' | 'issue' | 'linear' | 'direct' }
   | { kind: 'clone-repo' }
   | { kind: 'create-project' }
   /** Picked a non-git folder in "Open project" — choose work-in-folder vs init-git. */
@@ -288,6 +288,8 @@ export interface AppState {
   subagentRuns: Record<string, SubagentRun[] | undefined>;
   runningAgents: Record<string, number[]>;
   diffs: Record<string, WorkspaceDiff | undefined>;
+  /** Direct workspaces: which comparison the Diff/Changes views show (default uncommitted). */
+  diffScope: Record<string, DiffScope | undefined>;
   gitStatus: Record<string, GitStatusSummary | undefined>;
   prStatus: Record<string, PrStatus | null | undefined>;
   creatingPr: Record<string, boolean>; // PR creation in flight (commit+push+open)
@@ -533,6 +535,8 @@ export interface AppState {
   loadWorkspaceData: (wsId: string) => Promise<void>;
   refreshGit: (wsId: string) => Promise<void>;
   refreshDiff: (wsId: string) => Promise<void>;
+  /** Switch a direct workspace's diff comparison, then refetch. */
+  setDiffScope: (wsId: string, scope: DiffScope) => void;
   refreshPr: (wsId: string, force?: boolean) => Promise<void>;
   /** Squash-merge the workspace's PR, toasting the outcome. */
   squashMergePr: (wsId: string, prNumber: number | null) => Promise<void>;
@@ -771,6 +775,7 @@ export const useApp = create<AppState>((set, get) => {
     subagentRuns: {},
     runningAgents: {},
     diffs: {},
+    diffScope: {},
     gitStatus: {},
     prStatus: {},
     creatingPr: {},
@@ -1764,16 +1769,26 @@ export const useApp = create<AppState>((set, get) => {
 
     refreshDiff: (wsId) =>
       coalesce(`diff:${wsId}`, async () => {
-        const { data, error } = await tryInvoke('git:diff', { workspaceId: wsId });
+        const scope = get().diffScope[wsId];
+        const { data, error } = await tryInvoke('git:diff', scope ? { workspaceId: wsId, scope } : { workspaceId: wsId });
+        // Scope switched mid-flight: drop this answer; coalesce reruns with the new one.
+        if (data?.scope && data.scope !== (get().diffScope[wsId] ?? 'uncommitted')) return;
         if (data) set((s) => ({ diffs: { ...s.diffs, [wsId]: data } }));
         else if (error) get().toast('error', `Diff failed: ${error}`);
       }),
+
+    setDiffScope: (wsId, scope) => {
+      if ((get().diffScope[wsId] ?? 'uncommitted') === scope) return;
+      set((s) => ({ diffScope: { ...s.diffScope, [wsId]: scope }, diffs: { ...s.diffs, [wsId]: undefined } }));
+      void get().refreshDiff(wsId);
+    },
 
     refreshPr: async (wsId, force) => {
       const { data } = await tryInvoke('github:prStatus', { workspaceId: wsId, force });
       set((s) => ({ prStatus: { ...s.prStatus, [wsId]: data ?? null } }));
     },
     squashMergePr: async (wsId, prNumber) => {
+      if (isDirectIn(get(), wsId)) return get().toast('info', DIRECT_REFUSAL('merge pull requests'));
       const res = await tryInvoke('github:prMerge', { workspaceId: wsId, method: 'squash' });
       if (res.error || !res.data?.ok) {
         const base = get().prStatus[wsId]?.baseRefName ?? '';
@@ -2163,6 +2178,7 @@ export const useApp = create<AppState>((set, get) => {
     // branch holds the intent a merge needs) → mark resolving → watch for the turn
     // to end and re-check mergeability. Unlike startReviewAgent, no fresh tab.
     startConflictResolution: async (wsId) => {
+      if (isDirectIn(get(), wsId)) return get().toast('info', DIRECT_REFUSAL('merge the base branch'));
       const s = get();
       // Re-entry guard — same shape as creatingPr (§8 double-click).
       if (s.resolvingPr[wsId]) {
@@ -2530,6 +2546,8 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     createPr: async (wsId) => {
+      // Before the "Committing changes…" toast: one-click PR is off in direct workspaces.
+      if (isDirectIn(get(), wsId)) return get().toast('info', DIRECT_REFUSAL('open pull requests'));
       // Commit + push + draft + open can take 30s+; ignore re-clicks while in flight.
       if (get().creatingPr[wsId]) return;
       set((s) => ({ creatingPr: { ...s.creatingPr, [wsId]: true } }));
@@ -2551,6 +2569,7 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     continueWorkspace: async (wsId) => {
+      if (isDirectIn(get(), wsId)) return get().toast('info', DIRECT_REFUSAL('start a new branch'));
       const { data, error } = await tryInvoke('workspace:continueBranch', { workspaceId: wsId });
       if (error || !data?.ok) {
         get().toast('error', error ?? data?.error ?? 'Could not start a new branch');
@@ -2735,4 +2754,10 @@ export function useShowPr(projectId: string | null | undefined): boolean {
   const localAuthed = useApp((s) => s.ghAuth.authenticated);
   const isRemote = useApp((s) => !!(projectId && s.projects.find((p) => p.id === projectId)?.hostId));
   return githubRemote && (isRemote || localAuthed);
+}
+
+/** Whether a workspace works directly in its project's own checkout (Create from
+ *  → Existing working directory) — its branch/PR lifecycle is hidden. */
+export function useIsDirect(ws: Pick<Workspace, 'projectId' | 'wsKind' | 'worktreePath' | 'hostId' | 'directRepo'>): boolean {
+  return useApp((s) => isDirectWorkspace(ws, s.projects.find((p) => p.id === ws.projectId)));
 }

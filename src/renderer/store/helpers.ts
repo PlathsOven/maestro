@@ -1,4 +1,4 @@
-import type { ChatMeta, Project, ProjectCaps } from '../../shared/types';
+import { isDirectWorkspace, type ChatMeta, type Project, type ProjectCaps, type Workspace } from '../../shared/types';
 
 /**
  * Store-free helpers shared by the store (app.ts) and its push event wiring
@@ -33,4 +33,24 @@ export function capsOf(
   const stored = s.projectCaps[projectId];
   if (stored) return stored;
   return s.projects.find((p) => p.id === projectId)?.kind === 'git' ? GIT_FALLBACK : NO_CAPS;
+}
+
+/** Whether `wsId` is a direct workspace (the user's own checkout) — the gate every
+ *  renderer entry point to the automatic branch/PR lifecycle checks, so a hidden
+ *  button, the command palette and a shortcut all refuse alike, before any
+ *  progress toast. Main enforces the same rule. */
+export function isDirectIn(s: { workspaces: Workspace[]; projects: Project[] }, wsId: string | null | undefined): boolean {
+  const ws = wsId ? s.workspaces.find((w) => w.id === wsId) : undefined;
+  return !!ws && isDirectWorkspace(ws, s.projects.find((p) => p.id === ws.projectId));
+}
+
+/** The direct workspace a "New workspace → Existing working directory" request
+ *  for this project reuses, if one is live (main reuses the same one). */
+export function liveDirectWorkspace(
+  s: { workspaces: Workspace[]; projects: Project[] },
+  projectId: string
+): Workspace | undefined {
+  return s.workspaces
+    .filter((w) => w.projectId === projectId && !w.archived && isDirectIn(s, w.id))
+    .sort((a, b) => a.createdAt - b.createdAt)[0];
 }

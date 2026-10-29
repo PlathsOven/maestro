@@ -14,7 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { formatDuration, timeAgo } from '../../shared/ui/format';
-import { DEFAULT_CHAT_IDS, EMPTY_ARR, useApp, type LiveTurn } from '../store/app';
+import { DEFAULT_CHAT_IDS, EMPTY_ARR, useApp, useIsDirect, type LiveTurn } from '../store/app';
 import { askingAgents, turnKey } from '../lib/liveTurn';
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
 import { firstLeaf, leaf, paneCount, paneIds, type DropSide, type PaneNode } from '../lib/paneTree';
@@ -358,6 +358,7 @@ function ChatPane({
   onHeaderDragStart: (e: React.DragEvent) => void;
 }) {
   const messages = useApp((s) => s.messages[workspace.id]);
+  const direct = useIsDirect(workspace);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastTopRef = useRef(0);
   const [pinned, setPinned] = useState(true);
@@ -608,7 +609,9 @@ function ChatPane({
             icon={<MessageSquare size={26} strokeWidth={1.4} />}
             title="Describe the task"
             body={
-              workspace.wsKind === 'in-place'
+              direct
+                ? `Your message starts ${harnessLabel(workspace)} working directly in your project directory${workspace.branch ? ` on branch ${workspace.branch}` : ''}. No worktree or branch is created — edits change your files in place, and other sessions here share them.`
+                : workspace.wsKind === 'in-place'
                 ? `Your message starts ${harnessLabel(workspace)} working directly in this folder. Edits change your files in place — there's no branch or diff.`
                 : `Your message starts ${harnessLabel(workspace)} inside this worktree on branch ${workspace.branch}. The agent will rename the branch to match the task.`
             }

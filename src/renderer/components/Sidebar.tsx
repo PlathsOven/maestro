@@ -4,6 +4,7 @@ import {
   Archive,
   Clock,
   Folder,
+  FolderOpen,
   FolderPlus,
   GitBranch,
   GitMerge,
@@ -28,7 +29,7 @@ import {
   Laptop,
 } from 'lucide-react';
 import { GitHubMark } from '../../shared/ui/brandIcons';
-import { EMPTY_ARR, useApp, useActiveProject, useCaps, useShowPr, type LiveTurn } from '../store/app';
+import { EMPTY_ARR, useApp, useActiveProject, useCaps, useIsDirect, useShowPr, type LiveTurn } from '../store/app';
 import { askingAgents, turnKey } from '../lib/liveTurn';
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS } from '../lib/layoutPrefs';
 import {
@@ -873,7 +874,7 @@ function NewWorkspaceButton({ project }: { project: Project }) {
   const folderWs = useApp((s) =>
     caps.worktrees ? undefined : s.workspaces.find((w) => w.projectId === project.id && !w.archived)
   );
-  const open = (from?: 'branch' | 'pr' | 'issue' | 'linear') => {
+  const open = (from?: 'branch' | 'pr' | 'issue' | 'linear' | 'direct') => {
     useApp.getState().selectProject(project.id);
     useApp.getState().setModal({ kind: 'new-workspace', from });
   };
@@ -921,6 +922,12 @@ function NewWorkspaceButton({ project }: { project: Project }) {
               { icon: <GitPullRequest size={13} />, label: 'From pull request…', from: 'pr', show: showPr },
               { icon: <CircleDot size={13} />, label: 'From GitHub issue…', from: 'issue', show: showPr },
               { icon: <Zap size={13} />, label: 'From Linear issue…', from: 'linear', show: true },
+              {
+                icon: <FolderOpen size={13} />,
+                label: 'Existing working directory (no worktree)…',
+                from: 'direct',
+                show: caps.git && !project.hostId,
+              },
             ] as const
           )
             .filter((item) => item.show)
@@ -1118,7 +1125,9 @@ function WorkspaceRow({
   );
   const stat = useApp((s) => s.diffStats[ws.id]);
   const pr = useApp((s) => s.prStatus[ws.id]);
-  const showPr = useShowPr(ws.projectId);
+  const direct = useIsDirect(ws);
+  // No merge/resolve shortcuts on a direct workspace (the user's own checkout).
+  const showPr = useShowPr(ws.projectId) && !direct;
   const view = prView(ws, pr);
   const inPlace = ws.wsKind === 'in-place';
   const status = ws.status === 'idle' && runningList.length > 0 ? 'running' : ws.status;
@@ -1219,6 +1228,14 @@ function WorkspaceRow({
                 title={`Runs in the cloud${cloudHost ? ` on ${cloudHost.label}` : ''} — keeps going when Maestro is closed`}
               >
                 <Cloud size={9} /> Cloud
+              </span>
+            )}
+            {direct && (
+              <span
+                className="flex shrink-0 items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-px text-[10px] font-medium text-muted group-hover:hidden"
+                title={`Works directly in ${ws.worktreePath} — no worktree or branch. Sessions here share the same files, so simultaneous edits can conflict.`}
+              >
+                <FolderOpen size={9} /> Direct
               </span>
             )}
             {view.hasPr && (

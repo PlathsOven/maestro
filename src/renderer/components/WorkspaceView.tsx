@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { tryInvoke } from '../lib/api';
 import { hostAddress } from '../lib/hosts';
-import { EMPTY_ARR, useApp, useCaps } from '../store/app';
+import { EMPTY_ARR, useApp, useCaps, useIsDirect } from '../store/app';
 import { COLLAPSED_RIGHT_RAIL } from '../lib/layoutPrefs';
 import { ContextMenu, ContextMenuItem, MenuDivider, MenuItem, Segmented, Spinner, StatusDot } from './common';
 import { useEditors } from '../lib/editors';
@@ -76,13 +76,15 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const [editorVisited, setEditorVisited] = useState(tab === 'editor');
   const [previewVisited, setPreviewVisited] = useState(tab === 'preview');
 
-  // An adopted (Conductor) workspace is an in-place workspace on a git project —
-  // the only way to get one. Its directory is Conductor's, so Maestro never
-  // removes it; but Conductor can archive it out from under us (§4/§6.3).
-  const isAdopted = project?.kind === 'git' && workspace.wsKind === 'in-place';
+  // An in-place workspace on a git project is either adopted (Conductor) or
+  // direct (the project's own checkout, "Existing working directory"). Neither
+  // directory is Maestro's, so Maestro never removes it; but either can vanish
+  // out from under us (archived in Conductor, moved or deleted by the user).
+  const isDirect = useIsDirect(workspace);
+  const isAdopted = project?.kind === 'git' && workspace.wsKind === 'in-place' && !isDirect;
   const [dirMissing, setDirMissing] = useState(false);
   useEffect(() => {
-    if (!isAdopted) {
+    if (!isAdopted && !isDirect) {
       setDirMissing(false);
       return;
     }
@@ -93,7 +95,7 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
     return () => {
       alive = false;
     };
-  }, [isAdopted, workspace.id, workspace.worktreePath]);
+  }, [isAdopted, isDirect, workspace.id, workspace.worktreePath]);
 
   // An archived workspace whose worktree was offloaded to save disk has nothing
   // on disk until restored — only its chat is viewable (archive-disk-reclaim.md).
@@ -146,7 +148,15 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
           <ChevronRight size={12} className="shrink-0 text-faint" />
           {caps.git ? (
             <>
-              <BranchMenu workspace={workspace} />
+              {isDirect ? <DirectBranch workspace={workspace} /> : <BranchMenu workspace={workspace} />}
+              {isDirect && (
+                <span
+                  className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
+                  title={`Working directly in ${workspace.worktreePath} on its current branch — no worktree or branch was created. Every session in this directory shares the same files, so simultaneous edits can conflict. Removing the workspace never touches the directory.`}
+                >
+                  <FolderOpen size={10} /> direct · shared files
+                </span>
+              )}
               {isAdopted && (
                 <span
                   className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs font-medium text-muted"
@@ -289,7 +299,12 @@ export default function WorkspaceView({ workspace }: { workspace: Workspace }) {
         )}
         {/* Adopted workspace whose Conductor directory vanished (archived there).
             The branch survives, so offer to recreate it as a Maestro worktree. */}
-        {dirMissing && <AdoptedMissing workspace={workspace} onGone={() => setDirMissing(false)} />}
+        {dirMissing &&
+          (isDirect ? (
+            <DirectMissing workspace={workspace} />
+          ) : (
+            <AdoptedMissing workspace={workspace} onGone={() => setDirMissing(false)} />
+          ))}
       </div>
     </div>
   );
@@ -366,6 +381,42 @@ function AdoptedMissing({ workspace, onGone }: { workspace: Workspace; onGone: (
   );
 }
 
+/** A direct workspace's project directory is gone (moved or deleted by the user).
+ *  There's nothing Maestro may rebuild it from, so it only offers to forget it. */
+function DirectMissing({ workspace }: { workspace: Workspace }) {
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-bg p-8">
+      <div className="w-[440px] rounded-card border bg-raised/40 p-6 text-center">
+        <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-warn/15 text-warn">
+          <AlertTriangle size={20} />
+        </div>
+        <div className="text-[15px] font-semibold">The project directory is missing</div>
+        <div className="mx-auto mt-1.5 max-w-[360px] text-[13px] text-muted">
+          <span className="break-all font-mono text-xs text-fg">{workspace.worktreePath}</span> may have been moved or
+          deleted. Put it back to keep going, or remove the workspace from Maestro.
+        </div>
+        <div className="mt-5 flex items-center justify-center gap-2">
+          <button
+            className="btn h-8 text-xs"
+            onClick={() => {
+              useApp.getState().setModal({
+                kind: 'confirm',
+                title: 'Remove from Maestro',
+                body: `Remove "${workspace.name}"? Its chats and bookkeeping are deleted. Nothing on disk is touched.`,
+                confirmLabel: 'Remove',
+                danger: true,
+                onConfirm: () => void useApp.getState().deleteWorkspace(workspace.id),
+              });
+            }}
+          >
+            Remove from Maestro
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** "Open in <editor>": a click opens the worktree in the default editor; the
  *  chevron lists every detected editor, and picking one makes it the default. */
 function OpenInButton({ workspaceId }: { workspaceId: string }) {
@@ -417,6 +468,25 @@ function HeaderBtn({ title, onClick, children }: { title: string; onClick: () =>
     <button className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-accent-soft hover:text-fg" title={title} onClick={onClick}>
       {children}
     </button>
+  );
+}
+
+/** A direct workspace's branch: shown, never changed — it's the user's own
+ *  checkout (switch/rename it in the terminal). */
+function DirectBranch({ workspace }: { workspace: Workspace }) {
+  // The live status probe follows checkouts made in the terminal; the stored
+  // branch only refreshes at turn end.
+  const live = useApp((s) => s.gitStatus[workspace.id]?.branch);
+  const raw = live ?? workspace.branch;
+  const branch = raw && raw !== 'HEAD' ? raw : 'detached HEAD';
+  return (
+    <span
+      className="flex h-7 min-w-0 items-center gap-1.5 px-1.5"
+      title={`${branch} — the directory's current branch. Maestro doesn't switch or rename it here.`}
+    >
+      <GitBranch size={13} className="shrink-0 text-faint" />
+      <span className="truncate text-[13px] font-semibold tracking-tight">{branch}</span>
+    </span>
   );
 }
 

@@ -606,9 +606,9 @@ function registerAgentIpc() {
 function registerGitIpc() {
   // ---------- git ----------
 
-  handle('git:diff', ({ workspaceId }) => {
+  handle('git:diff', ({ workspaceId, scope }) => {
     const ws = mustWorkspace(workspaceId);
-    return changes.workspaceDiff(ws, mustProject(ws.projectId));
+    return changes.workspaceDiff(ws, mustProject(ws.projectId), scope);
   });
   handle('git:status', ({ workspaceId }) => {
     const ws = mustWorkspace(workspaceId);
